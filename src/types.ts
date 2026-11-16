@@ -144,6 +144,9 @@ export type SessionReply =
     sso: SsoProviderInfo[];
     hasPassword: boolean; // false: signs in with single sign-on (or a passkey) only
     passwordAllowed: boolean; // false: linked to a provider that turns password sign-in off
+    hasPasskey: boolean;
+    stepUpMinutes: number; // how long a passkey confirmation covers the sensitive actions
+    strongUntil: string | null; // until when this session's passkey confirmation covers them (ISO), or null
     gate: GateInfo | null;
     defaults: GateConfig;
     holidayList: { name: string; month: number; day: number }[];

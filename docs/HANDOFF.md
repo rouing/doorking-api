@@ -790,6 +790,10 @@ byte, not only the one expected.
 ---
 
 ## 8. Known limitations / pending work
+- **Step-up (2026-11-14):** sensitive actions need a passkey confirmation within 3 hours (`STEP_UP` in server.ts;
+  password-only and SSO-only accounts must add a passkey). Not done: counting a single sign-on as strong (needs the
+  provider to send `amr`/`acr` or Entra `acrs` plus `auth_time`; Google doesn't), recording those claims, a per-gate
+  "strong sign-in for every admin session" option.
 - **Single sign-on (OpenID Connect, 2026-11-13):** built and tested (unit tests, a mock provider token exchange, and an
   end-to-end run of a second server copy on port 8099 against the test database); no real provider configured yet.
   Not done: mapping Entra groups / app roles or Google groups to gate roles, an SSO badge in the Gate users list,

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Callout, Flex, IconButton, Spinner, Theme } from '@radix-ui/themes';
 import type { SessionReply } from '../../src/types.ts';
 import { api, errorText, lsGet, lsSet, onSignedOut } from './api.ts';
-import { EmailLink, FirstSetup, ForcedPasswordChange } from './Account.tsx';
+import { EmailLink, FirstSetup, ForcedPasswordChange, StepUpDialog } from './Account.tsx';
 import { Login } from './Login.tsx';
 import { Gates } from './Gates.tsx';
 import { GateApp } from './GateApp.tsx';
@@ -80,6 +80,7 @@ export function App() {
         </Callout.Root>
       )}
       {page}
+      {session && session.loggedIn && <StepUpDialog />}
       <UpdateNotice />
     </Theme>
   );

@@ -26,9 +26,9 @@ import type { CameraChannel, DeviceRange, GateConfig, GateFeatures, GatePrefs, G
 type Body = Record<string, any>; // request JSON, checked by each handler
 type Reply = readonly [number, unknown];
 // tokenHash identifies the session row; gate: the phone number the web UI has open. apiKey: the request came with an
-// API key (then user is "api:<key name>" and there is no session row).
+// API key (then user is "api:<key name>" and there is no session row). strongAt: last passkey confirmation (ms) or null.
 interface Session {
-  tokenHash: string; user: string; gate: string | null; mustChangePassword: boolean; apiKey?: { phone: string; role: GateRole };
+  tokenHash: string; user: string; gate: string | null; mustChangePassword: boolean; strongAt: number | null; apiKey?: { phone: string; role: GateRole };
 }
 // A managed gate as seen by one user: role is theirs, actor their username (for History); user/password are the
 // gate's DKS login (what buildSessionRequest and the relay calls read).
@@ -86,6 +86,7 @@ if (migrated && migrated.gates.length) {
 }
 const DIST = path.join(HERE, 'dist'); // the web page, built from web/ui by `npm run build`
 const IDLE_MS = CONFIG.security.sessionIdleMinutes * 60000;
+const STEP_UP_MS = CONFIG.security.stepUpMinutes * 60000;
 const MAX_BODY_BYTES = 10000;
 // Failed sign-ins per user name: after MAX_FAILED_SIGN_INS within SIGN_IN_WINDOW_MS, sign-in is refused for the
 // rest of the window without asking DKS Cloud, so a guessing script cannot get the DKS account locked.
@@ -219,7 +220,17 @@ async function currentSession(req: IncomingMessage): Promise<Session | null> {
   if (!s) return null;
   const u = await dk.getUser(STORE, s.username);
   if (!u) return null;
-  return { tokenHash: s.tokenHash, user: u.username, gate: s.gate, mustChangePassword: u.mustChangePassword };
+  return { tokenHash: s.tokenHash, user: u.username, gate: s.gate, mustChangePassword: u.mustChangePassword, strongAt: s.strongAt };
+}
+
+// Until when the session's passkey confirmation covers the sensitive actions (ms), or null.
+const strongUntil = (s: Session): number | null => (s.strongAt && s.strongAt + STEP_UP_MS > Date.now() ? s.strongAt + STEP_UP_MS : null);
+// The refusal of a sensitive action without a recent passkey confirmation (see STEP_UP).
+async function stepUpRefusal(s: Session): Promise<Reply> {
+  const hasPasskey = (await dk.listPasskeys(STORE, s.user)).length > 0;
+  return [403, { stepUp: true, hasPasskey, error: hasPasskey
+    ? 'Confirm it\'s you with your passkey to do this.'
+    : 'This needs a passkey. Add one in User Settings (Passkeys), then try again.' }];
 }
 
 const NO_GATE = 'Gate not found, or you have no access to it';
@@ -1014,13 +1025,14 @@ interface Ctx<S extends Scope> {
 }
 type Handler<S extends Scope> = (ctx: Ctx<S>) => Reply | undefined | void | Promise<Reply | undefined | void>;
 // webOnly: refused for API keys (gate login, users, API keys, deleting the gate's data, leaving).
-interface Route { method: string; re: RegExp; keys: string[]; scope: Scope; handler: Handler<Scope>; webOnly?: boolean }
+// stepUp: set from STEP_UP (sessions need a recent passkey confirmation).
+interface Route { method: string; pattern: string; re: RegExp; keys: string[]; scope: Scope; handler: Handler<Scope>; webOnly?: boolean; stepUp?: boolean }
 const webOnly = (r: Route): Route => ({ ...r, webOnly: true });
 
 function route<S extends Scope>(method: string, pattern: string, scope: S, handler: Handler<S>): Route {
   const keys: string[] = [];
   const re = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, k: string) => { keys.push(k); return '([^/]+)'; })}$`);
-  return { method, re, keys, scope, handler: handler as unknown as Handler<Scope> };
+  return { method, pattern, re, keys, scope, handler: handler as unknown as Handler<Scope> };
 }
 
 const G = '/api/gates/:phone';
@@ -1080,6 +1092,8 @@ const ROUTES = [
     return [200, { loggedIn: true, user: u.username, email: u.email, pendingEmail: u.pendingEmail, phone: u.phone, dark: u.dark,
       notifyAccess: u.notifyAccess, notifyAlerts: u.notifyAlerts, mustChangePassword: u.mustChangePassword, emailEnabled: Boolean(MAILER),
       sso: SSO_LIST, hasPassword: u.hasPassword, passwordAllowed: !await passwordOff(u.username),
+      hasPasskey: (await dk.listPasskeys(STORE, u.username)).length > 0, stepUpMinutes: CONFIG.security.stepUpMinutes,
+      strongUntil: strongUntil(s) ? new Date(strongUntil(s)!).toISOString() : null,
       gate: rec && open ? await gateInfo({ ...rec, role: open }) : null, defaults, holidayList: dk.FIXED_HOLIDAYS }];
   }),
 
@@ -1263,10 +1277,28 @@ const ROUTES = [
       throw e;
     }
     await dk.recordSignIn(STORE, username);
-    const tok = await dk.createSession(STORE, username);
+    const tok = await dk.createSession(STORE, username, { strong: true });
     DEBUG.write('session', `${username} signed in with a passkey`);
     res.setHeader('Set-Cookie', `sid=${tok}${cookieAttrs(req)}`);
     return [200, { ok: true }];
+  }),
+
+  // Step-up (see STEP_UP): POST options (the signed-in user's passkeys for this site; 409 none), then POST
+  // { response } with the browser's answer: the session is confirmed for security.stepUpMinutes { strongUntil }.
+  route('POST', '/api/me/step-up/options', 'user', async ({ s, req }) => {
+    const rp = relyingParty(req);
+    return rp ? [200, await dk.confirmationOptions(STORE, s.user, rp)] : [400, { error: NO_PASSKEY_SITE }];
+  }),
+  route('POST', '/api/me/step-up', 'user', async ({ s, req, body }) => {
+    const rp = relyingParty(req);
+    if (!rp) return [400, { error: NO_PASSKEY_SITE }];
+    try { await dk.confirmWithPasskey(STORE, s.user, body.response, rp); } catch (e) {
+      DEBUG.write('session', `${s.user}: passkey confirmation refused: ${(e as Error).message}`);
+      throw e;
+    }
+    const at = await dk.markSessionStrong(STORE, s.tokenHash);
+    DEBUG.write('session', `${s.user} confirmed with a passkey`);
+    return [200, { strongUntil: new Date(at + STEP_UP_MS).toISOString() }];
   }),
 
   // Single sign-on (src/sso.ts). Start { provider, invite? } -> { url }: the provider's address to open; the response
@@ -1807,6 +1839,21 @@ const ROUTES = [
   }),
 ];
 
+// Sensitive actions: a signed-in session needs a passkey confirmation (sign-in with a passkey, or POST
+// /api/me/step-up) within security.stepUpMinutes, else 403 { stepUp: true, hasPasskey }. Accounts without a passkey
+// can't do them until they add one. API keys aren't affected (they hold one gate and role already).
+const STEP_UP = [
+  `POST ${G}/send`, `POST ${G}/schedules`, `PUT ${G}/schedules/:id`, `POST ${G}/schedules/:id/run`,
+  `PUT ${G}/login`, `POST ${G}/users`, `POST ${G}/users/:username/invite`, `POST ${G}/share`, `PUT ${G}/users/:username`,
+  `DELETE ${G}/users/:username`, `POST ${G}/api-keys`, `DELETE ${G}/api-keys/:id`, `POST ${G}/delete-data`,
+  'POST /api/me/sso/start', 'DELETE /api/me/sso/:provider/:subject',
+];
+for (const key of STEP_UP) {
+  const r = ROUTES.find((x) => `${x.method} ${x.pattern}` === key);
+  if (!r) throw new Error(`STEP_UP: no route ${key}`);
+  r.stepUp = true;
+}
+
 // Scheduled transfers: checked every 30 s and once at startup, so a time missed while the server was stopped
 // runs once. Due entries queue up and run one at a time, each transfer waiting for any running gate connection.
 const SCHEDULE_TICK_MS = CONFIG.schedules.checkSeconds * 1000;
@@ -1947,7 +1994,7 @@ const server = http.createServer(async (req, res) => {
       if (!r.scope.startsWith('gate') || r.webOnly || String(params.phone || '').replace(/\D/g, '') !== k.phone) {
         return send(res, 403, { error: `This API key works only on /api/gates/${k.phone}/… (gate login, users, API keys and deleting data are web-only)` });
       }
-      s = { tokenHash: '', user: `api:${k.name}`, gate: null, mustChangePassword: false, apiKey: { phone: k.phone, role: k.role } };
+      s = { tokenHash: '', user: `api:${k.name}`, gate: null, mustChangePassword: false, strongAt: null, apiKey: { phone: k.phone, role: k.role } };
     } else s = await currentSession(req);
     if (!s && r.scope !== 'public') return send(res, 401, { error: 'Not logged in' });
     if (s && s.mustChangePassword && r.scope !== 'public' && !(r.method === 'PUT' && url.pathname === '/api/me/password')) {
@@ -1960,7 +2007,8 @@ const server = http.createServer(async (req, res) => {
         : await gateFor(s!, params.phone);
       out = g && r.scope === 'gate-admin' && g.role !== 'admin'
         ? [403, { error: ADMIN_ONLY }]
-        : await r.handler({ s, g, params, body, req, res });
+        : r.stepUp && !s!.apiKey && !strongUntil(s!) ? await stepUpRefusal(s!)
+          : await r.handler({ s, g, params, body, req, res });
     } catch (e) {
       const err = e as Error & { status?: number };
       out = [err.status || 400, { error: err.message }];

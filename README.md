@@ -85,21 +85,31 @@ Sign in (local account, passkey or SSO) ──> Your gates (admin / read only) �
 5. **Sessions.** A random token in the `sid` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS); the database keeps
    only its SHA-256 hash (table `sessions`), so sessions survive a restart. They end after **30 minutes idle**, on
    **Sign out**, or when the user changes their password (other sessions). The open gate is kept in the session.
-6. **First start.** While no account exists, the page offers to create the first one, which needs the one-time
+6. **Step-up** (`STEP_UP` in `web/server.ts`). Sensitive actions need a passkey confirmation in the session within
+   `security.stepUpMinutes` (180): Send to gate, scheduled transfers (add, change, run now), gate users (add,
+   invite, share, role, remove), API keys (create, revoke), the gate's DKS login and master code, deleting the gate's
+   data, and linking or unlinking single sign-on. Otherwise 403 `{ stepUp: true, hasPasskey }`; the page asks
+   **Confirm it's you** (`POST /api/me/step-up/options`, then `POST /api/me/step-up` with the browser's answer,
+   `confirmWithPasskey`: one of the signed-in user's own passkeys, one-use challenge kept apart from sign-in ones)
+   and retries the request. A passkey sign-in counts as a confirmation. Accounts without a passkey (password-only or
+   single sign-on only) can't do these actions until they add one. API keys aren't affected. The time is
+   `sessions.strong_at`. Single sign-on doesn't count yet: providers would have to report MFA (`amr`/`acr`/Entra
+   `acrs`) and `auth_time`.
+7. **First start.** While no account exists, the page offers to create the first one, which needs the one-time
    **setup code** the server prints in its console (journalctl) at start, or `node cli.ts create-admin <username>`.
    The first account becomes admin of every gate without an admin (gates moved over from DKS sign-in on 2026-11-13).
-7. **Gates** (`src/gate-list.ts`, table `managed_gates`). A gate is added once: phone, master code, its **DKS login**
+8. **Gates** (`src/gate-list.ts`, table `managed_gates`). A gate is added once: phone, master code, its **DKS login**
    and gate configuration. The server checks the DKS login (`CheckLogin`), then pulls residents with these values;
    only when that succeeds is the gate saved, with the adder as its admin (so nobody can claim a gate by typing its
    phone number). Adding a gate already managed here is refused: "ask one of its gate admins to add you". The DKS
    login and master code are encrypted and never sent back; every pull, send, relay call and scheduled transfer of
    the gate uses them. Admins change them under System Settings → Gate login (a new login is checked with DKS
    Cloud; a new master code by a residents pull, saved only when it succeeds).
-8. **Roles** (table `gate_access`). Per gate: **admin** (everything, including the gate's users and login) or
+9. **Roles** (table `gate_access`). Per gate: **admin** (everything, including the gate's users and login) or
    **read only** (view, pull, camera pictures and live view). Routes are scoped `gate` (any role) or `gate-admin`.
    Admins create accounts for their gate, share it with existing accounts, change roles and remove users; a gate
    always keeps at least one admin. **Leave** removes your own access.
-9. **API keys** (`src/api-keys.ts`, table `api_keys`). Scripts don't sign in: a gate admin creates a key under System
+10. **API keys** (`src/api-keys.ts`, table `api_keys`). Scripts don't sign in: a gate admin creates a key under System
    Settings → API keys (name, role, optional expiry of 30/90/365 days); it is shown once and stored as a SHA-256
    hash. A key belongs to its gate (it keeps working if its creator leaves) and is sent as
    `Authorization: Bearer <key>`. It reaches only that gate's routes, with its role; web-only routes (gate login,
@@ -429,6 +439,7 @@ against changes observed on the gate. The database tests use the `doorking_test`
 - Each gate's DKS login and master code are encrypted with AES-256-GCM in the database; the key is `doorking.key`,
   so anyone with the key and the database (or a dump of it) can decrypt them. They are never sent to the browser or
   logged. Pull/send logs mask credentials. The debug log (all gates) is open only to users who are admin of a gate.
+- Step-up: sensitive actions need a passkey confirmation within 3 hours (see Signing in, item 6).
 - Passkeys: WebAuthn with user verification required, origin and site name checked, one-use challenges, rising
   signature counter; adding one needs the current password (5 wrong tries pause it, like sign-in), unless the account has none.
 - Single sign-on: authorization code flow with PKCE, state and nonce, one-use attempts tied to the browser (10 minutes);

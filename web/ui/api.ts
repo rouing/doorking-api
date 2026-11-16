@@ -16,7 +16,15 @@ let signedOut = () => {};
 // user must choose a new password first: either way the page reloads the session.
 export function onSignedOut(fn: () => void) { signedOut = fn; }
 
-export async function api<T = unknown>(method: string, url: string, body?: unknown): Promise<T> {
+let stepUp: (reply: Record<string, unknown>) => Promise<boolean> = async () => false;
+let stepping: Promise<boolean> | null = null;
+// Called when a sensitive action comes back 403 { stepUp: true } (a passkey confirmation is needed); resolves true
+// once the user has confirmed, and the request is then sent once more. Requests waiting at the same time share it.
+export function onStepUp(fn: (reply: Record<string, unknown>) => Promise<boolean>) { stepUp = fn; }
+
+export function api<T = unknown>(method: string, url: string, body?: unknown): Promise<T> { return call<T>(method, url, body, false); }
+
+async function call<T>(method: string, url: string, body: unknown, retried: boolean): Promise<T> {
   const res = await fetch(url, {
     method,
     // The server rejects any POST/PUT without a JSON content-type (415), so set it for every non-GET.
@@ -25,6 +33,10 @@ export async function api<T = unknown>(method: string, url: string, body?: unkno
   });
   const json = await res.json().catch(() => ({})) as Record<string, unknown>;
   if ((res.status === 401 && !(method === 'POST' && url === '/api/session')) || (res.status === 403 && json.mustChangePassword)) signedOut();
+  if (res.status === 403 && json.stepUp && !retried) {
+    stepping ||= stepUp(json).finally(() => { stepping = null; });
+    if (await stepping) return call<T>(method, url, body, true);
+  }
   if (!res.ok) throw new ApiError(typeof json.error === 'string' ? json.error : `HTTP ${res.status}`, res.status, json);
   return json as T;
 }

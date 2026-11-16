@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { Badge, Button, Callout, Card, Checkbox, Container, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes';
-import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser';
+import { AlertDialog, Badge, Button, Callout, Card, Checkbox, Container, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes';
+import { browserSupportsWebAuthn, startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import type { PasskeyInfo, SessionReply, SsoIdentityInfo, SsoProviderInfo } from '../../src/types.ts';
-import { api, errorText } from './api.ts';
+import { api, errorText, onStepUp } from './api.ts';
 import { useConfirm } from './Confirm.tsx';
 import { fmtIntlPhone, fmtTime } from './format.ts';
 
@@ -27,9 +27,48 @@ export async function startSso(path: string, body: Record<string, unknown>): Pro
   window.location.assign(url);
 }
 
+// The "Confirm it's you" dialog for sensitive actions (a 403 { stepUp } reply, see api.ts onStepUp): confirms with
+// one of the user's passkeys, then the action is retried. Without a passkey it says to add one. Render once.
+export function StepUpDialog() {
+  const [ask, setAsk] = useState<{ hasPasskey: boolean; resolve: (ok: boolean) => void } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [info, setInfo] = useState('');
+  useEffect(() => {
+    onStepUp((reply) => new Promise<boolean>((resolve) => { setInfo(''); setAsk({ hasPasskey: reply.hasPasskey === true, resolve }); }));
+    return () => onStepUp(async () => false);
+  }, []);
+  const close = (ok: boolean) => { ask?.resolve(ok); setAsk(null); setBusy(false); };
+  async function confirmIt() {
+    setBusy(true);
+    setInfo('Follow your browser\'s prompt…');
+    try {
+      const optionsJSON = await api<Parameters<typeof startAuthentication>[0]['optionsJSON']>('POST', '/api/me/step-up/options', {});
+      await api('POST', '/api/me/step-up', { response: await startAuthentication({ optionsJSON }) });
+      close(true);
+    } catch (e) { setInfo(passkeyError(e)); setBusy(false); }
+  }
+  return (
+    <AlertDialog.Root open={ask !== null} onOpenChange={(open) => { if (!open) close(false); }}>
+      <AlertDialog.Content maxWidth="480px" aria-describedby={undefined}>
+        <AlertDialog.Title>{ask?.hasPasskey ? 'Confirm it\'s you' : 'A passkey is needed'}</AlertDialog.Title>
+        <Text as="p" size="2">
+          {ask?.hasPasskey
+            ? 'Changes like this one need a quick confirmation with your passkey (fingerprint, face or device PIN). It covers your next changes for a few hours.'
+            : 'Changes like this one need a passkey. Add one in User Settings, under Passkeys, then try again.'}
+        </Text>
+        {info && <Text as="p" size="2" color="gray" mt="2">{info}</Text>}
+        <Flex gap="3" mt="4" justify="end">
+          <Button variant="soft" color="gray" onClick={() => close(false)}>{ask?.hasPasskey ? 'Cancel' : 'Close'}</Button>
+          {ask?.hasPasskey && <Button loading={busy} onClick={confirmIt} disabled={!browserSupportsWebAuthn()}>Confirm with passkey</Button>}
+        </Flex>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
+  );
+}
+
 // The user's passkeys: add (after confirming the password, when the account has one), rename, remove. Passkeys work on the
 // site name they were made on: the public HTTPS name, or localhost on the server.
-function Passkeys({ askPassword }: { askPassword: boolean }) {
+function Passkeys({ askPassword, stepUpMinutes }: { askPassword: boolean; stepUpMinutes: number }) {
   const [list, setList] = useState<PasskeyInfo[]>([]);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -70,6 +109,10 @@ function Passkeys({ askPassword }: { askPassword: boolean }) {
         <Text size="2" color="gray">
           Sign in with your fingerprint, face or device PIN instead of typing your password. Your other ways to sign in keep working too. A
           passkey works on the address it was added on ({window.location.host}).
+        </Text>
+        <Text size="2" color="gray">
+          Sending changes to a gate, scheduled transfers, gate users, API keys, the gate's DKS login and linking a sign-in need a passkey: you
+          confirm with it, and that covers your changes for {stepUpMinutes % 60 ? `${stepUpMinutes} minutes` : `${stepUpMinutes / 60} hours`}.
         </Text>
         {list.length > 0 && (
           <Table.Root size="1">
@@ -454,7 +497,7 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
         </Flex>
       </Card>
       <SingleSignOn session={session} />
-      <Passkeys askPassword={session.hasPassword} />
+      <Passkeys askPassword={session.hasPassword} stepUpMinutes={session.stepUpMinutes} />
       <Card>
         <Flex direction="column" gap="3">
           <Heading size="3">Password</Heading>

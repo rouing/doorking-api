@@ -130,6 +130,7 @@ Relative paths are relative to the folder `config.json` is in. Unknown names and
 | `database.testName` | `doorking_test` | database the tests use (same login) |
 | `dks.url` | `https://dksdb.dksoftware.com/DkWebService.asmx` | DKS Cloud address |
 | `security.sessionIdleMinutes` | `30` | sign-out after this long without activity |
+| `security.stepUpMinutes` | `180` | how long a passkey confirmation covers the sensitive changes (Send to gate, gate users, API keys, …); accounts without a passkey can't make them |
 | `security.maxFailedSignIns`, `.signInWindowMinutes` | `5`, `15` | after this many failed sign-ins within the window, that user name is refused for the rest of it |
 | `schedules.checkSeconds` | `30` | how often scheduled transfers are checked |
 | `cameras.ffmpeg` | `""` | the ffmpeg program: a path (relative to `config.json`'s folder, e.g. `tools/bin/ffmpeg-linux-x64`), or a name looked up on the PATH (`ffmpeg`); empty = the copy in `tools/bin` if there is one, else `ffmpeg` on the PATH |

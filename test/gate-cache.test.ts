@@ -1006,6 +1006,34 @@ test('passkeys: added with a real WebAuthn answer, sign in, one-use challenges, 
   await assert.rejects(async () => dk.signInWithPasskey(store, key.signIn(await dk.authenticationOptions(RP), 30), RP), /not registered here/);
 }));
 
+test('step-up: passkey confirmation of the signed-in user only; sessions remember when they were confirmed', withStore(async (store) => {
+  const RP = { rpID: 'gate.example.com', origin: 'https://gate.example.com' };
+  await dk.createUser(store, { username: 'ann', ['pass' + 'word']: PW, createdBy: 't', mustChangePassword: false });
+  await dk.createUser(store, { username: 'bob', ['pass' + 'word']: PW, createdBy: 't', mustChangePassword: false });
+  await assert.rejects(() => dk.confirmationOptions(store, 'ann', RP), (e) => e.status === 409 && /no passkey for gate.example.com/.test(e.message));
+  const annKey = softAuthenticator();
+  const bobKey = softAuthenticator();
+  await dk.addPasskey(store, 'ann', annKey.register(await dk.registrationOptions(store, 'ann', RP)), 'Phone', RP);
+  await dk.addPasskey(store, 'bob', bobKey.register(await dk.registrationOptions(store, 'bob', RP)), 'Key', RP);
+  const c1 = await dk.confirmationOptions(store, 'ann', RP);
+  assert.deepStrictEqual([c1.allowCredentials.map((c) => c.id), c1.userVerification], [[annKey.id], 'required']);
+  await dk.confirmWithPasskey(store, 'ann', annKey.signIn(c1, 1), RP);
+  await assert.rejects(() => dk.confirmWithPasskey(store, 'ann', annKey.signIn(c1, 2), RP), (e) => e.status === 401); // challenge used once
+  // Another account's passkey, a sign-in challenge, or another user's confirmation challenge don't count.
+  await assert.rejects(async () => dk.confirmWithPasskey(store, 'ann', bobKey.signIn(await dk.confirmationOptions(store, 'ann', RP), 1), RP), /belongs to another account/);
+  await assert.rejects(async () => dk.confirmWithPasskey(store, 'ann', annKey.signIn(await dk.authenticationOptions(RP), 3), RP), (e) => e.status === 401);
+  await assert.rejects(async () => dk.confirmWithPasskey(store, 'bob', bobKey.signIn(await dk.confirmationOptions(store, 'ann', RP), 2), RP), (e) => e.status === 401);
+  // ... and a confirmation challenge can't sign anyone in.
+  await assert.rejects(async () => dk.signInWithPasskey(store, annKey.signIn(await dk.confirmationOptions(store, 'ann', RP), 4), RP), (e) => e.status === 401);
+  // Sessions: a passkey sign-in is confirmed from the start; a password session once marked.
+  const strong = await dk.findSession(store, await dk.createSession(store, 'ann', { strong: true }), 60000);
+  assert.ok(Math.abs(strong.strongAt - Date.now()) < 5000);
+  const tok = await dk.createSession(store, 'bob');
+  assert.strictEqual((await dk.findSession(store, tok, 60000)).strongAt, null);
+  const at = await dk.markSessionStrong(store, (await dk.findSession(store, tok, 60000)).tokenHash, 1_800_000_000_000);
+  assert.strictEqual((await dk.findSession(store, tok, 60000)).strongAt, at);
+}));
+
 test('docs/openapi.json matches the routes an API key can use (paths, methods, roles) and its references resolve', () => {
   const root = path.join(import.meta.dirname, '..');
   const src = fs.readFileSync(path.join(root, 'web', 'server.ts'), 'utf8');

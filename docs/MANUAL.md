@@ -134,6 +134,14 @@ number, or `+` and the country code for other countries; it's saved in internati
   you also use a different address.
 - **Rename** or **Remove** a passkey any time. If you lose a device, remove its passkey here (sign in with your password).
 
+**Confirming with your passkey.** Some changes need a passkey, as an extra check that it's really you:
+**Send to gate**, scheduled transfers (adding, changing or running one now), gate users (adding, inviting, sharing,
+changing a role, removing), API keys, the gate's DKS login and master code, deleting the gate's data, and linking or
+unlinking a work account. The first time you do one, the app asks **Confirm it's you**: click **Confirm with
+passkey** and use your fingerprint, face or PIN, and the change goes ahead. That covers your changes for **3 hours**.
+If you signed in with your passkey, you're already covered for 3 hours from then. Without a passkey on your account
+these changes are refused until you add one (above).
+
 ## 4. How changes reach the gate
 
 The app keeps two versions of each gate's information on this computer:
@@ -410,6 +418,7 @@ same ones as in the DMSS or SmartPSS app), and the camera channels to use. Click
 | "Choose a new password first" | Your password was set by someone else; choose your own on the page shown. |
 | "The passkey request was cancelled or timed out" | Try again and complete the fingerprint, face or PIN prompt. |
 | "Passkey sign-in failed: this passkey is not registered here" | It was removed, or added on a different address. Sign in with your password. |
+| "This needs a passkey" | Add a passkey in **User Settings → Passkeys**, then try the change again. |
 | "Passkeys work only at …" | Open the app at the address shown (passkeys need the site's proper name). |
 | "There is no account for … here" after signing in with Microsoft/Google | Your work account isn't linked yet. Ask a gate admin to invite you, then use **Accept with …** in the invitation email. |
 | "… can't sign in here: only accounts from … can" | Use your work account from the domain shown (not a personal one). |

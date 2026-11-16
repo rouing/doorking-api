@@ -106,6 +106,7 @@ Primary key (`provider`, `subject`): an identity belongs to one account; an acco
 | `username` | TEXT | references `users` (deleted with it) |
 | `created_at`, `last_seen` | TIMESTAMPTZ | `last_seen` is written at most once a minute; idle sessions are deleted |
 | `gate` | TEXT, null | the gate the page has open |
+| `strong_at` | TIMESTAMPTZ, null | the last passkey confirmation (passkey sign-in or step-up); the sensitive actions need one within `security.stepUpMinutes` |
 
 ### `email_tokens`: one-use links in emails (`src/email.ts`)
 

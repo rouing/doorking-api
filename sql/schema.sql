@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT 
   last_sign_in TIMESTAMPTZ, sign_ins INTEGER NOT NULL, webauthn_id TEXT, pending_email TEXT, phone TEXT,
   notify_access BOOLEAN NOT NULL DEFAULT true, notify_alerts BOOLEAN NOT NULL DEFAULT true);
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
-  created_at TIMESTAMPTZ NOT NULL, last_seen TIMESTAMPTZ NOT NULL, gate TEXT);
+  created_at TIMESTAMPTZ NOT NULL, last_seen TIMESTAMPTZ NOT NULL, gate TEXT, strong_at TIMESTAMPTZ);
 CREATE INDEX IF NOT EXISTS sessions_username ON sessions (username);
 CREATE TABLE IF NOT EXISTS managed_gates (phone TEXT PRIMARY KEY, master_code TEXT NOT NULL, dks_user TEXT NOT NULL,
   dks_password TEXT NOT NULL, added_by TEXT NOT NULL, added_at TIMESTAMPTZ NOT NULL);
@@ -103,3 +103,4 @@ ALTER TABLE gate_working ADD COLUMN IF NOT EXISTS sizes JSONB;
 ALTER TABLE gate_working ADD COLUMN IF NOT EXISTS conflicts JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE gate_state ADD COLUMN IF NOT EXISTS rebuild_ok BOOLEAN;
 ALTER TABLE gate_state ADD COLUMN IF NOT EXISTS rebuild_problems JSONB;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS strong_at TIMESTAMPTZ;

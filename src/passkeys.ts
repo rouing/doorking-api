@@ -30,19 +30,20 @@ const fromRow = (r: PasskeyRow): PasskeyInfo => ({
   id: r.id, name: r.name, site: r.rp_id, synced: r.device_type === 'multiDevice' && r.backed_up, createdAt: r.created_at, lastUsedAt: r.last_used_at,
 });
 
-// challenge -> { expires, username (registration), rpID }
-const challenges = new Map<string, { expires: number; username: string | null; rpID: string }>();
-function remember(challenge: string, username: string | null, rpID: string): void {
+// challenge -> { expires, purpose, username (registration, confirmation; null for sign-in), rpID }
+type Purpose = 'register' | 'signin' | 'confirm';
+const challenges = new Map<string, { expires: number; purpose: Purpose; username: string | null; rpID: string }>();
+function remember(challenge: string, purpose: Purpose, username: string | null, rpID: string): void {
   const now = Date.now();
   for (const [c, v] of challenges) if (v.expires < now) challenges.delete(c);
   while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value!);
-  challenges.set(challenge, { expires: now + CHALLENGE_MS, username, rpID });
+  challenges.set(challenge, { expires: now + CHALLENGE_MS, purpose, username, rpID });
 }
-// True (and forgets it) when the challenge was issued for this user (null: sign-in) and site, and hasn't expired.
-function takeChallenge(challenge: string, username: string | null, rpID: string): boolean {
+// True (and forgets it) when the challenge was issued for this purpose, user and site, and hasn't expired.
+function takeChallenge(challenge: string, purpose: Purpose, username: string | null, rpID: string): boolean {
   const c = challenges.get(challenge);
   challenges.delete(challenge);
-  return Boolean(c && c.expires >= Date.now() && c.username === username && c.rpID === rpID);
+  return Boolean(c && c.expires >= Date.now() && c.purpose === purpose && c.username === username && c.rpID === rpID);
 }
 
 // The user's WebAuthn user handle (random, so the username isn't stored on the authenticator), created when missing.
@@ -70,7 +71,7 @@ export async function registrationOptions(store: Store, username: unknown, rp: R
     excludeCredentials: existing.map((c) => ({ id: c.id, transports: c.transports || undefined })),
     authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
   });
-  remember(options.challenge, name, rp.rpID);
+  remember(options.challenge, 'register', name, rp.rpID);
   return options;
 }
 
@@ -82,7 +83,7 @@ export async function addPasskey(store: Store, username: unknown, response: unkn
   let v;
   try {
     v = await verifyRegistrationResponse({
-      response: response as RegistrationResponseJSON, expectedChallenge: (c) => takeChallenge(c, name, rp.rpID),
+      response: response as RegistrationResponseJSON, expectedChallenge: (c) => takeChallenge(c, 'register', name, rp.rpID),
       expectedOrigin: rp.origin, expectedRPID: rp.rpID, requireUserVerification: true,
     });
   } catch (e) { throw bad(`The passkey could not be added: ${(e as Error).message}`); }
@@ -99,22 +100,36 @@ export async function addPasskey(store: Store, username: unknown, response: unkn
 // Options for signing in with any passkey made for this site (discoverable passkeys: no username needed).
 export async function authenticationOptions(rp: RelyingParty) {
   const options = await generateAuthenticationOptions({ rpID: rp.rpID, userVerification: 'required' });
-  remember(options.challenge, null, rp.rpID);
+  remember(options.challenge, 'signin', null, rp.rpID);
   return options;
 }
 
-// Checks a passkey sign-in; returns the username. Throws 401 on anything wrong (unknown passkey, bad signature,
-// expired challenge, counter gone backwards: a possible copy of the key).
-export async function signInWithPasskey(store: Store, response: unknown, rp: RelyingParty): Promise<string> {
+// Options for the signed-in user to confirm it's them with one of their passkeys for this site (step-up). 409 when
+// they have none here.
+export async function confirmationOptions(store: Store, username: unknown, rp: RelyingParty) {
+  const name = userKey(username);
+  const mine = await all<{ id: string; transports: string[] | null }>(store, 'SELECT id, transports FROM passkeys WHERE username = $1 AND rp_id = $2',
+    [name, rp.rpID]);
+  if (!mine.length) throw bad(`You have no passkey for ${rp.rpID}. Add one in User Settings.`, 409);
+  const options = await generateAuthenticationOptions({ rpID: rp.rpID, userVerification: 'required',
+    allowCredentials: mine.map((c) => ({ id: c.id, transports: (c.transports || undefined) as never })) });
+  remember(options.challenge, 'confirm', name, rp.rpID);
+  return options;
+}
+
+// Checks a passkey answer to authenticationOptions; returns the passkey's username. Throws 401 on anything wrong
+// (unknown passkey, bad signature, expired challenge, counter gone backwards: a possible copy of the key).
+async function checkPasskey(store: Store, response: unknown, rp: RelyingParty, username: string | null, refused: (why: string) => Error): Promise<string> {
   const res = response as AuthenticationResponseJSON;
-  const refused = (why: string) => bad(`Passkey sign-in failed: ${why}`, 401);
   const row = res && typeof res.id === 'string'
     ? await one<PasskeyRow>(store, 'SELECT * FROM passkeys WHERE id = $1 AND rp_id = $2', [res.id, rp.rpID]) : undefined;
   if (!row) throw refused('this passkey is not registered here (it may have been removed)');
+  if (username !== null && row.username !== username) throw refused('this passkey belongs to another account');
   let v;
   try {
     v = await verifyAuthenticationResponse({
-      response: res, expectedChallenge: (c) => takeChallenge(c, null, rp.rpID), expectedOrigin: rp.origin, expectedRPID: rp.rpID,
+      response: res, expectedChallenge: (c) => takeChallenge(c, username === null ? 'signin' : 'confirm', username, rp.rpID),
+      expectedOrigin: rp.origin, expectedRPID: rp.rpID,
       credential: { id: row.id, publicKey: new Uint8Array(row.public_key), counter: Number(row.counter), transports: row.transports || undefined },
       requireUserVerification: true,
     });
@@ -123,6 +138,16 @@ export async function signInWithPasskey(store: Store, response: unknown, rp: Rel
   await run(store, 'UPDATE passkeys SET counter = $2, last_used_at = $3, backed_up = $4 WHERE id = $1',
     [row.id, v.authenticationInfo.newCounter, new Date().toISOString(), v.authenticationInfo.credentialBackedUp]);
   return row.username;
+}
+
+// Checks a passkey sign-in; returns the username.
+export function signInWithPasskey(store: Store, response: unknown, rp: RelyingParty): Promise<string> {
+  return checkPasskey(store, response, rp, null, (why) => bad(`Passkey sign-in failed: ${why}`, 401));
+}
+
+// Checks that the signed-in user confirmed with one of their own passkeys (step-up; see authenticationOptions).
+export async function confirmWithPasskey(store: Store, username: unknown, response: unknown, rp: RelyingParty): Promise<void> {
+  await checkPasskey(store, response, rp, userKey(username), (why) => bad(`The passkey confirmation failed: ${why}`, 401));
 }
 
 export async function renamePasskey(store: Store, username: unknown, id: unknown, label: unknown): Promise<void> {

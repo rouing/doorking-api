@@ -23,7 +23,8 @@
   "security": {
     "sessionIdleMinutes": 30,
     "maxFailedSignIns": 5,
-    "signInWindowMinutes": 15
+    "signInWindowMinutes": 15,
+    "stepUpMinutes": 180
   },
   "schedules": {
     "checkSeconds": 30

@@ -29,7 +29,8 @@ export interface ServerConfig {
   paths: { media: string; logs: string; keyFile: string }; // absolute
   database: DatabaseConfig;
   dks: { url: string };
-  security: { sessionIdleMinutes: number; maxFailedSignIns: number; signInWindowMinutes: number };
+  // stepUpMinutes: how long a passkey confirmation covers the sensitive actions (see STEP_UP in server.ts).
+  security: { sessionIdleMinutes: number; maxFailedSignIns: number; signInWindowMinutes: number; stepUpMinutes: number };
   schedules: { checkSeconds: number };
   cameras: { ffmpeg: string; tidyMinutes: number }; // ffmpeg: '' = tools/bin, else ffmpeg on the PATH; a path is absolute
   // SMTP for account emails and gate alerts; host '' = email off. security: 'starttls' (port 587), 'tls' (465) or
@@ -47,7 +48,7 @@ const DEFAULTS = {
   paths: { media: 'media', logs: 'logs', keyFile: 'doorking.key' },
   database: { url: '', host: '127.0.0.1', port: 5432, name: 'doorking', user: 'doorking', password: '', poolSize: 5, testName: 'doorking_test' },
   dks: { url: DEFAULT_URL },
-  security: { sessionIdleMinutes: 30, maxFailedSignIns: 5, signInWindowMinutes: 15 },
+  security: { sessionIdleMinutes: 30, maxFailedSignIns: 5, signInWindowMinutes: 15, stepUpMinutes: 180 },
   schedules: { checkSeconds: 30 },
   cameras: { ffmpeg: '', tidyMinutes: 60 },
   email: { host: '', port: 587, security: 'starttls', user: '', password: '', from: '', appUrl: '' },
@@ -58,7 +59,7 @@ type Section = keyof typeof DEFAULTS;
 // Whole numbers and their allowed range; every other setting is text.
 const RANGES: Record<string, [number, number]> = {
   'server.port': [1, 65535], 'database.port': [1, 65535], 'database.poolSize': [1, 100],
-  'security.sessionIdleMinutes': [1, 1440], 'security.maxFailedSignIns': [1, 100], 'security.signInWindowMinutes': [1, 1440],
+  'security.sessionIdleMinutes': [1, 1440], 'security.maxFailedSignIns': [1, 100], 'security.signInWindowMinutes': [1, 1440], 'security.stepUpMinutes': [5, 1440],
   'schedules.checkSeconds': [5, 3600], 'cameras.tidyMinutes': [5, 1440], 'email.port': [1, 65535],
 };
 

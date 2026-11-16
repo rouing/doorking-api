@@ -267,30 +267,38 @@ export async function updateUserSettings(store: Store, username: unknown, { emai
   return u;
 }
 
-export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number }
+// strongAt: when the session was last confirmed with a passkey (sign-in or confirmation), ms; null never.
+export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number; strongAt: number | null }
 
 const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 
-// A new session; returns the token for the cookie (only its hash is stored).
-export async function createSession(store: Store, username: string): Promise<string> {
+// A new session; returns the token for the cookie (only its hash is stored). strong: signed in with a passkey.
+export async function createSession(store: Store, username: string, { strong = false } = {}): Promise<string> {
   const token = crypto.randomBytes(32).toString('hex');
   const now = new Date().toISOString();
-  await run(store, 'INSERT INTO sessions (token_hash, username, created_at, last_seen) VALUES ($1, $2, $3, $3)', [tokenHash(token), userKey(username), now]);
+  await run(store, 'INSERT INTO sessions (token_hash, username, created_at, last_seen, strong_at) VALUES ($1, $2, $3, $3, $4)',
+    [tokenHash(token), userKey(username), now, strong ? now : null]);
   return token;
+}
+
+// Records a passkey confirmation on the session (see SessionInfo.strongAt); returns its time (ms).
+export async function markSessionStrong(store: Store, tokenHashValue: string, now = Date.now()): Promise<number> {
+  await run(store, 'UPDATE sessions SET strong_at = $2 WHERE token_hash = $1', [tokenHashValue, new Date(now).toISOString()]);
+  return now;
 }
 
 // The session for a cookie token, or null when unknown or idle longer than idleMs (it is then deleted).
 // last_seen is written at most once a minute.
 export async function findSession(store: Store, token: string, idleMs: number): Promise<SessionInfo | null> {
   const h = tokenHash(token);
-  const r = await one<{ username: string; gate: string | null; last_seen: string }>(store,
-    'SELECT username, gate, last_seen FROM sessions WHERE token_hash = $1', [h]);
+  const r = await one<{ username: string; gate: string | null; last_seen: string; strong_at: string | null }>(store,
+    'SELECT username, gate, last_seen, strong_at FROM sessions WHERE token_hash = $1', [h]);
   if (!r) return null;
   const seen = new Date(r.last_seen).getTime();
   const now = Date.now();
   if (now - seen > idleMs) { await run(store, 'DELETE FROM sessions WHERE token_hash = $1', [h]); return null; }
   if (now - seen > 60000) await run(store, 'UPDATE sessions SET last_seen = $2 WHERE token_hash = $1', [h, new Date(now).toISOString()]);
-  return { tokenHash: h, username: r.username, gate: r.gate, lastSeen: now };
+  return { tokenHash: h, username: r.username, gate: r.gate, lastSeen: now, strongAt: r.strong_at ? new Date(r.strong_at).getTime() : null };
 }
 
 export async function deleteSession(store: Store, tokenHashValue: string): Promise<void> {
