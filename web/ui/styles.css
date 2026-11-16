@@ -85,7 +85,7 @@ img.snap-thumb { height: 36px; border-radius: 3px; cursor: pointer; }
 }
 .snap-figure { margin: 0; font-size: 12px; color: var(--gray-11); }
 .snap-figure img { display: block; max-width: min(640px, 90vw); border-radius: 4px; }
-video.snap-video { display: block; width: min(640px, 90vw); aspect-ratio: 16 / 9; background: #000; border-radius: 4px; }
+video.snap-video { display: block; width: min(1280px, 90vw); max-height: 80vh; aspect-ratio: 16 / 9; background: #000; border-radius: 4px; }
 
 /* Live camera window */
 .live-body {

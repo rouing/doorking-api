@@ -84,7 +84,7 @@ export function SnapViewer({ t, snaps, onClose }: { t: TransactionRow | null; sn
   if (s) for (const f of snapFiles(snaps.settings, s)) byChannel.set(fileChannel(f), [...(byChannel.get(fileChannel(f)) || []), f]);
   return (
     <Dialog.Root open={Boolean(t && s)} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <Dialog.Content maxWidth="96vw" aria-describedby={undefined}>
+      <Dialog.Content width="fit-content" maxWidth="96vw" aria-describedby={undefined}>
         <Flex align="center" mb="3">
           <Dialog.Title mb="0">{t && `${t.date} ${t.time} · ${t.name || t.eventType || ''}`}</Dialog.Title>
           <Flex flexGrow="1" />
@@ -92,7 +92,7 @@ export function SnapViewer({ t, snaps, onClose }: { t: TransactionRow | null; sn
         </Flex>
         <Flex direction="column" gap="3" className="snap-viewer">
           {t && [...byChannel].sort((a, b) => a[0] - b[0]).map(([ch, files]) => (
-            <Flex key={ch} gap="2" wrap="wrap" align="start">
+            <Flex key={ch} gap="2" wrap="wrap" align="start" justify="center">
               {files.map((f) => (
                 <figure key={f} className="snap-figure">
                   <SnapTile t={t} f={f} thumb={false} snaps={snaps} />
