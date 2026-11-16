@@ -25,6 +25,9 @@ const NAMES_MIDDLE_POINTER_OFFSET = 0xf8; // 3-byte BE offset of the middle show
 export const NAMES_MODE_DELTA = NAMES_LAYOUTS[255].directoryOffset - NAMES_LAYOUTS[10].directoryOffset; // 0x380
 const PHONE_SIZE = 10;
 const CARD_SIZE = 4;
+// Cards (device numbers) one directory code may hold: DoorKing32 refuses more ("You can only add up to 25 additional
+// device numbers"; its export has 25 device columns).
+export const MAX_CARDS_PER_ENTRY = 25;
 
 const err = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 const digits = (s: unknown): string => String(s == null ? '' : s).replace(/\D/g, '');
@@ -210,7 +213,8 @@ function holderLabel(names: Buffer | undefined, code: string | null): string {
 }
 
 // desired = array of card-number strings. Adds missing ones to free (all-0xFF) slots, clears removed ones.
-// A card number already held by another directory code is refused (409).
+// A card number already held by another directory code is refused (409); more than MAX_CARDS_PER_ENTRY cards too,
+// unless the entry already had that many (only removing is then allowed to stay above it).
 export function applyCards(cards: Buffer, code: string, desired: unknown[] | null | undefined, names?: Buffer): void {
   const want = new Set((desired || []).map((c) => digits(c)).filter(Boolean));
   const have = new Set<string>();
@@ -223,6 +227,9 @@ export function applyCards(cards: Buffer, code: string, desired: unknown[] | nul
     const num = String(rec.readUInt16BE(0));
     if (want.has(num) || want.has(num.padStart(5, '0'))) have.add(num);
     else { cards.fill(0xff, o, o + CARD_SIZE); free.push(o); } // remove
+  }
+  if (want.size > MAX_CARDS_PER_ENTRY && [...want].some((c) => !have.has(String(Number(c))))) {
+    throw err(`A directory code can have at most ${MAX_CARDS_PER_ENTRY} cards (${want.size} given)`);
   }
   for (const c of want) {
     const num = Number(c);

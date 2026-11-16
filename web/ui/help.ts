@@ -50,7 +50,7 @@ export const HELP: Record<string, string> = {
   floor: 'The floor this resident lives on (1–64). Used for elevator control: their visitor can only go to this floor.',
   elevatorRef: 'Picks a row (1–8) on the Elevator Reference page: which elevators this resident\'s visitors may use, and for how long.',
   hidden: 'Set automatically when saved: a resident with a phone number is shown in the directory list on the entry panel\'s screen; without one they are hidden, as the panel has nothing to dial.',
-  cards: 'Card or remote numbers (00001–65407) that open the gate for this person. Two entries can\'t share one.',
+  cards: 'Card or remote numbers (00001–65407) that open the gate for this person, up to 25. Two entries can\'t share one.',
   notes: 'Your own notes about this person. Kept on this computer for everyone who manages this gate here. Never sent to the gate.',
 
   // Gate settings pages

@@ -62,7 +62,11 @@ export function CardList({ cards, devices, dups }: { cards: string[]; devices: D
   );
 }
 
-// Device (card) list with remove buttons and an add box (device codes 00001-65407; leading zeros dropped, no duplicates).
+// The gate's limit per directory code (MAX_CARDS_PER_ENTRY in src/residents-edit.ts).
+const MAX_CARDS = 25;
+
+// Device (card) list with remove buttons and an add box (device codes 00001-65407; leading zeros dropped, no duplicates,
+// at most MAX_CARDS).
 export function CardsEditor({ cards, devices, onChange }: { cards: string[]; devices: DeviceRange[]; onChange: (c: string[]) => void }) {
   const [add, setAdd] = useState('');
   const [error, setError] = useState('');
@@ -70,7 +74,9 @@ export function CardsEditor({ cards, devices, onChange }: { cards: string[]; dev
     const n = add.replace(/\D/g, '');
     if (!n) return;
     if (Number(n) < 1 || Number(n) > 65407) { setError('Device codes are 00001-65407'); return; }
-    if (!cards.includes(String(Number(n)))) onChange([...cards, String(Number(n))]);
+    if (cards.includes(String(Number(n)))) { setAdd(''); return; }
+    if (cards.length >= MAX_CARDS) { setError(`At most ${MAX_CARDS} cards per directory code`); return; }
+    onChange([...cards, String(Number(n))]);
     setAdd('');
     setError('');
   };
@@ -93,7 +99,8 @@ export function CardsEditor({ cards, devices, onChange }: { cards: string[]; dev
       <Flex gap="2" align="center">
         <TextField.Root inputMode="numeric" placeholder="Card number" maxLength={5} value={add}
           onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addNow(); } }} />
-        <Button variant="soft" color="gray" onClick={addNow}>Add device</Button>
+        <Button variant="soft" color="gray" onClick={addNow} disabled={cards.length >= MAX_CARDS}>Add device</Button>
+        <Text size="1" color="gray">{cards.length} of {MAX_CARDS}</Text>
         {error && <Text size="2" color="red">{error}</Text>}
       </Flex>
     </Flex>

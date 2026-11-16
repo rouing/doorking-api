@@ -153,6 +153,14 @@ test('addEntry refuses an occupied code (409) and a blank name', () => {
   assert.throws(() => addEntry(withVacant('101'), { directoryCode: '101', name: '  ' }), /name is required/);
 });
 
+test('a directory code holds at most 25 cards', () => {
+  const max = Array.from({ length: 25 }, (_, i) => String(1000 + i));
+  const full = applyResidentEdit(baseline(), { directoryCode: '701', cards: max });
+  assert.strictEqual(parsePhoneBin(full.phone).length, 1);
+  assert.throws(() => applyResidentEdit(full, { directoryCode: '701', cards: [...max, '2000'] }), /at most 25 cards \(26 given\)/);
+  assert.doesNotThrow(() => applyResidentEdit(full, { directoryCode: '701', cards: max.slice(1) }));
+});
+
 test('an entry code or card held by another directory code is refused (409)', () => {
   const b = applyResidentEdit(withVacant('101'), { directoryCode: '701', cards: ['504'] }); // 701 has entry code 4821
   assert.throws(() => addEntry(b, { directoryCode: '101', name: 'New, Person', entryCode: '4821' }),
