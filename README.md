@@ -69,6 +69,9 @@ Sign in (local account, passkey or SSO) ──> Your gates (admin / read only) �
    told to ask for an invitation. Invitations can be accepted with a provider; User Settings links and unlinks (the
    current P_W first; an account always keeps one way to sign in). Accounts created or accepted through SSO have no
    P_W (hash `!sso`); `passwords: false` turns P_W sign-in and resets off for accounts linked to that provider.
+   Session age: `maxAgeHours` refuses ID tokens whose `auth_time` is older (sent as `max_age`; Entra relies on its
+   Conditional Access sign-in frequency), and linking always needs a fresh sign-in (`max_age=0`, Entra `prompt=login`,
+   `auth_time` after the attempt started); a missing `auth_time` is refused in both cases.
    Entra must use a tenant issuer (`common`/`organizations`/`consumers` are refused). Linking or unlinking sends a
    security alert.
 4. **Email** (`src/email.ts`, nodemailer over SMTP; `config.json` → `email`; off without a host). Outbox table

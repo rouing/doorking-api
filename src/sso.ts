@@ -4,6 +4,11 @@
 // tied to the browser that started it (a cookie holds its binding); it uses state, nonce and PKCE, and openid-client
 // checks the ID token (issuer, audience, expiry, nonce).
 //
+// Session age: with maxAgeHours, the authentication at the provider (the ID token's auth_time) must be at most that
+// old; linking from User Settings always needs a fresh one (made after the attempt started). Providers are asked with
+// max_age; Entra with prompt=login for a fresh one (its max_age handling isn't dependable; its own limit is a
+// Conditional Access sign-in frequency). auth_time is checked here either way, and a missing one is refused.
+//
 // Which account an identity signs in to: the one it is linked to; else, only for providers with allowedDomains and a
 // trusted email from one of them (see trustedEmail), the invited account waiting on that email (the invitation is
 // accepted), else the account with that confirmed email (linked), else a new account when autoCreate is on. Anyone
@@ -24,6 +29,7 @@ export interface SsoIdentity { provider: string; providerName: string; subject: 
 export type SsoOutcome = 'signed-in' | 'linked' | 'created' | 'invite-accepted';
 
 const FLOW_MS = 10 * 60000;
+const SKEW_MS = 2 * 60000;
 const MAX_FLOWS = 500;
 const bad = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 
@@ -32,6 +38,7 @@ const flows = new Map<string, Flow>(); // by state
 const configs = new Map<string, Promise<oidc.Configuration>>();
 
 const isGoogle = (p: SsoProvider): boolean => new URL(p.issuer).hostname === 'accounts.google.com';
+const isEntra = (p: SsoProvider): boolean => new URL(p.issuer).hostname === 'login.microsoftonline.com';
 
 // The provider's OpenID configuration, discovered once (a failed discovery is tried again next time). Plain http is
 // allowed for localhost issuers only (config.ts refuses others).
@@ -49,9 +56,12 @@ function configOf(p: SsoProvider): Promise<oidc.Configuration> {
 }
 
 // Checks that the provider can be reached and returns its endpoints (for the CLI's sso-check).
-export async function discoverProvider(p: SsoProvider): Promise<{ issuer: string; authorization: string; token: string }> {
+// authTime: whether the discovery document lists auth_time among its claims (null when it lists none).
+export async function discoverProvider(p: SsoProvider): Promise<{ issuer: string; authorization: string; token: string; authTime: boolean | null }> {
   const m = (await configOf(p)).serverMetadata();
-  return { issuer: m.issuer, authorization: String(m.authorization_endpoint || ''), token: String(m.token_endpoint || '') };
+  const claims = Array.isArray(m.claims_supported) ? m.claims_supported : null;
+  return { issuer: m.issuer, authorization: String(m.authorization_endpoint || ''), token: String(m.token_endpoint || ''),
+    authTime: claims ? claims.includes('auth_time') : null };
 }
 
 // Starts a sign-in: returns the provider's URL to send the browser to, and the binding the browser must keep (a
@@ -71,6 +81,10 @@ export async function startSso(p: SsoProvider, { mode, redirectUri, username, in
     code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256',
   };
   if (isGoogle(p) && p.allowedDomains.length === 1) params.hd = p.allowedDomains[0];
+  if (mode === 'link') {
+    if (isEntra(p)) params.prompt = 'login';
+    else params.max_age = '0';
+  } else if (p.maxAgeHours && !isEntra(p)) params.max_age = String(p.maxAgeHours * 3600);
   flows.set(state, { provider: p.id, nonce, verifier, binding, redirectUri, mode, username, inviteToken, at: now });
   return { url: oidc.buildAuthorizationUrl(config, params).href, binding };
 }
@@ -93,6 +107,21 @@ export function claimsOf(c: Record<string, unknown>): SsoClaims {
   };
 }
 
+// Checks the session age (see the top): link needs an authentication made after the attempt started; otherwise
+// maxAgeHours, when set, bounds it. A small clock skew is allowed.
+function checkAuthTime(p: SsoProvider, authTime: unknown, f: Flow, now: number): void {
+  if (f.mode !== 'link' && !p.maxAgeHours) return;
+  if (typeof authTime !== 'number') {
+    throw bad(`${p.name} didn't say when you signed in (auth_time), which this server requires.${isEntra(p)
+      ? ' An administrator must add the auth_time optional claim to the ID token in the Entra app registration.' : ''}`);
+  }
+  const ms = authTime * 1000;
+  if (f.mode === 'link' && ms < f.at - SKEW_MS) throw bad(`Sign in to ${p.name} again to link it: linking needs a fresh sign-in. Try again.`);
+  if (f.mode !== 'link' && ms < now - p.maxAgeHours * 3600000 - SKEW_MS) {
+    throw bad(`Your ${p.name} sign-in is more than ${p.maxAgeHours} hours old. Sign out of ${p.name}, then sign in again.`);
+  }
+}
+
 // Finishes a sign-in from the provider's answer (query: the callback's query string; binding: from the browser's
 // cookie). The attempt must exist, be unexpired, belong to this provider and browser, and is used up either way; the
 // code is exchanged with the PKCE verifier and the ID token checked against the nonce.
@@ -110,6 +139,7 @@ export async function finishSso(p: SsoProvider, query: URLSearchParams, binding:
     { pkceCodeVerifier: f.verifier, expectedState: state, expectedNonce: f.nonce, idTokenExpected: true });
   const claims = tokens.claims();
   if (!claims || !claims.sub) throw bad(`${p.name} didn't say who you are`);
+  checkAuthTime(p, claims.auth_time, f, now);
   return { mode: f.mode, username: f.username, inviteToken: f.inviteToken, identity: claimsOf(claims as Record<string, unknown>) };
 }
 

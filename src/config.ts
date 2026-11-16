@@ -17,10 +17,11 @@ export interface DatabaseConfig {
 // (/api/sso/<id>/callback); name: on the "Sign in with …" button. allowedDomains: email domains whose accounts may be
 // matched by email, linked or created ([] = none matched by email: only invitations and linking from User Settings).
 // autoCreate: unknown people from allowedDomains get an account (no gate access). passwords: false = accounts linked
-// to this provider can't sign in with a password.
+// to this provider can't sign in with a password. maxAgeHours: refuse sign-ins whose authentication at the provider
+// (auth_time) is older than this (0 = no limit).
 export interface SsoProvider {
   id: string; name: string; issuer: string; clientId: string; clientSecret: string;
-  allowedDomains: string[]; autoCreate: boolean; passwords: boolean;
+  allowedDomains: string[]; autoCreate: boolean; passwords: boolean; maxAgeHours: number;
 }
 export interface ServerConfig {
   file: string | null; // the config file read, or null when there was none
@@ -83,7 +84,7 @@ function section(name: Section, given: unknown, where: string): Record<string, u
   return out;
 }
 
-const PROVIDER_KEYS = ['id', 'name', 'issuer', 'clientId', 'clientSecret', 'allowedDomains', 'autoCreate', 'passwords'];
+const PROVIDER_KEYS = ['id', 'name', 'issuer', 'clientId', 'clientSecret', 'allowedDomains', 'autoCreate', 'passwords', 'maxAgeHours'];
 const isObject = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 
 // Checks the sso section: { providers: [SsoProvider, …] }.
@@ -128,9 +129,13 @@ function ssoSection(given: unknown, where: string): { providers: SsoProvider[] }
       fail(`${where}: "${at}.allowedDomains" must be a list of domains such as ["example.com"]`);
     }
     const autoCreate = flag('autoCreate', false);
+    const maxAgeHours = p.maxAgeHours ?? 0;
+    if (!Number.isInteger(maxAgeHours) || (maxAgeHours as number) < 0 || (maxAgeHours as number) > 720) {
+      fail(`${where}: "${at}.maxAgeHours" must be a whole number of hours, 0-720 (0 = no limit)`);
+    }
     if (autoCreate && !(domains as string[]).length) fail(`${where}: "${at}.autoCreate" needs allowedDomains`);
     return { id, name: text('name'), issuer, clientId: text('clientId'), clientSecret: text('clientSecret', false),
-      allowedDomains: (domains as string[]).map((d) => d.toLowerCase()), autoCreate, passwords: flag('passwords', true) };
+      allowedDomains: (domains as string[]).map((d) => d.toLowerCase()), autoCreate, passwords: flag('passwords', true), maxAgeHours: maxAgeHours as number };
   }) };
 }
 

@@ -120,7 +120,8 @@ number, or `+` and the country code for other countries; it's saved in internati
 
 **Single sign-on** (when the server offers it) links your work account, so its button on the sign-in page signs you in:
 - **Link Microsoft** (or Google, …): type your current password first (if your account has one), then sign in at the
-  provider; you come back here with it linked. Your organization may only allow its own work accounts.
+  provider (it asks you to sign in again even if you already are); you come back here with it linked. Your
+  organization may only allow its own work accounts.
 - **Unlink** removes it. You can't unlink your only way to sign in: add a passkey or link another account first.
 - If your account was made through single sign-on, it has no password. To get one, use **Forgot your password?** on the
   sign-in page (it needs a confirmed email). Some organizations turn passwords off for work accounts: the Password card
@@ -412,6 +413,7 @@ same ones as in the DMSS or SmartPSS app), and the camera channels to use. Click
 | "Passkeys work only at …" | Open the app at the address shown (passkeys need the site's proper name). |
 | "There is no account for … here" after signing in with Microsoft/Google | Your work account isn't linked yet. Ask a gate admin to invite you, then use **Accept with …** in the invitation email. |
 | "… can't sign in here: only accounts from … can" | Use your work account from the domain shown (not a personal one). |
+| "Your … sign-in is more than … hours old" | Sign out of Google (or Microsoft), then click the sign-in button again. |
 | "This sign-in has expired or was already used" / "was started in another browser" | Click the sign-in button again and finish within 10 minutes in the same browser. |
 | "… password sign-in is turned off for it" | Use the work account button (for example **Sign in with Microsoft**) instead of your password. |
 | "Only a gate admin can do this" | Your access to this gate is read only. Ask a gate admin. |

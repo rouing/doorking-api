@@ -1698,7 +1698,7 @@ test('config: sso providers are checked; the client secret is masked', withDir(a
     clientId: 'app', clientSecret: 'shh', allowedDomains: ['Example.com'] };
   write({ sso: { providers: [one] } });
   const c = dk.loadConfig({ file, env: {}, args: [] });
-  assert.deepStrictEqual(c.sso.providers, [{ ...one, id: 'entra', allowedDomains: ['example.com'], autoCreate: false, passwords: true }]);
+  assert.deepStrictEqual(c.sso.providers, [{ ...one, id: 'entra', allowedDomains: ['example.com'], autoCreate: false, passwords: true, maxAgeHours: 0 }]);
   assert.strictEqual(dk.maskedConfig(c).sso.providers[0].clientSecret, '***');
   write({});
   assert.deepStrictEqual(dk.loadConfig({ file, env: {}, args: [] }).sso, { providers: [] });
@@ -1711,6 +1711,8 @@ test('config: sso providers are checked; the client secret is masked', withDir(a
   bad([{ ...one, passwords: 'no' }], /passwords" must be true or false/);
   bad([{ ...one, allowedDomains: 'example.com' }], /list of domains/);
   bad([{ ...one, tenant: 'x' }], /unknown setting "sso.providers\[0\].tenant"/);
+  bad([{ ...one, maxAgeHours: 1.5 }], /maxAgeHours" must be a whole number of hours, 0-720/);
+  bad([{ ...one, maxAgeHours: 721 }], /maxAgeHours" must be a whole number/);
   bad([{ ...one, clientId: '' }], /clientId" must be text \(required\)/);
   write({ sso: { list: [] } });
   assert.throws(() => dk.loadConfig({ file, env: {}, args: [] }), /unknown setting "sso.list"/);
@@ -1727,6 +1729,7 @@ test('single sign-on flow: state, browser binding, PKCE and nonce are checked ag
     assert.deepStrictEqual(['client_id', 'redirect_uri', 'scope', 'response_type', 'code_challenge_method', 'prompt'].map((k) => q.get(k)),
       ['app-id', redirectUri, 'openid email profile', 'code', 'S256', 'select_account']);
     assert.ok(q.get('state') && q.get('nonce') && q.get('code_challenge'));
+    assert.strictEqual(q.get('max_age'), null); // no session-age limit by default
     const answer = idp.authorize(start.url, { sub: 'u-1', email: 'Jane@Example.com', email_verified: true, name: 'Jane' });
     await assert.rejects(dk.finishSso(p, answer, 'another-browser'), (e) => e.status === 400 && /another browser/.test(e.message));
     await assert.rejects(dk.finishSso(p, answer, start.binding), /expired or was already used/); // the attempt is used up either way
@@ -1747,6 +1750,33 @@ test('single sign-on flow: state, browser binding, PKCE and nonce are checked ag
       const s5 = await dk.startSso(provider({ id: 'bare', issuer: bare.issuer }), { mode: 'signin', redirectUri });
       assert.strictEqual((await dk.finishSso(provider({ id: 'bare', issuer: bare.issuer }), bare.authorize(s5.url, { sub: 'b-1' }), s5.binding)).identity.subject, 'b-1');
     } finally { bare.close(); }
+  } finally { idp.close(); }
+});
+
+test('single sign-on session age: maxAgeHours bounds auth_time; linking needs a fresh sign-in', async () => {
+  const idp = await mockProvider();
+  try {
+    const p = provider({ issuer: idp.issuer, maxAgeHours: 12 });
+    const redirectUri = 'https://gate.example.com/api/sso/work/callback';
+    const now = Math.floor(Date.now() / 1000);
+    const attempt = async (claims, mode = 'signin') => {
+      const s = await dk.startSso(p, { mode, redirectUri, username: mode === 'link' ? 'jane' : undefined });
+      return [new URL(s.url).searchParams, dk.finishSso(p, idp.authorize(s.url, { sub: 'u-1', ...claims }), s.binding)];
+    };
+    const [q, ok] = await attempt({ auth_time: now - 11 * 3600 });
+    assert.strictEqual(q.get('max_age'), String(12 * 3600));
+    assert.strictEqual((await ok).identity.subject, 'u-1');
+    await assert.rejects((await attempt({ auth_time: now - 13 * 3600 }))[1], /more than 12 hours old/);
+    await assert.rejects((await attempt({}))[1], /didn't say when you signed in \(auth_time\)/);
+    // Linking asks for a fresh sign-in and refuses one made before the attempt.
+    const [lq, linked] = await attempt({ auth_time: now }, 'link');
+    assert.strictEqual(lq.get('max_age'), '0');
+    assert.strictEqual((await linked).mode, 'link');
+    await assert.rejects((await attempt({ auth_time: now - 3600 }, 'link'))[1], /linking needs a fresh sign-in/);
+    // Without maxAgeHours, sign-ins don't need auth_time, but linking still does.
+    const free = provider({ issuer: idp.issuer });
+    const s = await dk.startSso(free, { mode: 'link', redirectUri, username: 'jane' });
+    await assert.rejects(dk.finishSso(free, idp.authorize(s.url, { sub: 'u-1' }), s.binding), /auth_time/);
   } finally { idp.close(); }
 });
 

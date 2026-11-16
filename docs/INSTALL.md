@@ -138,7 +138,7 @@ Relative paths are relative to the folder `config.json` is in. Unknown names and
 | `email.user`, `.password` | `""` | SMTP login (for Amazon SES: the SMTP credentials, not your AWS keys) |
 | `email.from` | | sender, e.g. `DoorKing Gate Manager <gate@yourdomain.com>`; required when `email.host` is set |
 | `email.appUrl` | `https://<server.publicHost>` | the address links in emails open |
-| `sso.providers` | `[]` | single sign-on providers (Entra ID, Google Workspace, …): `id`, `name`, `issuer`, `clientId`, `clientSecret`, `allowedDomains`, `autoCreate`, `passwords`; see section 6b |
+| `sso.providers` | `[]` | single sign-on providers (Entra ID, Google Workspace, …): `id`, `name`, `issuer`, `clientId`, `clientSecret`, `allowedDomains`, `autoCreate`, `passwords`, `maxAgeHours`; see section 6b |
 | `gateDefaults.*` | `GATE_DEFAULTS` in `src/gate-pull.ts` | gate-match defaults (`siteName`, `memorySize`, `areaCodes`, `modelNumber`, `antiPassBack`, `interface1816`, `dialDelay`), used when a gate's Gate configuration leaves a value empty |
 
 **Overrides**, highest first: command-line flags (`--port`, `--public-host`, `--media`, `--logs`, `--site-name`,
@@ -289,7 +289,8 @@ Add each provider to `config.json` and restart:
       "clientSecret": "<client secret value>",
       "allowedDomains": ["example.com"],
       "autoCreate": false,
-      "passwords": true
+      "passwords": true,
+      "maxAgeHours": 12
     }
   ]
 }
@@ -303,6 +304,10 @@ Add each provider to `config.json` and restart:
   User Settings).
 - `autoCreate`: `true` gives people from `allowedDomains` without an account a new one (named after their address, no
   password and **no gate access** until a gate admin grants it). Off by default: then they must be invited.
+- `maxAgeHours`: refuses a sign-in when the person last really signed in at the provider longer ago than this
+  (0 or left out = no limit). The app asks the provider for it (`max_age`) and checks the ID token's `auth_time`
+  claim itself; a provider that sends no `auth_time` is refused while this is set. Linking from User Settings always
+  needs a fresh sign-in at the provider, whatever this says. For Entra see step 4 below.
 - `passwords`: `false` stops accounts linked to this provider from signing in with a password (and from password
   resets). Keep at least one admin account that can sign in without the provider, in case it is down.
 
@@ -315,7 +320,11 @@ Check with `node cli.ts sso-check`: it contacts each provider and prints the red
    The app refuses the `common`, `organizations` and `consumers` issuers, which would let any Microsoft account in.
 3. **Certificates & secrets** → **New client secret**: copy its **Value** (`clientSecret`). Secrets expire (at most 2
    years): put a new one in `config.json` before then.
-4. Optional: **Token configuration** → **Add optional claim** → ID token → `email`. Without it the sign-in name
+4. **Token configuration** → **Add optional claim** → ID token → `auth_time` (needed for linking from User Settings
+   and for `maxAgeHours`). Entra's handling of `max_age` isn't dependable, so the app asks Entra with `prompt=login`
+   for fresh sign-ins only; to limit session age set a Conditional Access **sign-in frequency** on the app (Entra ID
+   P1) no longer than `maxAgeHours`, otherwise people with an older Microsoft session are told to sign out of
+   Microsoft and back in. Optional: also add `email`. Without it the sign-in name
    (`preferred_username`) is used as the address.
 
 **Google Workspace** (Google Cloud console, in a project of your Workspace organization → Google Auth Platform):

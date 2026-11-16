@@ -192,6 +192,8 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
       try {
         const m = await dk.discoverProvider(p);
         console.log(`  issuer ${m.issuer}\n  sign-in page ${m.authorization}\n  token endpoint ${m.token}`);
+        console.log(`  auth_time claim: ${m.authTime === null ? 'not listed (the provider lists no claims)' : m.authTime ? 'listed' : 'not listed in discovery (some providers still send it: check with a real sign-in)'}`
+          + (p.maxAgeHours ? `; sign-ins older than ${p.maxAgeHours} hours are refused` : '; no session-age limit'));
       } catch (e) { failed++; console.log(`  NOT reachable: ${(e as Error).message}`); }
       console.log(`  allowed domains: ${p.allowedDomains.join(', ') || 'none (invitations and linking only)'}; new accounts: ${p.autoCreate ? 'yes' : 'no'}; passwords: ${p.passwords ? 'allowed' : 'off'}`);
     }
