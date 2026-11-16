@@ -1,15 +1,16 @@
-// Gate camera snapshots. A gate can have a Dahua recorder, reached through Dahua's P2P cloud by the bundled
-// dahua-p2p bridge (tools/bin). After a transactions pull, frames from the recording during each new
+// Gate camera snapshots. A gate can have a Dahua recorder, reached through Dahua's P2P cloud by the dahua-p2p
+// package's relay tunnel (the bridge, run in this process). After a transactions pull, frames from the recording during each new
 // transaction's minute are saved with ffmpeg to <gate dir>/snapshots/<YYYYMMDD-HHMM>/ch<N>-<SS>.jpg, and frames
 // from the minute after it to ch<N>-a<SS>.jpg. In video mode each channel's recording from the start of the
 // minute for VIDEO_SECS is saved instead, as ch<N>.mp4 with a first-frame picture ch<N>.jpg.
 // Recorder playback takes local time (verified 2026-10-19); clockOffset (seconds) is added to the gate's time.
 // Playback streams at about real-time speed, so a clip takes about VIDEO_SECS to fetch (verified 2026-10-19).
-// The recorder password is encrypted in the database (see db.ts) and given to the bridge in DAHUA_PASSWORD.
+// The recorder password is encrypted in the database (see db.ts) and given only to ffmpeg (the tunnel needs just the serial).
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
+import { openTunnel } from 'dahua-p2p';
+import type { AddressInfo } from 'node:net';
 import type { Writable } from 'node:stream';
 import { encrypt, decrypt } from './db.ts';
 import { all, one, run, type Store } from './db.ts';
@@ -344,11 +345,8 @@ export function maskSecrets(text: unknown, secrets: string[] = []): string {
   return out;
 }
 
-// Tool paths by platform: Windows dahua-p2p-<x64|arm64>.exe and ffmpeg.exe (x64; runs emulated on arm64),
-// Linux dahua-p2p-linux-<x64|arm64> and ffmpeg-linux-<x64|arm64>.
+// ffmpeg's path by platform: Windows ffmpeg.exe (x64; runs emulated on arm64), Linux ffmpeg-linux-<x64|arm64>.
 const archName = (arch: string): string => (arch === 'arm64' ? 'arm64' : 'x64');
-export const bridgeExe = (binDir = BIN_DIR, arch: string = process.arch, platform: string = process.platform): string => path.join(binDir,
-  platform === 'win32' ? `dahua-p2p-${archName(arch)}.exe` : `dahua-p2p-linux-${archName(arch)}`);
 export const ffmpegExe = (binDir = BIN_DIR, arch: string = process.arch, platform: string = process.platform): string => path.join(binDir,
   platform === 'win32' ? 'ffmpeg.exe' : `ffmpeg-linux-${archName(arch)}`);
 // The bundled ffmpeg when tools/bin has it (it is not in the git repository: too large), else ffmpeg on the PATH.
@@ -371,20 +369,18 @@ export function snapshotFile(dir: string, minute: string, file: string): string 
   return fs.existsSync(f) ? f : null;
 }
 
-// Runs the bridges and ffmpeg. One bridge per recorder (serial + username), started on first use and stopped
-// after idleMs unused. The bridge exits when its P2P connection drops, but can also stay running after the
-// recorder stops answering ("device stopped consuming our data ... closing tunnel"). A frame that fails is
-// tried once more after retryWaitMs (a recorder 404 is not always final): on a new bridge when the bridge
-// exited, its tunnel closed, or the stream never opened. A frame cut off in transfer (decoder errors; saved as
+// Runs the bridges and ffmpeg. One bridge (relay tunnel) per recorder (serial + username), started on first use and
+// stopped after idleMs unused; it is replaced when its tunnel closes. A frame that fails is tried once more after
+// retryWaitMs (a recorder 404 is not always final): on a new bridge when the tunnel closed or the stream never
+// opened. A frame cut off in transfer (decoder errors; saved as
 // a part-green picture) is deleted and tried once more straight away.
-// A bridge that cannot connect (exits or times out before listening) is started again after connectWaitMs,
+// A bridge that cannot connect (fails or times out before listening) is started again after connectWaitMs,
 // then twice that, up to connectTries times; after that the error has code NO_CONNECTION.
-// log(message) gets bridge starts, connections, unexpected exits and idle stops, each bridge connection
+// log(message) gets bridge starts, connections, unexpected closes and idle stops, each bridge connection
 // failure, and live views retried on a new bridge.
 // Videos (grabFrame's video option) are copied without re-encoding to a fragmented MP4 file of up to VIDEO_SECS,
 // within clipMs (ffmpeg's MPEG-TS writer refuses the recorder's H.265 stream, verified 2026-10-19); finishClip
 // turns that into the .mp4 and its first-frame picture. A bridge is not stopped as idle while a grab is using it.
-const TUNNEL_DEAD = /closing tunnel|device silent|retiring/i;
 const STREAM_NOT_OPENED = /Invalid data found|End of file|Connection refused/i;
 const DAMAGED = /error while decoding|concealing|corrupt|Invalid NAL|Could not find ref|missing picture|PPS id|SPS id/i;
 const DAMAGED_MSG = 'Picture damaged in transfer';
@@ -401,8 +397,9 @@ function pause(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+// kill: stops the bridge (its tunnel and local port).
 interface Bridge {
-  proc: ChildProcess; port: Promise<number>; password: string; lines: string[];
+  kill: () => void; port: Promise<number>; password: string; lines: string[];
   timer?: ReturnType<typeof setTimeout>; busy?: number; dead?: boolean; connected?: boolean;
 }
 
@@ -423,39 +420,48 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     if (!b) return;
     bridges.delete(key);
     clearTimeout(b.timer);
-    b.proc.kill();
+    b.kill();
   }
 
+  // The dahua-p2p package's relay tunnel (reliable PTCP layer), exposing the recorder's RTSP port on a local port. It
+  // carries one stream at a time (later ones wait) and retries while the recorder still holds an earlier session.
   function start(key: string, cfg: Recorder): Bridge {
-    const proc = spawn(executable(bridgeExe(binDir)), ['-serial', cfg.serial, '-username', cfg.username, '-listen', '127.0.0.1:0'],
-      { env: { ...process.env, DAHUA_PASSWORD: cfg.password }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    const b = { proc, password: cfg.password, lines: [] } as unknown as Bridge;
+    const b = { password: cfg.password, lines: [] } as unknown as Bridge;
+    let closeTunnel = () => {};
+    let server: { close: () => void } | null = null;
+    let killed = false;
+    b.kill = () => { killed = true; server?.close(); closeTunnel(); };
+    const note = (line: string) => { b.lines.push(line); if (b.lines.length > 20) b.lines.shift(); };
     const tail = () => (b.lines.length ? `: ${maskSecrets(b.lines.slice(-3).join(' | '), [cfg.password])}` : '');
     log(`Recorder ${cfg.serial}: starting bridge`);
-    b.port = new Promise<number>((resolve, reject) => {
-      const timer = setTimeout(() => { reject(new Error(`Camera bridge did not connect within ${readyMs / 1000} s${tail()}`)); proc.kill(); }, readyMs);
-      const onData = (chunk: Buffer | string) => {
-        for (const line of String(chunk).split(/\r?\n/).filter((l) => l.trim())) {
-          b.lines.push(line);
-          if (b.lines.length > 20) b.lines.shift();
-          if (TUNNEL_DEAD.test(line)) b.dead = true;
-          const m = /listening on 127\.0\.0\.1:(\d+)/.exec(line);
-          if (m) { clearTimeout(timer); b.connected = true; log(`Recorder ${cfg.serial}: bridge connected`); resolve(Number(m[1])); }
-        }
-      };
-      proc.stdout.on('data', onData);
-      proc.stderr.on('data', onData);
-      proc.on('error', (e) => { clearTimeout(timer); reject(new Error(`Camera bridge: ${e.message}`)); });
-      proc.on('exit', (code) => {
-        clearTimeout(timer);
-        if (bridges.get(key) === b) {
-          bridges.delete(key); clearTimeout(b.timer);
-          if (b.connected) log(`Recorder ${cfg.serial}: bridge exited (code ${code})${tail()}`);
-        }
-        reject(new Error(`Camera bridge exited (code ${code})${tail()}`));
-      });
-    });
-    b.port.catch(() => {}); // callers get the error from their own await
+    const ended = (why: string) => {
+      b.dead = true;
+      if (bridges.get(key) === b) {
+        bridges.delete(key); clearTimeout(b.timer);
+        if (b.connected && !killed) log(`Recorder ${cfg.serial}: bridge closed (${why})${tail()}`);
+      }
+    };
+    b.port = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const tunnel = await Promise.race([
+          openTunnel({ serial: cfg.serial, log: note }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Camera bridge did not connect within ${readyMs / 1000} s${tail()}`)), readyMs); }),
+        ]);
+        closeTunnel = () => tunnel.close('stopped');
+        if (killed) { tunnel.close('stopped'); throw new Error('Camera bridge stopped'); }
+        tunnel.on('closed', (reason) => { server?.close(); ended(String(reason || 'closed')); });
+        const srv = await tunnel.listen(0, 554, '127.0.0.1');
+        server = srv;
+        b.connected = true;
+        log(`Recorder ${cfg.serial}: bridge connected (${tunnel.stats.handshakeMs} ms)`);
+        return (srv.address() as AddressInfo).port;
+      } catch (e) {
+        ended((e as Error).message);
+        throw new Error(`Camera bridge: ${maskSecrets((e as Error).message, [cfg.password])}`);
+      } finally { clearTimeout(timer); }
+    })();
+    b.port.catch(() => {});
     return b;
   }
 

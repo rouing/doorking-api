@@ -210,26 +210,31 @@ or VPN at the gate.
 
 ### How it connects
 ```
-server ──spawns──> dahua-p2p bridge ──Dahua P2P cloud──> recorder
-   │                 (tools/bin)        (by serial)
-   └──spawns──> ffmpeg ──rtsp://127.0.0.1:<port>──> bridge
+server (dahua-p2p tunnel, in process) ──Dahua P2P cloud──> recorder
+   │      127.0.0.1:<port>                (by serial)
+   └──spawns──> ffmpeg ──rtsp://127.0.0.1:<port>──> tunnel
                  /cam/playback  (recorded footage, for pictures and videos)
                  /cam/realmonitor (live picture, for Test and the live view)
 ```
-- **The bridge** (`tools/bin/dahua-p2p-<x64|arm64>.exe` on Windows, `dahua-p2p-linux-<x64|arm64>` on Linux,
-  picked by `process.platform` and `process.arch`) logs in to the recorder through the P2P cloud and serves its
-  RTSP streams on a free port on `127.0.0.1` only. It gets the serial and username on its command line and the
-  password in the `DAHUA_PASSWORD` environment variable. It is started when the recorder is needed, stopped after
-  2 minutes unused, and started again if its connection drops. A failed connection is tried again after 10 s and
-  20 s; after the third failure the run stops with "Could not reach the recorder after 3 tries".
+- **The bridge** is the [`dahua-p2p`](https://github.com/ludufre/dahua-p2p) npm package (ludufre's, MIT; built on
+  blackjid/dahua-p2p and khoanguyen-3fc/dh-p2p). It opens a relay tunnel to the recorder through the P2P cloud
+  inside the server and exposes the recorder's RTSP port on a free port on `127.0.0.1` only (`start` in
+  `createCameraRunner`, `src/cameras.ts`). It needs only the serial; the recorder's username and password go to
+  ffmpeg. It acknowledges only data that arrived in order and waits for missing pieces, so lost or reordered
+  data from the relay doesn't stall or corrupt the stream. It carries one stream at a time (live views of several
+  channels queue) and retries for up to 35 s while the recorder still holds an earlier session (it keeps a closed
+  one about 15-20 s). It is started when the recorder is needed, stopped after 2 minutes unused, and started
+  again if its tunnel closes. A failed connection is tried again after 10 s and 20 s; after the third failure the
+  run stops with "Could not reach the recorder after 3 tries".
 - **ffmpeg** reads those streams and writes the pictures, videos and the live stream: `tools/bin/ffmpeg.exe` or
   `ffmpeg-linux-<x64|arm64>` when present, else `ffmpeg` on the PATH (`ffmpegCommand`). The binaries are too large
   for the git repository, so a fresh install uses the system's (Ubuntu: `sudo apt install ffmpeg`).
 - Recorder playback uses the **recorder's local time**. **Clock offset** (seconds) is added to the gate's
   transaction time to match the recorder's clock.
-- The bridge is bundled with its license in `tools/licenses/` (dahua-p2p MIT; also ffmpeg's GPLv3 texts, for
-  a local copy in `tools/bin/`). The bridge binaries are built, unmodified, from upstream
-  [blackjid/dahua-p2p](https://github.com/blackjid/dahua-p2p) at commit `345f724` (rebuild steps in `HANDOFF.md`).
+- Until 2026-11-15 the bridge was a separate program (blackjid/dahua-p2p at commit `345f724`, in `tools/bin`). The
+  in-process tunnel replaced it after a trial: on the first test the program's live picture failed ("device
+  stopped consuming our data … closing tunnel") where the package's worked. `tools/licenses/` keeps ffmpeg's GPLv3
+  texts, for a local copy in `tools/bin/`.
 
 ### Setting up
 **System Settings → Gate cameras** (shared by every account that manages the gate; the password is encrypted in
@@ -514,9 +519,8 @@ against changes observed on the gate. The database tests use the `doorking_test`
                          their texts)
     dist/                build output of ui/ (npm run build), served at /
   test/                  node --test suites
-  tools/                 bin/ (Windows: dahua-p2p-x64.exe, dahua-p2p-arm64.exe; Linux: dahua-p2p-linux-<x64|arm64>;
-                         optionally ffmpeg.exe / ffmpeg-linux-<x64|arm64>, not in git), licenses/ (keep with
-                         the binaries)
+  tools/                 bin/ (optionally ffmpeg.exe / ffmpeg-linux-<x64|arm64>, not in git), licenses/ (ffmpeg's;
+                         keep with the binaries)
   media/<phone>/         per-gate camera pictures and videos (snapshots/)
   research/              reference material (local only, not in git: DoorKing's copyrighted files): decompiled
                          DoorKing32 (DoorKing32.exe.c / .h), the 1835 manual PDF

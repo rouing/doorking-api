@@ -436,14 +436,14 @@ Snapshots: `BAK\ACCT0001_step25_before_dirdigits`, `BAK\ACCT0001_step26_4digit_c
   media/              per-gate camera pictures and videos (DOWNLOADED/ until 2026-11-13)  <-- private
   research/           DoorKing32.exe.c / .h (decompiled desktop app), the 1835 manual PDF
   tools/              bundled camera tooling, run by src/cameras.ts
-    bin/              picked by process.platform + process.arch (bridgeExe/ffmpegExe):
-                      Windows: dahua-p2p-x64.exe, dahua-p2p-arm64.exe, ffmpeg.exe (9.0.2 x64 gyan.dev, also
-                      runs on Windows ARM via emulation)
-                      Linux: dahua-p2p-linux-x64, dahua-p2p-linux-arm64, ffmpeg-linux-x64, ffmpeg-linux-arm64
-                      (BtbN n9.0 gpl builds; need glibc, not Alpine/musl). The execute bit is added at first use
+    bin/              ffmpeg, picked by process.platform + process.arch (ffmpegExe), not in git:
+                      Windows: ffmpeg.exe (9.0.2 x64 gyan.dev, also runs on Windows ARM via emulation)
+                      Linux: ffmpeg-linux-x64, ffmpeg-linux-arm64 (BtbN n9.0 gpl builds; need glibc, not
+                      Alpine/musl). The camera bridge is the dahua-p2p npm package (until 2026-11-15:
+                      blackjid/dahua-p2p builds here). The execute bit is added at first use
                       when missing.
-    licenses/         dahua-p2p (MIT) and ffmpeg (GPLv3) license files (ffmpeg-linux-LICENSE.txt for the Linux
-                      builds); keep them with the binaries
+    licenses/         ffmpeg (GPLv3) license files (ffmpeg-linux-LICENSE.txt for the Linux builds); keep them
+                      with the binaries
 ```
 
 ### 4.1 HTTP routes (`web/server.ts`)
@@ -664,12 +664,6 @@ A residents pull updates the working copy at once, with unsent changes kept on t
   `directory`, `rcvout`, `transactions`) and `cloud-*` commands that read credentials from the
   `DKS_USER` / `DKS_PASSWORD` / `DKS_URL` environment variables.
 - Tests: `node --test` (from the project root).
-- Rebuild the bridge (needs Go): the binaries are upstream `github.com/blackjid/dahua-p2p` at commit `345f724`,
-  unmodified (verified 2026-11-13; the vendored copy in `tools/dahua-p2p/` differed only in line endings and was
-  removed). `git clone https://github.com/blackjid/dahua-p2p && cd dahua-p2p && git checkout 345f724`, set
-  `GOOS=windows`, `CGO_ENABLED=0`, `GOARCH=amd64` or `arm64`, then
-  `go build -trimpath -ldflags "-s -w" -o <root>\tools\bin\dahua-p2p-<x64|arm64>.exe ./cmd/dahua-p2p`.
-  For Linux set `GOOS=linux` and use `-o <root>/tools/bin/dahua-p2p-linux-<x64|arm64>`.
 - Linux ffmpeg: `ffmpeg-n9.0-latest-<linux64|linuxarm64>-gpl-9.0.tar.xz` from
   github.com/BtbN/FFmpeg-Builds releases; copy `bin/ffmpeg` to `tools/bin/ffmpeg-linux-<x64|arm64>`.
 - Verified 2026-10-19 under WSL Ubuntu (arm64, Node 22): the arm64 Linux binaries start and the test suite
@@ -790,6 +784,9 @@ byte, not only the one expected.
 ---
 
 ## 8. Known limitations / pending work
+- **Camera bridge (2026-11-15):** the `dahua-p2p` npm package 1.0.0 (ludufre), run in the server, replaced the
+  blackjid/dahua-p2p program after a trial (videos and pictures worked; the program dropped live streams). Open:
+  live views of several channels queue (one stream at a time), and long queues may hit ffmpeg's 45 s timeout.
 - **Step-up (2026-11-14):** sensitive actions need a passkey confirmation within 3 hours (`STEP_UP` in server.ts;
   password-only and SSO-only accounts must add a passkey). Not done: counting a single sign-on as strong (needs the
   provider to send `amr`/`acr` or Entra `acrs` plus `auth_time`; Google doesn't), recording those claims, a per-gate
@@ -859,7 +856,7 @@ byte, not only the one expected.
   `POST .../area-codes/fix`) was removed.
 - **Gate camera snapshots (built 2026-10-19, not yet run against the recorder from the app):** the test gate's
   Dahua recorder (serial `<serial>`; the serial is treated as public, the login is what protects it) is
-  reached through `tools/bin/dahua-p2p-*.exe`. Verified by hand 2026-10-19: live view and
+  reached through `tools/bin/dahua-p2p-*.exe` (replaced 2026-11-15 by the dahua-p2p npm package, see §8). Verified by hand 2026-10-19: live view and
   `rtsp://<user>:<pass>@127.0.0.1:<port>/cam/playback?channel=<N>&starttime=YYYY_MM_DD_HH_MM_SS` work, with
   **local time** (UTC returns nothing). Channel 1 = Front gate, channel 2 = Back gate. The bridge exits when
   its connection drops; `createCameraRunner` starts it with `-listen 127.0.0.1:0`, reads the port from its

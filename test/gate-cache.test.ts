@@ -1271,10 +1271,6 @@ test('cameras: snapshot times, pending minutes, masking and file names', withSto
   assert.strictEqual(dk.pendingMinutes(vcfg, rows, done, now).length, 0); // no recording: not fetched again
 
   assert.strictEqual(dk.maskSecrets('rtsp://viewer:p%40ss@127.0.0.1:1/x p@ss', ['p@ss']), 'rtsp://***@127.0.0.1:1/x ***');
-  assert.match(dk.bridgeExe('bin', 'arm64', 'win32'), /dahua-p2p-arm64\.exe$/);
-  assert.match(dk.bridgeExe('bin', 'x64', 'win32'), /dahua-p2p-x64\.exe$/);
-  assert.match(dk.bridgeExe('bin', 'arm64', 'linux'), /dahua-p2p-linux-arm64$/);
-  assert.match(dk.bridgeExe('bin', 'x64', 'linux'), /dahua-p2p-linux-x64$/);
   assert.match(dk.ffmpegExe('bin', 'arm64', 'win32'), /ffmpeg\.exe$/);
   assert.match(dk.ffmpegExe('bin', 'arm64', 'linux'), /ffmpeg-linux-arm64$/);
   assert.match(dk.ffmpegExe('bin', 'x64', 'linux'), /ffmpeg-linux-x64$/);

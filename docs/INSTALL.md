@@ -9,7 +9,7 @@ For using the app once it runs, see [MANUAL.md](MANUAL.md).
 |---|---|
 | **Node.js 24 or later** | from [nodejs.org](https://nodejs.org) (LTS). Node 24 runs the server's `.ts` files directly, so no compiler is needed. npm comes with it. |
 | **PostgreSQL 14 or later** | the database (on this machine or another). Ubuntu: `sudo apt install postgresql`; Windows: the installer from [postgresql.org](https://www.postgresql.org/download/). Set up a login and database for the app in section 2a. |
-| **Operating system** | Windows (x64 or ARM64) or Linux (x64 or arm64, a glibc distribution such as Debian or Ubuntu). The camera bridge in `tools/bin/` exists for these; everything except cameras runs on any system with Node 24. |
+| **Operating system** | Windows (x64 or ARM64) or Linux (x64 or arm64, a glibc distribution such as Debian or Ubuntu). Cameras need ffmpeg (a copy in `tools/bin/`, or the system's); everything else runs on any system with Node 24. |
 | **ffmpeg** (cameras only) | not in the git repository (too large). Ubuntu/Debian: `sudo apt install ffmpeg`; Windows: a static build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) with `ffmpeg.exe` on the PATH or in `tools/bin/`. The app uses `tools/bin/ffmpeg.exe` / `tools/bin/ffmpeg-linux-<x64\|arm64>` when present, else `ffmpeg` on the PATH. |
 | **Internet access** | outgoing HTTPS (port 443) to `dksdb.dksoftware.com` (DKS Cloud), and for cameras to Dahua's P2P cloud. No incoming ports: the server listens on this machine only, unless you set up public access (section 6a). |
 | **A DKS Cloud account** | the user and password that manage the gates, and for each gate its **system phone number** and 4-digit **master code**. |
@@ -29,7 +29,7 @@ layout is:
   research/        reference material only (not needed to run the app)
 ```
 When copying, leave out `node_modules/`, `web/dist/`, `logs/` and `media/` (they are created on the machine);
-`research/` is optional and not in the git repository. Keep `tools/` (camera bridge and licenses) if you use
+`research/` is optional and not in the git repository. Keep `tools/` (ffmpeg and its licenses) if you use
 cameras. `.gitignore` keeps all of these, `config.json` and `doorking.key` out of git.
 
 This guide runs every command from `<root>`.
