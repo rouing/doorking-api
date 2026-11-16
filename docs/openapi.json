@@ -575,6 +575,117 @@
         }
       }
     },
+    "/api/gates/{phone}/residents/{code}/history": {
+      "get": {
+        "tags": [
+          "Residents"
+        ],
+        "summary": "A directory code's change history",
+        "x-role": "readonly",
+        "description": "The changes History recorded for this directory code (its fields and its note), newest first, with who made each one and when. Pulls and sends that list it are included.\n\n**Read-only or admin key.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/code"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The changes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "time": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "user": {
+                            "type": "string"
+                          },
+                          "action": {
+                            "type": "string"
+                          },
+                          "summary": {
+                            "type": "string"
+                          },
+                          "change": {
+                            "enum": [
+                              "added",
+                              "removed",
+                              "changed"
+                            ]
+                          },
+                          "fields": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "field": {
+                                  "type": "string"
+                                },
+                                "from": {
+                                  "type": "string"
+                                },
+                                "to": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "revertedBy": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "user": {
+                                    "type": "string"
+                                  },
+                                  "time": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
     "/api/gates/{phone}/residents/{code}/note": {
       "put": {
         "tags": [

@@ -1558,6 +1558,12 @@ const ROUTES = [
       return applyToCache(g.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode: params.code }, opts), params.code)));
     })),
 
+  // What History recorded for a directory code, newest first: { changes: [EntryChange] }.
+  route('GET', `${G}/residents/:code/history`, 'gate', async ({ g, params }) => {
+    const [, list] = await editorResidents(g);
+    return [200, { changes: await dk.entryHistory(STORE, g.phoneNumber, params.code.padStart(list.dirDigits, '0')) }];
+  }),
+
   // The local note of a directory code (never sent to the gate). Body: { note } (blank clears it).
   route('PUT', `${G}/residents/:code/note`, 'gate-admin', async ({ s, g, params, body }) => {
     const [, list] = await editorResidents(g);

@@ -1,15 +1,16 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { Box, Button, Callout, Card, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes';
-import type { DeviceRange, GateFeatures, ResidentRow, ResidentsReply, TransactionRow } from '../../../src/types.ts';
-import { dirCell, downloadCsv, fmtTime, isEmptySlot, txTone } from '../format.ts';
+import { Badge, Box, Button, Callout, Card, Dialog, Flex, Heading, IconButton, Link, Table, Text, TextField } from '@radix-ui/themes';
+import type { DeviceRange, EntryChange, GateFeatures, ResidentRow, ResidentsReply, TransactionRow } from '../../../src/types.ts';
+import { dirCell, doorKingCsv, downloadText, fmtTime, isEmptySlot, txTone } from '../format.ts';
 import { MAX_ROWS, nextSort, SortHead, sortRows, type Column, type Sort } from '../table.tsx';
 import { CardList } from './fields.tsx';
 import { SnapCell } from '../camera/SnapViews.tsx';
 import type { Snaps } from '../camera/snapshots.ts';
 import { ResidentForm } from './ResidentForm.tsx';
 import { TX_COLUMNS } from './Transactions.tsx';
+import { ACTIONS } from './History.tsx';
 import { WorkingCopyBar } from './WorkingCopyBar.tsx';
-import { useReadOnly, type GateApi } from '../api.ts';
+import { errorText, useReadOnly, type GateApi } from '../api.ts';
 
 const COLUMNS: Record<'residents' | 'vendors', Column[]> = {
   residents: [['Directory Code', 'directoryCode'], ['Name', 'name'], ['Hidden', 'hidden'], ['Phone', 'phoneFull'],
@@ -22,8 +23,9 @@ const HISTORY_COLUMNS = TX_COLUMNS.filter(([, k]) => k !== 'name' && k !== 'dire
 
 // Residents or vendors in the working copy. Clicking a row shows its last 5 transactions and an Edit button;
 // Add opens a form for a new entry.
-export function Directory({ kind, list, tx, devices, features, snaps, onOpenSnap, highlight, gapi, onReload, onJobStarted }: {
+export function Directory({ kind, account, list, tx, devices, features, snaps, onOpenSnap, highlight, gapi, onReload, onJobStarted }: {
   kind: 'residents' | 'vendors';
+  account: string; // the site name, the export's ACCOUNT column
   list: ResidentsReply | null;
   tx: TransactionRow[] | null;
   devices: DeviceRange[];
@@ -66,7 +68,8 @@ export function Directory({ kind, list, tx, devices, features, snaps, onOpenSnap
   const dupCell = (r: ResidentRow, k: string) => (k === 'directoryCode' && dups.directoryCode.has(r.directoryCode))
     || (k === 'entryCode' && Boolean(r.entryCode) && dups.entryCode.has(r.entryCode));
 
-  const csv = () => downloadCsv(`${kind}.csv`, cols.map((c) => c[0]), rows.map((r) => cols.map(([, k]) => dirCell(r, k))));
+  // Every directory code (residents, vendors and empty slots), in DoorKing's cloud export format.
+  const csv = () => list && downloadText('ResidentsExport.csv', doorKingCsv(account, list.rows || [], list.unassignedCards));
 
   return (
     <Flex direction="column" gap="3">
@@ -90,7 +93,7 @@ export function Directory({ kind, list, tx, devices, features, snaps, onOpenSnap
       <Flex gap="3" align="center" wrap="wrap">
         {!readOnly && <Button onClick={() => setAdding(!adding)} disabled={!list}>{vendor ? 'Add vendor' : 'Add resident'}</Button>}
         <TextField.Root type="search" placeholder="Filter rows" value={filter} onChange={(e) => setFilter(e.target.value)} />
-        <Button variant="soft" onClick={csv} disabled={!rows.length}>Download CSV</Button>
+        <Button variant="soft" onClick={csv} disabled={!list} title="Every directory code (residents, vendors and empty units), in the format DoorKing's cloud exports">Export CSV</Button>
         <Text size="2" color="gray">
           {!list ? 'No data yet. Pull residents from the gate.'
             : `${rows.length} ${kind}${rows.length > MAX_ROWS ? ` (first ${MAX_ROWS} shown)` : ''} · downloaded ${fmtTime(list.updated)}`
@@ -123,7 +126,10 @@ export function Directory({ kind, list, tx, devices, features, snaps, onOpenSnap
                         features={features} gapi={gapi} onDone={async () => { setEditing(false); await onReload(); }} onCancel={() => setEditing(false)} />
                     ) : (
                       <Flex direction="column" gap="2">
-                        {!readOnly && <Box><Button size="1" variant="soft" onClick={() => setEditing(true)}>Edit</Button></Box>}
+                        <Flex gap="3" align="center" wrap="wrap">
+                          {!readOnly && <Button size="1" variant="soft" onClick={() => setEditing(true)}>Edit</Button>}
+                          <LastEdit r={r} gapi={gapi} version={list ? String(list.saved) : ''} />
+                        </Flex>
                         <RecentTransactions r={r} tx={tx} snaps={snaps} onOpenSnap={onOpenSnap} />
                       </Flex>
                     )}
@@ -135,6 +141,70 @@ export function Directory({ kind, list, tx, devices, features, snaps, onOpenSnap
         </Table.Body>
       </Table.Root>
     </Flex>
+  );
+}
+
+// "Last edited by <user>, <time>" for a directory code, from History; clicking it lists every recorded change (what,
+// when, who). Nothing is shown when History has none. version: reloads after the working copy changes.
+function LastEdit({ r, gapi, version }: { r: ResidentRow; gapi: GateApi; version: string }) {
+  const [changes, setChanges] = useState<EntryChange[] | null>(null);
+  const [error, setError] = useState('');
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    let live = true;
+    gapi<{ changes: EntryChange[] }>('GET', `/residents/${encodeURIComponent(r.directoryCode)}/history`)
+      .then((x) => { if (live) { setChanges(x.changes); setError(''); } }, (e) => { if (live) setError(errorText(e)); });
+    return () => { live = false; };
+  }, [gapi, r.directoryCode, version]);
+  if (error) return <Text size="1" color="red">Change history unavailable: {error}</Text>;
+  if (!changes || !changes.length) return null;
+  const last = changes[0];
+  return (
+    <>
+      <Link href="#" size="2" title="See every recorded change to this entry"
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(true); }}>
+        Last edited by {last.user} · {fmtTime(last.time)}{changes.length > 1 ? ` (${changes.length} changes)` : ''}
+      </Link>
+      <Dialog.Root open={open} onOpenChange={setOpen}>
+        <Dialog.Content maxWidth="760px" aria-describedby={undefined} onClick={(e) => e.stopPropagation()}>
+          <Flex align="center" mb="3">
+            <Dialog.Title mb="0">Changes to directory code {r.directoryCode}{r.name ? ` (${r.name})` : ''}</Dialog.Title>
+            <Flex flexGrow="1" />
+            <Dialog.Close><IconButton variant="ghost" color="gray" title="Close">✕</IconButton></Dialog.Close>
+          </Flex>
+          <Flex direction="column" gap="3">
+            {changes.map((c) => (
+              <Card key={c.id}>
+                <Flex direction="column" gap="1">
+                  <Flex gap="2" align="center" wrap="wrap">
+                    <Text size="2" weight="medium">{fmtTime(c.time)}</Text>
+                    <Text size="2">by {c.user}</Text>
+                    <Badge color="gray">{ACTIONS[c.action] || c.action}</Badge>
+                    {c.change !== 'changed' && <Badge color={c.change === 'added' ? 'green' : 'red'}>{c.change}</Badge>}
+                    {c.revertedBy && <Badge color="amber" title={`${c.revertedBy.user}, ${fmtTime(c.revertedBy.time)}`}>Reverted</Badge>}
+                  </Flex>
+                  <Text size="1" color="gray">{c.summary}</Text>
+                  {c.fields.length > 0 && (
+                    <Table.Root size="1">
+                      <Table.Header><Table.Row>{['What', 'Before', 'After'].map((h) => <Table.ColumnHeaderCell key={h}>{h}</Table.ColumnHeaderCell>)}</Table.Row></Table.Header>
+                      <Table.Body>
+                        {c.fields.map((f, i) => (
+                          <Table.Row key={i}>
+                            <Table.Cell>{f.field}</Table.Cell>
+                            <Table.Cell><Text color="gray">{f.from || '—'}</Text></Table.Cell>
+                            <Table.Cell>{f.to || '—'}</Table.Cell>
+                          </Table.Row>
+                        ))}
+                      </Table.Body>
+                    </Table.Root>
+                  )}
+                </Flex>
+              </Card>
+            ))}
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+    </>
   );
 }
 

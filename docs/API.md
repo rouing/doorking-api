@@ -150,6 +150,7 @@ dropped. The pull's job log says which happened.
 |---|---|---|---|---|
 | GET | `/residents` | gate | | `{ rows, unassignedCards, areaCodes, emptyCodes, dirDigits, duplicates, cache, pulled, saved }`; each row has its `note`; `duplicates: [{ kind: directoryCode\|entryCode\|card, value, holders, text }]` lists values held by more than one entry |
 | GET | `/residents/{code}` | gate | | one row |
+| GET | `/residents/{code}/history` | gate | | `{ changes: [{ id, time, user, action, summary, change, fields: [{ field, from, to }], revertedBy }] }`: what History recorded for this directory code (its fields and note), newest first; pulls and sends that list it are included |
 | POST | `/residents` | gate-admin | `{ directoryCode, name, vendor?, …fields }` | 201; fills a vacant code or inserts a new one |
 | PUT | `/residents/{code}` | gate-admin | any of `name, vendor, areaCode, phone, entryCode, securityLevel, elevatorRef, floor, cards[]` | only the given fields change |
 | PUT | `/residents/{code}/note` | gate-admin | `{ note }` | local note, at most 500 characters (blank clears it): `{ note }` |

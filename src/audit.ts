@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { all, run, type Store } from './db.ts';
-import type { HistoryEvent } from './types.ts';
+import type { EntryChange, HistoryEvent } from './types.ts';
 
 export type Patch =
   | { whole: true; before: string; after: string }
@@ -93,6 +93,24 @@ export async function addEvent(store: Store, phone: unknown, event: Record<strin
   const e: StoredEvent = { id: crypto.randomBytes(8).toString('hex'), time: new Date().toISOString(), ...event };
   await run(store, 'INSERT INTO history (id, phone, data) VALUES ($1, $2, $3)', [e.id, phoneDigits(phone), JSON.stringify(e)]);
   return e;
+}
+
+// The changes History recorded for one directory code (its resident/vendor fields and its note), newest first:
+// [{ id, time, user, action, summary, change, fields: [{ field, from, to }], revertedBy }]. Pulls and sends that list
+// the code are included (their user is whoever ran them).
+export async function entryHistory(store: Store, phone: unknown, code: unknown): Promise<EntryChange[]> {
+  const key = String(code ?? '');
+  const events = await readHistory(store, phone);
+  const reverts = new Map(events.filter((e) => e.revertOf).map((e) => [e.revertOf, e]));
+  const out: EntryChange[] = [];
+  for (const e of events.reverse()) {
+    const d = (Array.isArray(e.details) ? e.details as RecordChange[] : []).find((x) => x.key === key);
+    if (!d) continue;
+    const by = reverts.get(e.id);
+    out.push({ id: e.id, time: e.time, user: String(e.user ?? ''), action: String(e.action ?? ''), summary: String(e.summary ?? ''),
+      change: d.change, fields: d.fields, revertedBy: by ? { id: by.id, user: String(by.user ?? ''), time: by.time } : null });
+  }
+  return out;
 }
 
 // Newest first, without the patch data. revertedBy names the revert that undid an event.

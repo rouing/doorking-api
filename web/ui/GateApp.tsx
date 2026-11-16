@@ -139,7 +139,7 @@ export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: 
   let page;
   if (nav === 'residents' || nav === 'vendors' || !shown(nav)) {
     const kind = nav === 'vendors' ? 'vendors' : 'residents';
-    page = <Directory key={kind} kind={kind} list={residents} tx={data?.transactions?.rows ?? null} highlight={highlight}
+    page = <Directory key={kind} kind={kind} account={gate.siteName} list={residents} tx={data?.transactions?.rows ?? null} highlight={highlight}
       devices={prefs.deviceAssociation || DEFAULT_DEVICES} features={features} snaps={snaps} onOpenSnap={setViewing}
       gapi={gapi} onReload={loadData} onJobStarted={jobStarted} />;
   } else if (nav === 'transactions') {

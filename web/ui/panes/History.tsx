@@ -5,7 +5,7 @@ import { errorText, useReadOnly, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { fmtTime } from '../format.ts';
 
-const ACTIONS: Record<string, string> = { change: 'Change', revert: 'Revert', pull: 'Pull', send: 'Send', relay: 'Relay', camera: 'Camera',
+export const ACTIONS: Record<string, string> = { change: 'Change', revert: 'Revert', pull: 'Pull', send: 'Send', relay: 'Relay', camera: 'Camera',
   access: 'Users', login: 'Gate login', apikey: 'API key', note: 'Note' };
 
 // The gate's users with their last sign-in, then this gate's events (newest first). Rows with details expand on click, one at a

@@ -653,6 +653,23 @@ test('history lists newest first, hides patches and marks reverted events', with
   assert.ok((await dk.readHistory(store, '5550100'))[0].files);
 }));
 
+test('entryHistory: one directory code\'s changes, newest first, with who and when, and reverts marked', withStore(async (store) => {
+  const det = (key, fields, change = 'changed') => ({ key, label: `Resident ${key}`, change, fields });
+  const a = await dk.addEvent(store, '5550100', { user: 'ann', action: 'change', summary: 'Edited directory code 101',
+    details: [det('101', [{ field: 'Name', from: 'Smith, J', to: 'Smith, Jo' }])] });
+  await dk.addEvent(store, '5550100', { user: 'bob', action: 'change', summary: 'Edited directory code 102', details: [det('102', [])] });
+  await dk.addEvent(store, '5550100', { user: 'bob', action: 'note', summary: 'Changed the note for directory code 101',
+    details: [{ key: '101', label: 'Directory code 101', change: 'changed', fields: [{ field: 'Note', from: '', to: 'Back gate' }] }] });
+  await dk.addEvent(store, '5550100', { user: 'cy', action: 'revert', revertOf: a.id, summary: 'Reverted', details: [det('101', [])] });
+  await dk.addEvent(store, '5550199', { user: 'zed', action: 'change', summary: 'other gate', details: [det('101', [])] });
+  const h = await dk.entryHistory(store, '5550100', '101');
+  assert.deepStrictEqual(h.map((c) => [c.user, c.action]), [['cy', 'revert'], ['bob', 'note'], ['ann', 'change']]);
+  assert.deepStrictEqual(h[2].fields, [{ field: 'Name', from: 'Smith, J', to: 'Smith, Jo' }]);
+  assert.strictEqual(h[2].revertedBy.user, 'cy');
+  assert.strictEqual(h[1].revertedBy, null);
+  assert.deepStrictEqual(await dk.entryHistory(store, '5550100', '999'), []);
+}));
+
 test('resident notes are kept per gate and directory code, ignoring leading zeros', withStore(async (store) => {
   assert.strictEqual(await dk.setNote(store, '555-0100', '701', '  Gate code given to the cleaner  ', 'user1'), 'Gate code given to the cleaner');
   assert.strictEqual(await dk.getNote(store, '5550100', '0701'), 'Gate code given to the cleaner');

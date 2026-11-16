@@ -108,6 +108,41 @@ export function downloadCsv(name: string, header: string[], rows: string[][]) {
   URL.revokeObjectURL(a.href);
 }
 
+// The whole directory as DoorKing's cloud exports it (ResidentsExport.csv, matched against one, 2026-11-16): one row per
+// directory code in the gate's directory order (empty slots first, vendors last), 62 columns: ACCOUNT (the site
+// name), Resident, H (hidden: Y/N; vendors N), AAC (area code as stored, 3 or 4 digits), PHONE (555-0142), Dir, ENT, SL,
+// Device + DEVICE2-25 (card numbers, 5 digits, ascending), FL (blank when unset), ER, NOTES + NOTES2-25 (per-device
+// notes: kept empty), Vendor (Y/N), RESIDENTNOTES (the local note). Text columns are always quoted, the others never;
+// CRLF line ends. Cards without a directory code are listed on directory code 0 (000), as the cloud does. 25 is also
+// the gate's limit of cards per directory code.
+export function doorKingCsv(account: string, rows: ResidentRow[], unassignedCards: string[] = []): string {
+  const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const plain = (v: unknown) => String(v ?? '').replace(/[",\r\n]/g, ' ');
+  const devices = [''].concat(Array.from({ length: 24 }, (_, i) => String(i + 2)));
+  const header = ['ACCOUNT', 'Resident', 'H', 'AAC', 'PHONE', 'Dir', 'ENT', 'SL', 'Device', 'FL', 'ER', 'NOTES', 'Vendor',
+    ...devices.slice(1).flatMap((n) => [`DEVICE${n}`, `NOTES${n}`]), 'RESIDENTNOTES'];
+  const ordered = [...rows].sort((a, b) => (a.entryOffset ?? Infinity) - (b.entryOffset ?? Infinity) || a.directoryCode.localeCompare(b.directoryCode));
+  const lines = ordered.map((r) => {
+    const vendor = r.type === 'Vendor';
+    const own = /^0+$/.test(r.directoryCode) ? [...r.cards, ...unassignedCards] : r.cards;
+    const cards = [...new Set(own.map((c) => Number(c)))].filter((n) => n > 0).sort((x, y) => x - y).slice(0, 25).map((n) => String(n).padStart(5, '0'));
+    const dev = (i: number) => plain(cards[i] || '');
+    return [q(account), q(r.name), r.hidden && !vendor ? 'Y' : 'N', plain(r.areaCode), plain(r.phone), plain(r.directoryCode), plain(r.entryCode),
+      plain(r.securityLevel), dev(0), plain(r.floor), plain(r.elevatorRef), q(''), vendor ? 'Y' : 'N',
+      ...devices.slice(1).flatMap((_, i) => [dev(i + 1), q('')]), q(r.note || '')].join(',');
+  });
+  return [header.join(','), ...lines].join('\r\n') + '\r\n';
+}
+
+// Downloads text as a file.
+export function downloadText(name: string, text: string, type = 'text/csv') {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // An account phone number (E.164) for display: +1 (214) 555-0100 for US/Canada, else as stored.
 export const fmtIntlPhone = (e164: string) => {
   const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164 || '');

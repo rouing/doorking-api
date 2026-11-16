@@ -193,10 +193,16 @@ Use **Reset to gate** if you'd rather throw away your unsent changes and start a
 level, floor, elevator, cards and notes. (Vendors have no phone, floor or elevator.)
 - **Security level** shows **Enabled** (level 1: the code or card always works), **Disabled** (level 0: it never
   works), or a level number 2–30 (it works at the times set on the Security Levels page).
-- Type in **Filter** to find someone; click a column heading to sort; **Download CSV** saves the list as a
-  spreadsheet file.
+- Type in **Filter** to find someone; click a column heading to sort.
+- **Export CSV** saves every directory code (residents, vendors and empty units) as `ResidentsExport.csv`, in the
+  same format DoorKing's cloud exports: one row per directory code in the gate's directory order, with the site
+  name, name, hidden (Y/N), area code, phone, directory code, entry code, security level, up to 25 cards, floor,
+  elevator, vendor (Y/N) and your notes (RESIDENTNOTES). The per-card notes columns are there but left empty.
 - **Click a row** to see that person's last 5 visits (green = let in, red = refused, with camera pictures if you have
   cameras) and to **Edit** them.
+- Next to **Edit**, **Last edited by … · (date and time)** shows who last changed that entry here. Click it to see
+  every recorded change: when, by whom, and each field before and after. Changes made at the gate itself (or in
+  DoorKing's own software) aren't listed; nothing is shown for an entry no one has changed here.
 
 When adding or editing:
 
@@ -205,7 +211,7 @@ When adding or editing:
 | Name | as it should appear on the gate's directory (up to 15 characters) |
 | Phone | the number the gate calls: 7 digits, 10 with the area code, or 11 starting with 1 for long distance |
 | Entry code | the code they type at the keypad. Two people can't share one. |
-| Cards | their card or remote numbers (00001–65407). Two people can't share one. |
+| Cards | their card or remote numbers (00001–65407), up to 25 per person (the gate's limit). Two people can't share one. |
 | Security level | Enabled, Disabled, or a level 2–30 |
 | Floor, elevator reference | only for buildings with elevators |
 | Hidden | set for you when you save: someone with a phone number is shown in the directory on the gate's screen; without one they're hidden, since the gate has nothing to call. Vendors are always hidden. |
@@ -386,6 +392,9 @@ same ones as in the DMSS or SmartPSS app), and the camera channels to use. Click
 - **Keep pictures** sets how long pictures and videos stay: 15, 30, 60 or 90 days, or **Forever**. Older ones are
   deleted automatically, and the visit then shows **Removed**. Videos are large (about 65 MB each), so with videos
   a limit is a good idea.
+- **Removed** also shows when the saved files are missing from the server. Next to it, **Get video** (or **Get
+  pictures**) fetches them again, as long as the recorder still has that footage (recorders overwrite their oldest
+  recordings when the disk is full); otherwise it says "No recording at this time".
 
 ## 13. Words used in this guide
 

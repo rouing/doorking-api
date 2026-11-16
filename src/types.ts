@@ -182,6 +182,13 @@ export interface HistoryEvent {
 
 export interface HistoryReply { events: HistoryEvent[]; users: GateUser[] }
 
+// GET G/residents/:code/history: one History change of a directory code (see entryHistory in audit.ts).
+export interface EntryChange {
+  id: string; time: string; user: string; action: string; summary: string; change: string;
+  fields: { field: string; from: string; to: string }[];
+  revertedBy: { id: string; user: string; time: string } | null;
+}
+
 export type ScheduleAction = 'send' | 'residents' | 'transactions' | 'snapshots';
 
 export interface ScheduleInput {
