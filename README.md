@@ -22,7 +22,6 @@ gate transaction from a Dahua/Amcrest recorder, and show the cameras live.
 | [`API.md`](docs/API.md) | scripts | the REST API |
 | [`DB.md`](docs/DB.md) | developers | database files, encryption and every table |
 | [`BITMAP.md`](docs/BITMAP.md) | developers | which bytes of the gate's board files hold which setting |
-| [`HANDOFF.md`](docs/HANDOFF.md) | developers | format notes, reverse-engineering history and open questions |
 
 This README is the technical overview.
 
@@ -473,7 +472,7 @@ against changes observed on the gate. The database tests use the `doorking_test`
   docs/
     INSTALL.md, MANUAL.md  install guide, user manual
     API.md, DB.md          REST API, database schema
-    BITMAP.md, HANDOFF.md  board file address map, reverse-engineering notes
+    BITMAP.md              board file address map
   sql/schema.sql         PostgreSQL schema (tables, indexes): applied on every start and by `cli.ts db-setup`
   index.ts               re-exports every module in src/
   cli.ts                 command-line tool

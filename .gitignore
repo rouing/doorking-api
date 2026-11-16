@@ -65,3 +65,6 @@ Thumbs.db
 
 # Local helper script
 auggie.sh
+
+# Developer handoff notes (reverse-engineering history, pending work): local only
+docs/HANDOFF.md
