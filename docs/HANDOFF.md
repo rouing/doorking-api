@@ -197,7 +197,9 @@ exact deltas observed from the gate.
 |------|-------|----------|
 | 0–1 | card number | 16-bit big-endian |
 | 2–3 | directory code | BCD, leading-F padded |
-- All-`0xFF` record = free slot. Add = write into a free slot; remove = set the record to `0xFF`.
+- All-`0xFF` record = free slot. Add = write into a free slot; remove = set the record to `0xFF`. After every user
+  edit `tidyBoard` then sorts the records by card number and packs them from slot 0, as DoorKing's software leaves
+  them (see 3.4.4).
 - 8000 slots = the manual's "maximum 8000 device codes"; device numbers 00001-65407.
 - **Mass-enabled (unassigned) device numbers** (researched 2026-10-21 from the decompile, never seen on a gate):
   DoorKing32's Mass Enable (manual 3.7.3) turns on a From-To range (≤ 8000) with an optional security level
@@ -238,6 +240,19 @@ Snapshots: `BAK\ACCT0001_step21_before_newcode`, `BAK\ACCT0001_step21_new_555_zz
 - **`.MAP` files:** DoorKing32 recalculates the flags on save (removing MMTEST dropped its flags again),
   the same as `blockMap()` comparing the working copy with the base.
 - `src/residents-edit.ts` reproduces changes 21–23 byte for byte against these snapshots.
+
+### 3.4.4 File layout after an edit (compared with a gate edited with DoorKing's software, 2026-11-16)
+Two residents pulls, before and after 11 codes were removed and 31 entries changed with DoorKing's software, were
+compared with the same edits replayed through `src/residents-edit.ts`. Resident values matched, but the layout
+didn't: our edits left a renamed or newly filled entry where it was (DoorKing keeps the directory in DoorKing32
+order), wrote cards into the first free slot (DoorKing keeps cards.bin sorted by card number, packed from slot 0,
+in both pulls) and never dropped unused area codes (DoorKing does and reuses the slots). `tidyBoard` now runs after
+each user edit (POST/PUT/DELETE residents, DELETE directory-codes): stable sort of the directory by group (empty,
+resident, vendor) and upper-cased name, middle pointer recomputed, cards sorted and packed, unused area codes
+cleared. Replayed again, the files match the gate's except the download stamps (0x15-0x1B), the area codes' order in
+the table (same codes; DoorKing's order rule is unknown, so the indexes differ) and one pair of equal names that
+DoorKing swapped although neither was edited (its sort isn't stable; ours keeps their order). Files rebuilt from
+stored values (pull checks, rebuilds) are not tidied, so they keep the gate's layout.
 
 ### 3.4.2 Area-code modes: 255 vs 10 (mapped from DoorKing32 change 24)
 Snapshot: `BAK\ACCT0001_step24_10_area_codes` (compared with step 23). The mode changes the file layout;

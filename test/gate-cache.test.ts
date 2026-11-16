@@ -355,6 +355,20 @@ test('prepareSend refuses when nothing changed, files are missing, or conflicts 
   await assert.rejects(() => dk.prepareSend(store, PHONE), (e) => e.status === 409 && /missing files/.test(e.message));
 }));
 
+test('tidied edits save to the working copy and are what a send writes', withPull(async (store) => {
+  await dk.ensureCache(store, PHONE);
+  // Fill the empty 103 with a name that sorts first, move card 504 to it, and give it an area code.
+  let b = dk.applyResidentEdit(await working(store), { directoryCode: '101', cards: [] });
+  b = dk.tidyBoard(dk.applyResidentEdit(b, { directoryCode: '103', name: 'Adams, A', cards: ['504', '7'], areaCode: '214', phone: '5550100' }));
+  await saveWorking(store, b);
+  const w = await working(store);
+  assert.ok(w.names.equals(b.names) && w.cards.equals(b.cards) && w.phone.equals(b.phone));
+  assert.deepStrictEqual(dk.parseNamesBin(w.names).directory.map((e) => e.directoryCode), ['103', '101', '102']);
+  assert.deepStrictEqual([0, 4, 8, 12].map((o) => w.cards.subarray(o, o + 4).toString('hex')), ['0007f103', '01f8f103', '3e70ffff', 'ffffffff']);
+  const sent = (await dk.prepareSend(store, PHONE)).files;
+  assert.ok(sent['names.bin'].equals(b.names) && sent['cards.bin'].equals(b.cards));
+}));
+
 test('verifySend reports matching files and the blocks that differ', withPull(async (store) => {
   await dk.ensureCache(store, PHONE);
   await setTalkTime(store, '2:30');

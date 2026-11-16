@@ -168,6 +168,40 @@ export function areaCodeUsage(names: Buffer, phone: Buffer): AreaCodeUse[] {
   return out;
 }
 
+// Puts the files in the layout DoorKing's software leaves after an edit (verified against a gate edited with it,
+// 2026-11-16): the directory in DoorKing32 order (empty slots, residents, vendors; by name ignoring case; ties and
+// empty slots keep their current order) with the middle pointer recomputed, cards.bin sorted by card number and
+// packed from the first record, and area codes no phone record uses cleared, so their slots are used again. Run after
+// users' edits only: files rebuilt from stored values keep the gate's layout.
+export function tidyBoard(buffers: BoardBuffers): BoardBuffers {
+  const names = Buffer.from(buffers.names);
+  const start = dirStart(names);
+  const end = directoryEnd(names);
+  const entries = [];
+  for (let o = start; o < end; o += NAMES_ENTRY_SIZE) {
+    entries.push({ group: entryGroup(names, o), key: nameKey(names.toString('latin1', o, o + 15)), bytes: Buffer.from(names.subarray(o, o + NAMES_ENTRY_SIZE)) });
+  }
+  entries.sort((a, b) => a.group - b.group || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  entries.forEach((e, i) => e.bytes.copy(names, start + i * NAMES_ENTRY_SIZE));
+  updateMiddlePointer(names);
+
+  const recs = [];
+  for (let o = 0; o + CARD_SIZE <= buffers.cards.length; o += CARD_SIZE) {
+    const rec = buffers.cards.subarray(o, o + CARD_SIZE);
+    if (!rec.every((b) => b === 0xff)) recs.push(Buffer.from(rec));
+  }
+  recs.sort((a, b) => a.readUInt16BE(0) - b.readUInt16BE(0));
+  const cards = Buffer.alloc(buffers.cards.length, 0xff);
+  recs.forEach((r, i) => r.copy(cards, i * CARD_SIZE));
+
+  const used = new Set(phoneAreaIndexes(buffers.phone, phoneMode(names)).map(([, i]) => i));
+  const { areaCodeOffset, areaCodeSlots } = namesLayout(names);
+  for (let i = 0; i < areaCodeSlots && areaCodeOffset + i * 2 + 2 <= names.length; i++) {
+    if (!used.has(i)) names.fill(0xff, areaCodeOffset + i * 2, areaCodeOffset + i * 2 + 2);
+  }
+  return { names, phone: buffers.phone, cards };
+}
+
 // "directory code 101 (Smith, J)" for conflict messages; names is optional.
 function holderLabel(names: Buffer | undefined, code: string | null): string {
   const o = names ? findNamesEntry(names, code) : -1;

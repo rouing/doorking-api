@@ -1540,7 +1540,7 @@ const ROUTES = [
     { summary: `Added ${body.vendor ? 'vendor' : 'resident'} ${body.directoryCode}` }, async () => {
       const opts = await editOpts(g);
       const { hidden: _hidden, ...fields } = body;
-      const [, out] = await applyToCache(g.phoneNumber, (bufs) => dk.applyShownRule(dk.addEntry(bufs, fields, opts), body.directoryCode));
+      const [, out] = await applyToCache(g.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.addEntry(bufs, fields, opts), body.directoryCode)));
       return [201, out];
     })),
 
@@ -1555,7 +1555,7 @@ const ROUTES = [
     { summary: `Edited directory code ${params.code}` }, async () => {
       const opts = await editOpts(g);
       const { hidden: _hidden, ...fields } = body;
-      return applyToCache(g.phoneNumber, (bufs) => dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode: params.code }, opts), params.code));
+      return applyToCache(g.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode: params.code }, opts), params.code)));
     })),
 
   // The local note of a directory code (never sent to the gate). Body: { note } (blank clears it).
@@ -1569,12 +1569,12 @@ const ROUTES = [
   // Blanks the slot (the code stays on the gate as an empty unit).
   route('DELETE', `${G}/residents/:code`, 'gate-admin', async ({ s, g, params }) => dropNote(s, g, params.code, await withHistory(s, g,
     { summary: `Deleted the entry at directory code ${params.code}` }, () => applyToCache(g.phoneNumber,
-      (bufs) => dk.deleteResident(bufs, params.code))))),
+      (bufs) => dk.tidyBoard(dk.deleteResident(bufs, params.code)))))),
 
   // Takes the directory code off the gate entirely.
   route('DELETE', `${G}/directory-codes/:code`, 'gate-admin', async ({ s, g, params }) => dropNote(s, g, params.code, await withHistory(s, g,
     { summary: `Removed directory code ${params.code}` }, () => applyToCache(g.phoneNumber,
-      (bufs) => dk.removeDirectoryCode(bufs, params.code))))),
+      (bufs) => dk.tidyBoard(dk.removeDirectoryCode(bufs, params.code)))))),
 
   // "Num of Digits in Dir Code". Decreasing wipes all resident data, so it needs confirm: true.
   route('PUT', `${G}/dir-digits`, 'gate-admin', async ({ s, g, body }) => {

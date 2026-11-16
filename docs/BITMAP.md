@@ -165,7 +165,8 @@ Hidden lives in names.bin (directory flag), not here.
 | 0–1 | 2 | Card number | BE16 |
 | 2–3 | 2 | Directory code | BCD, F-padded |
 
-An all-`FF` record is unused.
+An all-`FF` record is unused. DoorKing's software keeps the records **sorted by card number, packed from the first
+record** (no unused records in between); the app does the same after each edit (`tidyBoard`).
 
 ## rcv_out.bin (transactions, read only)
 

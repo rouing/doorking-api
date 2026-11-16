@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import {
-  applyResidentEdit, applyShownRule, deleteResident, removeDirectoryCode, addEntry, emptySlots, encodeBcd,
+  applyResidentEdit, applyShownRule, tidyBoard, deleteResident, removeDirectoryCode, addEntry, emptySlots, encodeBcd,
   areaCodeLimit, areaCodeUsage, convertAreaCodeMode, convertDirDigits, findDuplicates,
 } from '../src/residents-edit.ts';
 import { parsePhoneBin, parseNamesBin } from '../src/board-files.ts';
@@ -247,6 +247,31 @@ test('applyShownRule: residents are shown only with a name and a phone number; v
   assert.strictEqual(pointer(shown.names), 0xf80 + 2 * 20);
   assert.strictEqual(flag(applyShownRule(start, '300'), '300'), 0x00); // Adams has no phone
   assert.strictEqual(applyShownRule(start, '777'), start); // unknown code: unchanged
+});
+
+test('tidyBoard: directory in DoorKing order (stable for ties), cards sorted and packed, unused area codes cleared', () => {
+  const start = sorted(); // empty 010, Adams 300, miles 200, Young 400 (hidden), Acme 900 (vendor)
+  // Renaming Adams to Zed and filling the empty 010 leave them out of order until tidied.
+  const edited = applyResidentEdit(applyResidentEdit(start, { directoryCode: '300', name: 'Zed, Q' }), { directoryCode: '010', name: 'Brown, B' });
+  assert.deepStrictEqual(dirOrder(edited.names), ['010', '300', '200', '400', '900']);
+  const t = tidyBoard(edited);
+  assert.deepStrictEqual(dirOrder(t.names), ['010', '200', '400', '300', '900']); // Brown, miles, Young, Zed, then the vendor
+  assert.strictEqual(pointer(t.names), 0xf80 + 1 * 20); // shown: miles and Zed; the middle one is miles
+  // Equal names (ignoring case) keep their order; an emptied entry goes to the end of the empty slots.
+  const tie = tidyBoard(applyResidentEdit(applyResidentEdit(t, { directoryCode: '400', name: 'Same' }), { directoryCode: '200', name: 'same' }));
+  assert.deepStrictEqual(dirOrder(tie.names), ['010', '200', '400', '300', '900']);
+  const twoEmpty = tidyBoard(deleteResident(applyResidentEdit(start, { directoryCode: '300', name: 'Adams, A' }), '200'));
+  assert.deepStrictEqual(dirOrder(twoEmpty.names), ['010', '200', '300', '400', '900']);
+  // Cards: sorted by card number from the first record, no gaps.
+  const c = applyResidentEdit(applyResidentEdit(start, { directoryCode: '200', cards: ['900', '30'] }), { directoryCode: '300', cards: ['500'] });
+  const c2 = tidyBoard(applyResidentEdit(c, { directoryCode: '200', cards: ['30'] }));
+  assert.deepStrictEqual([0, 4, 8].map((o) => c2.cards.subarray(o, o + 4).toString('hex')), ['001ef200', '01f4f300', 'ffffffff']);
+  // Area codes no phone record uses are cleared, and the freed slot is used again.
+  const ac = applyResidentEdit(start, { directoryCode: '200', areaCode: '214', phone: '5551234' });
+  const moved = tidyBoard(applyResidentEdit(ac, { directoryCode: '200', areaCode: '972' }));
+  assert.deepStrictEqual(parseNamesBin(moved.names).areaCodes.slice(0, 2), [null, '972']);
+  const again = applyResidentEdit(moved, { directoryCode: '400', areaCode: '469', phone: '5550000' });
+  assert.deepStrictEqual(parseNamesBin(again.names).areaCodes.slice(0, 2), ['469', '972']);
 });
 
 test('middle pointer updates only when the directory changes', () => {
