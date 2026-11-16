@@ -148,8 +148,8 @@ dropped. The pull's job log says which happened.
 |---|---|---|---|---|
 | GET | `/residents` | gate | | `{ rows, unassignedCards, areaCodes, emptyCodes, dirDigits, duplicates, cache, pulled, saved }`; each row has its `note`; `duplicates: [{ kind: directoryCode\|entryCode\|card, value, holders, text }]` lists values held by more than one entry |
 | GET | `/residents/{code}` | gate | | one row |
-| POST | `/residents` | gate-admin | `{ directoryCode, name, vendor?, hidden?, …fields }` | 201; fills a vacant code or inserts a new one |
-| PUT | `/residents/{code}` | gate-admin | any of `name, hidden, vendor, areaCode, phone, entryCode, securityLevel, elevatorRef, floor, cards[]` | only the given fields change |
+| POST | `/residents` | gate-admin | `{ directoryCode, name, vendor?, …fields }` | 201; fills a vacant code or inserts a new one |
+| PUT | `/residents/{code}` | gate-admin | any of `name, vendor, areaCode, phone, entryCode, securityLevel, elevatorRef, floor, cards[]` | only the given fields change |
 | PUT | `/residents/{code}/note` | gate-admin | `{ note }` | local note, at most 500 characters (blank clears it): `{ note }` |
 | DELETE | `/residents/{code}` | gate-admin | | blanks the slot; the code stays as an empty unit |
 | DELETE | `/directory-codes/{code}` | gate-admin | | removes the code from the gate entirely |

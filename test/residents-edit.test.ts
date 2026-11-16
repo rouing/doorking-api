@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import {
-  applyResidentEdit, deleteResident, removeDirectoryCode, addEntry, emptySlots, encodeBcd,
+  applyResidentEdit, applyShownRule, deleteResident, removeDirectoryCode, addEntry, emptySlots, encodeBcd,
   areaCodeLimit, areaCodeUsage, convertAreaCodeMode, convertDirDigits, findDuplicates,
 } from '../src/residents-edit.ts';
 import { parsePhoneBin, parseNamesBin } from '../src/board-files.ts';
@@ -230,6 +230,23 @@ test('removeDirectoryCode takes the code out and closes the gap, undoing addEntr
   assert.ok(r.cards.equals(start.cards));
   assert.ok(r.names.subarray(0xf80).equals(start.names.subarray(0xf80)));
   assert.throws(() => removeDirectoryCode(r, '555'), (e) => e.status === 404);
+});
+
+test('applyShownRule: residents are shown only with a name and a phone number; vendors never', () => {
+  const flag = (b, code) => parseNamesBin(b.names).directory.find((e) => e.directoryCode === code).flag;
+  const noPhone = applyShownRule(applyResidentEdit(baseline(), { directoryCode: '701', phone: '' }), '701');
+  assert.strictEqual(flag(noPhone, '701'), 0x00);
+  const back = applyShownRule(applyResidentEdit(noPhone, { directoryCode: '701', phone: '5551234', hidden: true }), '701');
+  assert.strictEqual(flag(back, '701'), 0x20); // a phone number shows them, whatever was asked
+  assert.strictEqual(flag(applyShownRule(applyResidentEdit(back, { directoryCode: '701', name: '' }), '701'), '701'), 0x00);
+  assert.strictEqual(flag(applyShownRule(applyResidentEdit(back, { directoryCode: '701', vendor: true }), '701'), '701'), 0x01);
+  // Hiding or showing moves the middle pointer like any other directory change.
+  const start = sorted();
+  const shown = applyShownRule(applyResidentEdit(start, { directoryCode: '400', phone: '5551234' }), '400');
+  assert.strictEqual(flag(shown, '400'), 0x20);
+  assert.strictEqual(pointer(shown.names), 0xf80 + 2 * 20);
+  assert.strictEqual(flag(applyShownRule(start, '300'), '300'), 0x00); // Adams has no phone
+  assert.strictEqual(applyShownRule(start, '777'), start); // unknown code: unchanged
 });
 
 test('middle pointer updates only when the directory changes', () => {

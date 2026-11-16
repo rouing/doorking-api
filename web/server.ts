@@ -1507,7 +1507,8 @@ const ROUTES = [
   route('POST', `${G}/residents`, 'gate-admin', ({ s, g, body }) => withHistory(s, g,
     { summary: `Added ${body.vendor ? 'vendor' : 'resident'} ${body.directoryCode}` }, async () => {
       const opts = await editOpts(g);
-      const [, out] = await applyToCache(g.phoneNumber, (bufs) => dk.addEntry(bufs, body, opts));
+      const { hidden: _hidden, ...fields } = body;
+      const [, out] = await applyToCache(g.phoneNumber, (bufs) => dk.applyShownRule(dk.addEntry(bufs, fields, opts), body.directoryCode));
       return [201, out];
     })),
 
@@ -1521,7 +1522,8 @@ const ROUTES = [
   route('PUT', `${G}/residents/:code`, 'gate-admin', ({ s, g, params, body }) => withHistory(s, g,
     { summary: `Edited directory code ${params.code}` }, async () => {
       const opts = await editOpts(g);
-      return applyToCache(g.phoneNumber, (bufs) => dk.applyResidentEdit(bufs, { ...body, directoryCode: params.code }, opts));
+      const { hidden: _hidden, ...fields } = body;
+      return applyToCache(g.phoneNumber, (bufs) => dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode: params.code }, opts), params.code));
     })),
 
   // The local note of a directory code (never sent to the gate). Body: { note } (blank clears it).

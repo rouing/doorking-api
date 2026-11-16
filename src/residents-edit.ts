@@ -286,6 +286,20 @@ function editBuffers(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOption
   return { names, phone, cards };
 }
 
+// Sets whether a directory code is shown in the entry-panel directory: a resident is shown only with a name and a
+// phone number; a vendor never is. Applied to users' adds and edits, not to rebuilds from stored values.
+export function applyShownRule(buffers: BoardBuffers, directoryCode: unknown): BoardBuffers {
+  const names = Buffer.from(buffers.names);
+  const code = dirCode(names, directoryCode);
+  const no = findNamesEntry(names, code);
+  const po = findPhoneRecord(buffers.phone, code);
+  if (no < 0 || po < 0) return buffers;
+  const { phone } = readPhoneFields(buffers.phone.subarray(po, po + PHONE_SIZE), phoneMode(names));
+  const shown = !(names[no + 15] & 0x01) && names.toString('latin1', no, no + 15).trim() !== '' && phone != null;
+  names[no + 15] = shown ? names[no + 15] | 0x20 : names[no + 15] & ~0x20;
+  return withPointer(buffers.names, { ...buffers, names });
+}
+
 // Deletes a resident/vendor by returning its slot to the gate's own "empty slot" state: the directory
 // entry keeps its code but the name is blanked and the flag cleared (0x00), the phone record keeps its
 // code but every field is blanked (area/phone/entry = 0xFF, byte 8 = 0x01, floor = 0xFF), and all of the

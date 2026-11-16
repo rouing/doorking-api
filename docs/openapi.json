@@ -2545,7 +2545,8 @@
             ]
           },
           "hidden": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Not in the entry-panel directory. Set on every add and edit: residents with a name and a phone number are shown; others, and vendors, are hidden. A hidden value sent in an add or edit is ignored."
           },
           "areaCode": {
             "type": "string"
@@ -2639,9 +2640,6 @@
             "maxLength": 15
           },
           "vendor": {
-            "type": "boolean"
-          },
-          "hidden": {
             "type": "boolean"
           },
           "areaCode": {

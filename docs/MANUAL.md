@@ -199,7 +199,7 @@ When adding or editing:
 | Cards | their card or remote numbers (00001–65407). Two people can't share one. |
 | Security level | Enabled, Disabled, or a level 2–30 |
 | Floor, elevator reference | only for buildings with elevators |
-| Hidden | leaves them out of the directory shown on the gate's screen |
+| Hidden | set for you when you save: someone with a phone number is shown in the directory on the gate's screen; without one they're hidden, since the gate has nothing to call. Vendors are always hidden. |
 | Notes | anything you want to remember (up to 500 characters). Notes stay on this computer and are never sent to the gate. Everyone who manages this gate here can see them. |
 
 - **Delete** empties the entry but keeps its directory code free for someone else. **Remove code** takes the

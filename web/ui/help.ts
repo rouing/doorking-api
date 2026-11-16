@@ -49,7 +49,7 @@ export const HELP: Record<string, string> = {
   securityLevel: 'When this person\'s entry code and cards work: Enabled = always, Disabled = never, 2–30 = only at the times set for that level on the Security Levels page.',
   floor: 'The floor this resident lives on (1–64). Used for elevator control: their visitor can only go to this floor.',
   elevatorRef: 'Picks a row (1–8) on the Elevator Reference page: which elevators this resident\'s visitors may use, and for how long.',
-  hidden: 'Leaves this person out of the directory list shown on the entry panel\'s screen.',
+  hidden: 'Set automatically when saved: a resident with a phone number is shown in the directory list on the entry panel\'s screen; without one they are hidden, as the panel has nothing to dial.',
   cards: 'Card or remote numbers (00001–65407) that open the gate for this person. Two entries can\'t share one.',
   notes: 'Your own notes about this person. Kept on this computer for everyone who manages this gate here. Never sent to the gate.',
 

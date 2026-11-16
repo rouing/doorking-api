@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Checkbox, Flex, Grid, Heading, Select, Text, TextArea, TextField } from '@radix-ui/themes';
+import { Button, Flex, Grid, Heading, Select, Text, TextArea, TextField } from '@radix-ui/themes';
 import type { DeviceRange, GateFeatures, ResidentRow } from '../../../src/types.ts';
 import { errorText, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
@@ -34,7 +34,6 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
   const [securityLevel, setSecurity] = useState(r && r.securityLevel !== '' ? String(r.securityLevel) : '1');
   const [floor, setFloor] = useState(r ? String(r.floor) : '');
   const [elevatorRef, setElevator] = useState(String((r && r.elevatorRef) || 1));
-  const [hidden, setHidden] = useState(r ? r.hidden : false);
   const [cards, setCards] = useState((r ? r.cards : []).map((c) => String(Number(c))));
   const [note, setNote] = useState(r ? r.note || '' : '');
   const [busy, setBusy] = useState(false);
@@ -58,7 +57,7 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
       setInfo('Phone must be 7 digits, 10 with area code, or 11 starting with 1 for long distance.');
       return null;
     }
-    return { ...out, areaCode: full.slice(0, -7), phone: full.slice(-7), floor, elevatorRef: Number(elevatorRef), hidden };
+    return { ...out, areaCode: full.slice(0, -7), phone: full.slice(-7), floor, elevatorRef: Number(elevatorRef) };
   }
 
   // The note is local (not in the working copy), saved after the entry when it changed.
@@ -144,9 +143,10 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
                 </Select.Root>
               </Field>
             )}
-            <Text as="label" size="2">
+            <Text size="2" color="gray">
               <Flex gap="2" align="center" height="100%">
-                <Checkbox checked={hidden} onCheckedChange={(v) => setHidden(v === true)} /> Hidden from the entry-panel directory<HelpTip of="hidden" />
+                {name.trim() && phone.replace(/\D/g, '') ? 'Shown in the entry-panel directory' : 'Hidden from the entry-panel directory (no phone number)'}
+                <HelpTip of="hidden" />
               </Flex>
             </Text>
           </>
