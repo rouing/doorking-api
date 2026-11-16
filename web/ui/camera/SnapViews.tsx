@@ -56,14 +56,20 @@ export function SnapCell({ t, snaps, onOpen }: { t: TransactionRow; snaps: Snaps
   if (!t.camera) return <Text size="1" color="gray" title="Gate data transfers, hold-open events and other gate commands don't get camera footage">—</Text>;
   const s = snaps.snapshots[t.minute];
   const bar = snaps.byMinute[t.minute] ? <SnapBar minute={t.minute} snaps={snaps} /> : null;
-  if (s && s.status === 'removed') return bar || <Text size="1" color="gray" title={s.error || ''}>Removed</Text>;
-  if (!s || (snaps.video && s.files.length && !s.files.some(isVideo))) {
+  const getButton = (title: string) => (
+    <Button size="1" variant="soft" disabled={snaps.running} style={{ whiteSpace: 'nowrap' }}
+      title={snaps.running ? 'Wait for the snapshot run to finish' : title}
+      onClick={(e) => { e.stopPropagation(); snaps.runMinute(t.minute); }}>{snaps.video ? 'Get video' : 'Get pictures'}</Button>
+  );
+  if (s && s.status === 'removed') {
     return bar || (
-      <Button size="1" variant="soft" disabled={snaps.running} style={{ whiteSpace: 'nowrap' }}
-        title={snaps.running ? 'Wait for the snapshot run to finish' : `Get the camera ${snaps.noun} for this minute only`}
-        onClick={(e) => { e.stopPropagation(); snaps.runMinute(t.minute); }}>{snaps.video ? 'Get video' : 'Get pictures'}</Button>
+      <Flex gap="2" align="center" wrap="nowrap">
+        <Text size="1" color="gray" title={s.error || ''}>Removed</Text>
+        {getButton(`${s.error ? `${s.error}. ` : ''}Get the camera ${snaps.noun} again from the recorder (it works while the recorder still has this footage)`)}
+      </Flex>
     );
   }
+  if (!s || (snaps.video && s.files.length && !s.files.some(isVideo))) return bar || getButton(`Get the camera ${snaps.noun} for this minute only`);
   const firsts = new Map<number, string>(); // channel -> its first saved frame, or its first frame when none is saved
   for (const f of snapFiles(snaps.settings, s)) {
     const ch = fileChannel(f);
