@@ -28,7 +28,7 @@ type Reply = readonly [number, unknown];
 // tokenHash identifies the session row; gate: the phone number the web UI has open. apiKey: the request came with an
 // API key (then user is "api:<key name>" and there is no session row). strongAt: last passkey confirmation (ms) or null.
 interface Session {
-  tokenHash: string; user: string; gate: string | null; mustChangePassword: boolean; strongAt: number | null; apiKey?: { phone: string; role: GateRole };
+  tokenHash: string; user: string; gate: string | null; mustChangePassword: boolean; strongAt: number | null; signedInAt: number; apiKey?: { phone: string; role: GateRole };
 }
 // A managed gate as seen by one user: role is theirs, actor their username (for History); user/password are the
 // gate's DKS login (what buildSessionRequest and the relay calls read).
@@ -71,8 +71,7 @@ try {
   process.exit(1);
 }
 // The Debug logs setting, kept in memory so writing a line never waits for the database.
-let debugOn = await dk.debugLogEnabled(STORE);
-const DEBUG = dk.createDebugLog(path.join(LOG_DIR, 'debug.log'), { enabled: () => debugOn });
+const DEBUG = dk.createDebugLog(path.join(LOG_DIR, 'debug.log')); // console and logs/debug.log
 // Once: emails saved before confirmation links existed must be confirmed.
 const unconfirmed = await dk.unconfirmOldEmails(STORE);
 if (unconfirmed) console.log(`${unconfirmed} account email(s) now need confirming (User Settings)`);
@@ -86,6 +85,7 @@ if (migrated && migrated.gates.length) {
 }
 const DIST = path.join(HERE, 'dist'); // the web page, built from web/ui by `npm run build`
 const IDLE_MS = CONFIG.security.sessionIdleMinutes * 60000;
+const MAX_AGE_MS = CONFIG.security.sessionMaxHours * 3600000;
 const STEP_UP_MS = CONFIG.security.stepUpMinutes * 60000;
 const MAX_BODY_BYTES = 10000;
 // Failed sign-ins per user name: after MAX_FAILED_SIGN_INS within SIGN_IN_WINDOW_MS, sign-in is refused for the
@@ -128,9 +128,15 @@ function sendEmails(): void {
     .finally(() => { sending = null; });
 }
 // Queues a message to an address (nothing when email is off).
-async function mailTo(to: string, msg: { subject: string; text: string }, kind: string): Promise<void> {
+// A failure to queue is written to the console and the debug log; required: it is also thrown (502), for links the
+// user is told were sent (invitations, email confirmations).
+async function mailTo(to: string, msg: { subject: string; text: string }, kind: string, required = false): Promise<void> {
   if (!MAILER || !to) return;
-  try { await dk.queueEmail(STORE, { to, ...msg, kind }); sendEmails(); } catch (e) { DEBUG.write('email', `Not queued (${kind}): ${(e as Error).message}`); }
+  try { await dk.queueEmail(STORE, { to, ...msg, kind }); sendEmails(); } catch (e) {
+    const why = (e as Error).message;
+    DEBUG.write('email', `Not queued (${kind}): ${why}`);
+    if (required) throw Object.assign(new Error(`The email couldn't be sent (${why}). Try again later.`), { status: 502 });
+  }
 }
 // A security alert to the user's confirmed email (always sent; it can't be turned off).
 async function securityAlert(username: string, what: string): Promise<void> {
@@ -154,33 +160,65 @@ async function sendInvite(username: string, by: string, phone: string): Promise<
   const u = await dk.getUser(STORE, username);
   if (!u || !u.pendingEmail) return;
   const token = await dk.createToken(STORE, 'invite', u.username, u.pendingEmail);
-  await mailTo(u.pendingEmail, dk.messages.invite(APP, u.username, by, await gateName(phone), token), 'invite');
+  await mailTo(u.pendingEmail, dk.messages.invite(APP, u.username, by, await gateName(phone), token), 'invite', true);
 }
 // Sends the confirmation link for the user's pending email.
 async function sendVerification(username: string): Promise<void> {
   const u = await dk.getUser(STORE, username);
   if (!u || !u.pendingEmail || !MAILER) return;
-  await mailTo(u.pendingEmail, dk.messages.verify(APP, u.username, await dk.createToken(STORE, 'verify', u.username, u.pendingEmail)), 'verify');
+  await mailTo(u.pendingEmail, dk.messages.verify(APP, u.username, await dk.createToken(STORE, 'verify', u.username, u.pendingEmail)), 'verify', true);
 }
-// Password-reset requests per username/email and in total, so the form can't be used to flood mailboxes.
-const resetRequests = new Map<string, number[]>();
-const RESET_PER_ID = 3;
-const RESET_TOTAL = 50;
+// Requests to public routes per key, within SIGN_IN_WINDOW_MS (pruned by sweepSessions): password resets per client
+// address and per account (so the form can't flood a mailbox, and one address can't use up everyone's resets), and
+// passkey and single sign-on starts per client address (so one address can't push out everyone's pending sign-ins).
+const requestTimes = new Map<string, number[]>();
+const RESET_PER_ACCOUNT = 3;
+const PER_ADDRESS = 30;
+const recentRequests = (key: string): number[] => (requestTimes.get(key) || []).filter((t) => Date.now() - t < SIGN_IN_WINDOW_MS);
+// Records a request; true when the key already had limit requests in the window (the request is refused).
+function overLimit(key: string, limit: number): boolean {
+  const list = recentRequests(key);
+  if (list.length >= limit) return true;
+  requestTimes.set(key, [...list, Date.now()]);
+  return false;
+}
+const clientIp = (req: IncomingMessage): string => dk.clientAddress(req.socket.remoteAddress, req.headers['x-forwarded-for']);
 
 // While no account exists, creating the first one needs this code, printed only to the server's console (journalctl),
 // so a stranger reaching a fresh public install can't claim it first.
 let SETUP_CODE = '';
-const failedSignIns = new Map<string, number[]>(); // user (lower case) -> times of recent failed sign-ins
+const failedSignIns = new Map<string, number[]>(); // key (see signInKeys) -> times of recent failed password tries
 let job: JobState = { state: 'idle', log: [] }; // one gate connection at a time, across all gates
 
 const recentFailures = (user: string): number[] => (failedSignIns.get(user) || []).filter((t) => Date.now() - t < SIGN_IN_WINDOW_MS);
+// Failed sign-in limits (dk.signInKeys); "me:<user>" counts the signed-in user's own password checks (confirmOwnPassword).
+const signInKeys = (user: string, ip: string) => dk.signInKeys(user, ip, MAX_FAILED_SIGN_INS);
+const blocked = (keys: [string, number][]) => keys.some(([k, n]) => recentFailures(k).length >= n);
+// Counts a password try as failed before it is checked, so tries sent at the same moment can't all pass the limit.
+// Returns a function that takes the try back (the password was right, or the check failed with an error).
+function countTry(keys: [string, number][]): () => void {
+  const at = Date.now();
+  for (const [k] of keys) failedSignIns.set(k, [...recentFailures(k), at]);
+  return () => {
+    for (const [k] of keys) {
+      const list = failedSignIns.get(k) || [];
+      const i = list.indexOf(at);
+      if (i >= 0) list.splice(i, 1);
+    }
+  };
+}
+// Forgets an account's failed sign-ins (after a password reset).
+function clearFailures(user: string): void {
+  for (const k of [...failedSignIns.keys()]) if (k === user || k.startsWith(`${user}|`) || k === `me:${user}`) failedSignIns.delete(k);
+}
 
 // Ends idle sessions (they are kept in the database, so they survive a restart).
 async function sweepSessions() {
   try {
-    for (const user of await dk.sweepSessions(STORE, IDLE_MS)) DEBUG.write('session', `${user} signed out after ${IDLE_MS / 60000} minutes idle`);
+    for (const user of await dk.sweepSessions(STORE, IDLE_MS, MAX_AGE_MS)) DEBUG.write('session', `${user} signed out (idle or signed in too long ago)`);
   } catch (e) { DEBUG.write('session', `Session sweep failed: ${(e as Error).message}`); }
-  for (const user of failedSignIns.keys()) if (!recentFailures(user).length) failedSignIns.delete(user);
+  for (const k of failedSignIns.keys()) if (!recentFailures(k).length) failedSignIns.delete(k);
+  for (const k of requestTimes.keys()) if (!recentRequests(k).length) requestTimes.delete(k);
 }
 
 function send(res: ServerResponse, code: number, body: unknown, type = 'application/json') {
@@ -216,22 +254,42 @@ function readJson(req: IncomingMessage): Promise<Body> {
 async function currentSession(req: IncomingMessage): Promise<Session | null> {
   const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '');
   if (!m) return null;
-  const s = await dk.findSession(STORE, m[1], IDLE_MS);
+  const s = await dk.findSession(STORE, m[1], IDLE_MS, MAX_AGE_MS);
   if (!s) return null;
   const u = await dk.getUser(STORE, s.username);
   if (!u) return null;
-  return { tokenHash: s.tokenHash, user: u.username, gate: s.gate, mustChangePassword: u.mustChangePassword, strongAt: s.strongAt };
+  return { tokenHash: s.tokenHash, user: u.username, gate: s.gate, mustChangePassword: u.mustChangePassword, strongAt: s.strongAt, signedInAt: s.createdAt };
 }
 
 // Until when the session's passkey confirmation covers the sensitive actions (ms), or null.
 const strongUntil = (s: Session): number | null => (s.strongAt && s.strongAt + STEP_UP_MS > Date.now() ? s.strongAt + STEP_UP_MS : null);
 // The refusal of a sensitive action without a recent passkey confirmation (see STEP_UP).
-async function stepUpRefusal(s: Session): Promise<Reply> {
+// extra: a sentence added to the error.
+async function stepUpRefusal(s: Session, extra = ''): Promise<Reply> {
   const hasPasskey = (await dk.listPasskeys(STORE, s.user)).length > 0;
-  return [403, { stepUp: true, hasPasskey, error: hasPasskey
+  return [403, { stepUp: true, hasPasskey, error: (hasPasskey
     ? 'Confirm it\'s you with your passkey to do this.'
-    : 'This needs a passkey. Add one in User Settings (Passkeys), then try again.' }];
+    : 'This needs a passkey. Add one in User Settings (Passkeys), then try again.') + extra }];
 }
+
+// Re-confirming who it is before a sensitive account change (email, adding or removing a passkey), so a stolen session
+// alone isn't enough; dk.reauthNeeded decides how. Returns the refusal, or null.
+const SIGN_IN_AGAIN = `For your security, sign out and sign in again, then make this change within ${STEP_UP_MS / 60000} minutes.`;
+const LOST_PASSKEY = ` Lost your passkey? Reset your password with the email link, sign in, and change your passkeys within ${STEP_UP_MS / 60000} minutes.`;
+async function reauthRefusal(s: Session, change: dk.ReauthChange, given?: unknown): Promise<Reply | null> {
+  const u = (await dk.getUser(STORE, s.user))!;
+  const need = dk.reauthNeeded({
+    strong: Boolean(strongUntil(s)), hasPassword: u.hasPassword, passkeys: (await dk.listPasskeys(STORE, s.user)).length,
+    signedInAt: s.signedInAt, resetAt: u.resetAt ? new Date(u.resetAt).getTime() : null, now: Date.now(), windowMs: STEP_UP_MS,
+  }, change);
+  if (need === 'ok') return null;
+  if (need === 'password') return confirmOwnPassword(s.user, given);
+  if (need === 'step-up') return stepUpRefusal(s, change === 'email' ? '' : LOST_PASSKEY);
+  return [403, { error: SIGN_IN_AGAIN }];
+}
+
+// A .catch handler for background work: the failure goes to the log (console and file).
+const logged = (area: string, what: string) => (e: unknown) => DEBUG.write(area, `${what}: ${(e as Error).message}`);
 
 const NO_GATE = 'Gate not found, or you have no access to it';
 const meReply = (u: dk.User) => ({ username: u.username, email: u.email, pendingEmail: u.pendingEmail, phone: u.phone, dark: u.dark,
@@ -264,13 +322,13 @@ const cookieValue = (req: IncomingMessage, name: string): string => (new RegExp(
 // no password (single sign-on) aren't asked. Returns the refusal, or null.
 async function confirmOwnPassword(username: string, given: unknown): Promise<Reply | null> {
   if (!(await dk.getUser(STORE, username))!.hasPassword) return null;
-  if (recentFailures(username).length >= MAX_FAILED_SIGN_INS) {
-    return [429, { error: `Too many wrong passwords. Try again in ${SIGN_IN_WINDOW_MS / 60000} minutes.` }];
-  }
-  if (!await dk.checkOwnPassword(STORE, username, given)) {
-    failedSignIns.set(username, [...recentFailures(username), Date.now()]);
-    return [403, { error: 'Your password is wrong' }];
-  }
+  const keys: [string, number][] = [[`me:${username}`, MAX_FAILED_SIGN_INS]];
+  if (blocked(keys)) return [429, { error: `Too many wrong passwords. Try again in ${SIGN_IN_WINDOW_MS / 60000} minutes.` }];
+  const takeBack = countTry(keys);
+  let right: boolean;
+  try { right = await dk.checkOwnPassword(STORE, username, given); } catch (e) { takeBack(); throw e; }
+  if (!right) return [403, { error: 'Your password is wrong' }];
+  takeBack();
   return null;
 }
 // Why the account can't use a password (linked to a provider with passwords: false), or null.
@@ -338,10 +396,11 @@ function startJob(g: Gate, what: string, makeRequest: () => Promise<SessionReque
   const startedAt = new Date();
   const j: JobState = { state: 'running', what, phoneNumber: g.phoneNumber, user: g.actor, startedAt, log: [], ...(info.adding && { adding: true }) };
   job = j;
-  // Each job line also goes to the debug log, except a status repeated while the gate is polled.
+  // Each job line also goes to the debug log (the job keeps the last MAX_JOB_LOG lines), except a status repeated while the gate is polled.
   let lastLine = '';
   const log = (line: string) => {
     j.log.push(`${new Date().toLocaleTimeString('en-US')}  ${line}`);
+    if (j.log.length > MAX_JOB_LOG) j.log.shift(); // the page fetches the whole log every 3 s
     if (line !== lastLine) DEBUG.write('gate', `Gate ${g.phoneNumber}: ${line}`);
     lastLine = line;
   };
@@ -358,14 +417,14 @@ function startJob(g: Gate, what: string, makeRequest: () => Promise<SessionReque
       DEBUG.write('gate', `Gate ${g.phoneNumber}: ${what} ${info.scheduled ? '(scheduled) ' : ''}${j.state} after ${Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000)} s`);
       if (info.adding && !await finishAdding(g, j, log)) return j;
       if (what === 'send' && j.state === 'failed' && !info.scheduled) {
-        await gateAlert(g.phoneNumber, 'Send to gate failed', `Started by ${g.actor}. Error: ${j.error}`).catch(() => {});
+        await gateAlert(g.phoneNumber, 'Send to gate failed', `Started by ${g.actor}. Error: ${j.error}`).catch(logged('email', 'Gate alert not sent'));
       }
       const { adding, ...rest } = info;
       const action = what === 'send' ? 'send' : 'pull';
       const summary = `${what === 'send' ? 'Sent working copy to gate' : `Pulled ${what}`}${info.scheduled ? ' (scheduled)' : ''}${adding ? ' (gate added)' : ''}`;
       try {
         await dk.addEvent(STORE, g.phoneNumber, { user: g.actor, action, what, summary, result: j.state, ...(j.error && { error: j.error }), ...rest });
-      } catch (e) { console.error(`History not saved: ${(e as Error).message}`); DEBUG.write('server', `History not saved: ${(e as Error).message}`); }
+      } catch (e) { DEBUG.write('server', `History not saved: ${(e as Error).message}`); }
       return j;
     });
 }
@@ -408,10 +467,11 @@ async function finishAdding(g: Gate, j: JobState, log: (line: string) => void): 
 const snapRuns = new Map<string, SnapRun>(); // phone -> { state, startedAt, finishedAt?, log, progress?, result?, error?, again?, stopping? }
 const snapAborts = new Map<string, AbortController>(); // phone -> AbortController of the running run
 const snapRefreshes = new Map<string, Promise<unknown>>(); // phone -> Promise of the last single-picture refresh (they run one at a time)
+const snapTidies = new Map<string, Promise<void>>(); // phone -> the snapshot clean-up running now (one at a time per gate)
 
 // Fetches one picture again (refresh button), after the gate's earlier refreshes.
 function refreshSnapshot(phone: string, dir: string, minute: string, file: string) {
-  const p = (snapRefreshes.get(phone) || Promise.resolve()).catch(() => {}).then(() =>
+  const p = Promise.all([snapRefreshes.get(phone), snapTidies.get(phone)]).catch(() => {}).then(() =>
     dk.refreshSnapshot(STORE, CAMERAS, phone, dir, minute, file, { log: (m) => DEBUG.write('camera', m) }));
   snapRefreshes.set(phone, p);
   p.catch(() => {}).finally(() => { if (snapRefreshes.get(phone) === p) snapRefreshes.delete(phone); });
@@ -422,9 +482,17 @@ const SNAPSHOT_TIDY_MS = CONFIG.cameras.tidyMinutes * 60000;
 const mb = (bytes: number) => `${Math.round(bytes / 1e6)} MB`;
 // Tidies a gate's saved snapshots (dk.tidySnapshots with its keepDays) and logs what was deleted. inRun: called by
 // the gate's snapshot run, which waited for refreshes; otherwise skipped while a run or refresh is going.
-async function tidyGateSnapshots(phone: string, dir: string, inRun = false): Promise<void> {
+// One clean-up per gate at a time: a caller arriving while one runs shares it, so two never delete under each other.
+function tidyGateSnapshots(phone: string, dir: string, inRun = false): Promise<void> {
+  const running = snapTidies.get(phone);
+  if (running) return running;
   const cur = snapRuns.get(phone);
-  if (!inRun && ((cur && cur.state === 'running') || snapRefreshes.has(phone))) return;
+  if (!inRun && ((cur && cur.state === 'running') || snapRefreshes.has(phone))) return Promise.resolve();
+  const p = tidyNow(phone, dir).finally(() => { if (snapTidies.get(phone) === p) snapTidies.delete(phone); });
+  snapTidies.set(phone, p);
+  return p;
+}
+async function tidyNow(phone: string, dir: string): Promise<void> {
   const cfg = await dk.getCameraSettings(STORE, phone);
   const keep = (cfg && cfg.keepDays) || 0;
   const r = await dk.tidySnapshots(STORE, phone, dir, keep);
@@ -444,14 +512,21 @@ async function tidyGateSnapshots(phone: string, dir: string, inRun = false): Pro
   if (r.missing) DEBUG.write('camera', `Gate ${phone}: ${r.missing} snapshot log entries marked removed (their files are no longer on disk)`);
 }
 // Every gate with camera settings or a snapshots folder.
+// Every gate with camera settings or a snapshots folder (folders named by gate phone digits only, so a copy such as
+// 5550100.bak is never taken for the gate). Skipped while the previous round still runs.
+let tidyingAll = false;
 async function tidyAllSnapshots(): Promise<void> {
-  const phones = new Set((await dk.all<{ phone: string }>(STORE, 'SELECT phone FROM cameras')).map((r) => r.phone));
-  if (fs.existsSync(ROOT)) for (const d of fs.readdirSync(ROOT)) if (fs.existsSync(path.join(ROOT, d, 'snapshots'))) phones.add(d);
-  for (const phone of phones) {
-    try { await tidyGateSnapshots(phone, path.join(ROOT, phone)); } catch (e) {
-      DEBUG.write('camera', `Gate ${phone}: snapshot clean-up failed: ${(e as Error).message}`);
+  if (tidyingAll) return;
+  tidyingAll = true;
+  try {
+    const phones = new Set((await dk.all<{ phone: string }>(STORE, 'SELECT phone FROM cameras')).map((r) => r.phone));
+    if (fs.existsSync(ROOT)) for (const d of fs.readdirSync(ROOT)) if (/^\d+$/.test(d) && fs.existsSync(path.join(ROOT, d, 'snapshots'))) phones.add(d);
+    for (const phone of phones) {
+      try { await tidyGateSnapshots(phone, path.join(ROOT, phone)); } catch (e) {
+        DEBUG.write('camera', `Gate ${phone}: snapshot clean-up failed: ${(e as Error).message}`);
+      }
     }
-  }
+  } finally { tidyingAll = false; }
 }
 
 // minute: snapshot only that transaction minute (callers refuse it while a run is going). Returns a promise of
@@ -487,7 +562,6 @@ function queueSnapshots(phone: string, dir: string, minute?: string): Promise<Sn
       const { message } = e as Error;
       r.state = 'failed';
       r.error = message;
-      console.error(`Snapshots for ${phone} failed: ${message}`);
       DEBUG.write('camera', `Gate ${phone}: snapshot run failed: ${message}`);
     }
     r.finishedAt = new Date();
@@ -574,12 +648,17 @@ function sendVideo(req: IncomingMessage, res: ServerResponse, file: string) {
   return fs.createReadStream(file, { start, end }).pipe(res);
 }
 
-// The transaction list (the saved history, tx-history.ts), with names from the working copy's values.
-const gateData = async (phone: string) => {
-  const [prefs, tx, pulledAt, w] = await Promise.all([prefsOf(phone), dk.readTransactions(STORE, phone),
+// The transaction list (the saved history, tx-history.ts), with names from the working copy's values; page: one page
+// of it (GET /data), with transactions.next for the older page. The server's own uses (camera runs) take all of it.
+const gateData = async (phone: string, page?: { before?: number; limit: number }) => {
+  const [prefs, tx, pulledAt, w] = await Promise.all([prefsOf(phone), dk.readTransactionPage(STORE, phone, page),
     dk.txPulledAt(STORE, phone), dk.loadWorkingState(STORE, phone)]);
-  return loadData(pulledAt, w && w.state, prefs.deviceAssociation, tx);
+  const data = loadData(pulledAt, w && w.state, prefs.deviceAssociation, tx.records);
+  return { transactions: data.transactions && { ...data.transactions, next: tx.next } };
 };
+const MAX_JOB_LOG = 500;
+const TX_PAGE = 2000;
+const TX_PAGE_MAX = 10000;
 
 // The board files of a pull, or null when one is missing.
 const boardOf = (files: Record<string, Buffer>): BoardBuffers | null => (dk.CACHE_FILES.every((n) => files[n])
@@ -655,9 +734,10 @@ async function prepareGateSend(g: Gate): Promise<PreparedSend> {
   return { ...await dk.prepareSend(STORE, g.phoneNumber), counts: await residentCounts(g.phoneNumber) };
 }
 
-// Sends the working copy, then pulls residents again to check the gate now holds it.
-// Match: the pull becomes the base and the working copy. Mismatch: the pull is applied like any residents pull (the
-// changes not on the gate stay unsent) and the differing blocks are logged.
+// Sends the working copy, then pulls residents again to check the gate now holds what was sent.
+// Match: the pull becomes the base and the working copy; edits saved while the send ran are kept on top of it (applied
+// like any residents pull). Mismatch: the pull is applied like any residents pull (the changes not on the gate stay
+// unsent) and the differing blocks are logged.
 // prepared: from prepareGateSend, awaited before the busy check so the job is claimed without a gap.
 function startSend(g: Gate, prepared: PreparedSend, info: JobInfo = {}): Promise<JobState> {
   return startJob(g, 'send', () => sessionRequest(g, 'send', { residentCounts: prepared.counts }), async (log, request) => {
@@ -667,13 +747,14 @@ function startSend(g: Gate, prepared: PreparedSend, info: JobInfo = {}): Promise
     log('Send finished; pulling residents to check');
     const { files } = await dk.pullFromGate(client(), 'residents', pullRequest, { onStatus: log });
     log(await recordGateState(g.phoneNumber, boardOf(files)));
-    const check = await dk.verifySend(STORE, g.phoneNumber, files);
+    const check = await dk.verifySend(STORE, g.phoneNumber, files, prepared.files);
     if (!check.matches) {
       await applyResidentsPull(g, files, log);
-      throw new Error(`Check pull differs from the working copy: ${JSON.stringify(check.differentBlocks)}. What the gate doesn't hold is still unsent.`);
+      throw new Error(`Check pull differs from what was sent: ${JSON.stringify(check.differentBlocks)}. What the gate doesn't hold is still unsent.`);
     }
-    await serial(g.phoneNumber, () => dk.replaceBase(STORE, g.phoneNumber, files));
-    log('Check passed: the gate holds the working copy, which now matches the gate.');
+    const later = await serial(g.phoneNumber, () => dk.acceptSentPull(STORE, g.phoneNumber, files, prepared.files));
+    if (!later) log('Check passed: the gate holds the working copy, which now matches the gate.');
+    else for (const line of ['Check passed: the gate holds what was sent. Changes saved while sending:', ...pullLines(later)]) log(line);
   }, {
     ...info,
     details: Object.entries(prepared.changedBlocks).filter(([, b]) => b.length)
@@ -744,8 +825,7 @@ async function refuseDuplicates(phone: string): Promise<void> {
 // directory code; the area-code table lets the UI offer existing area codes. Each row carries its local note.
 async function editorResidents(g: Gate) {
   const notes = await dk.getNotes(STORE, g.phoneNumber);
-  const cache = await dk.ensureCache(STORE, g.phoneNumber);
-  const work = await dk.readCacheFiles(STORE, g.phoneNumber);
+  const { files: work, status: cache } = await dk.readCache(STORE, g.phoneNumber);
   const updated = new Date(Math.max(...Object.values(work).map((f) => f.savedTime.getTime())));
   const files = Object.fromEntries(Object.entries(work).map(([n, f]) => [n, { data: f.data, mtime: updated }])) as GateFiles;
   const res = residents(files);
@@ -787,15 +867,17 @@ async function readBuffers(phone: string): Promise<BoardBuffers> {
   return Object.fromEntries(WORK_FILES.map((n) => [n, work[`${n}.bin`].data])) as unknown as BoardBuffers;
 }
 
-// Reads the three working-copy buffers, runs a transform, and writes back only the files it changed.
-async function applyToCache(phone: string, transform: (bufs: BoardBuffers) => BoardBuffers):
+// Reads the three working-copy buffers (or takes them from ctx.before, as withHistory read them), runs a transform,
+// and saves the result when it changed anything; ctx.after gets the result, for History.
+async function applyToCache(phone: string, transform: (bufs: BoardBuffers) => BoardBuffers, ctx?: EditContext):
   Promise<[number, { changed: Record<string, number[]>; cache: CacheStatus }]> {
-  const bufs = await readBuffers(phone);
+  const bufs = ctx?.before || await readBuffers(phone);
   const out = transform(bufs);
-  const files = Object.fromEntries(WORK_FILES.filter((n) => !out[n].equals(bufs[n])).map((n) => [`${n}.bin`, out[n]]));
-  const blocks = Object.keys(files).length ? await dk.writeCacheFiles(STORE, phone, files) : {};
-  const changed = Object.fromEntries(Object.keys(files).map((n) => [n, blocks[n]]));
-  return [200, { changed, cache: await dk.cacheStatus(STORE, phone) }];
+  const names = WORK_FILES.filter((n) => !out[n].equals(bufs[n]));
+  if (ctx) ctx.after = out;
+  if (!names.length) return [200, { changed: {}, cache: await dk.cacheStatus(STORE, phone) }];
+  const saved = await dk.saveCacheFiles(STORE, phone, Object.fromEntries(WORK_FILES.map((n) => [`${n}.bin`, out[n]])));
+  return [200, { changed: Object.fromEntries(names.map((n) => [`${n}.bin`, saved.blocks[`${n}.bin`]])), cache: saved.status }];
 }
 
 const RES_FIELDS: Record<string, string> = {
@@ -865,8 +947,9 @@ function prefsDetails({ before, after }: PrefsChange): RecordChange[] {
 // Nothing is recorded when nothing changed.
 // The working copy's change is stored as values (dk.diffStates: residents, cards, settings and layout, before and
 // after), which Revert undoes.
-async function logChange(s: Session, g: Gate, entry: Record<string, unknown>, before: BoardBuffers | null, prefs: PrefsChange | null = null) {
-  const after = await workingBuffers(g.phoneNumber);
+async function logChange(s: Session, g: Gate, entry: Record<string, unknown>, before: BoardBuffers | null, prefs: PrefsChange | null = null,
+  known?: BoardBuffers) {
+  const after = known || await workingBuffers(g.phoneNumber);
   const changed = Boolean(before && after && WORK_FILES.some((n) => !before[n].equals(after[n])));
   const values = changed ? dk.diffStates(dk.decodeWorking(before!), dk.decodeWorking(after!)) : null;
   if (!values && !prefs) return null;
@@ -880,11 +963,14 @@ async function logChange(s: Session, g: Gate, entry: Record<string, unknown>, be
 }
 
 // Runs fn (returning [status, body]) after the gate's earlier changes and records what it changed in the working copy.
-function withHistory(s: Session, g: Gate, entry: Record<string, unknown>, fn: () => Reply | Promise<Reply>): Promise<Reply> {
+// ctx: the working copy before the change; applyToCache(..., ctx) uses it and records the result, so History needn't
+// build the files again.
+interface EditContext { before: BoardBuffers | null; after?: BoardBuffers }
+function withHistory(s: Session, g: Gate, entry: Record<string, unknown>, fn: (ctx: EditContext) => Reply | Promise<Reply>): Promise<Reply> {
   return serial(g.phoneNumber, async () => {
-    const before = await workingBuffers(g.phoneNumber);
-    const out = await fn();
-    if (out[0] < 300) await logChange(s, g, entry, before);
+    const ctx: EditContext = { before: await workingBuffers(g.phoneNumber) };
+    const out = await fn(ctx);
+    if (out[0] < 300) await logChange(s, g, entry, ctx.before, null, ctx.after);
     return out;
   });
 }
@@ -967,12 +1053,22 @@ async function savePrefs(g: Gate, body: Body, was: GatePrefs): Promise<Reply> {
     if (da.error !== undefined) return [400, { error: da.error }];
     prefs.deviceAssociation = da.rows;
   }
+  let undo: BoardBuffers | null = null; // the working copy before an area-code conversion
   if (body.gateConfig && typeof body.gateConfig === 'object') {
     prefs.gateConfig = gateConfigFrom(body.gateConfig);
-    const problem = await applyAreaCodeSetting(g.phoneNumber, prefs.gateConfig.areaCodes || defaults.areaCodes);
-    if (problem) return [409, { error: problem }];
+    const r = await applyAreaCodeSetting(g.phoneNumber, prefs.gateConfig.areaCodes || defaults.areaCodes);
+    if (r.problem) return [409, { error: r.problem }];
+    undo = r.before;
   }
-  return [200, await dk.setPrefs(STORE, g.phoneNumber, prefs)];
+  try {
+    return [200, await dk.setPrefs(STORE, g.phoneNumber, prefs)];
+  } catch (e) { // the prefs weren't saved: put the working copy back, so it matches the saved Area codes setting
+    if (undo) {
+      await dk.saveCacheFiles(STORE, g.phoneNumber, { 'names.bin': undo.names, 'phone.bin': undo.phone, 'cards.bin': undo.cards })
+        .catch(logged('change', `Gate ${g.phoneNumber}: area-code conversion not undone`));
+    }
+    throw e;
+  }
 }
 
 // The gate configuration's values from a request (each up to 40 characters). Throws 400 on a bad Area codes value.
@@ -990,13 +1086,16 @@ const editOpts = async (g: Gate) => ({
 });
 
 // Converts the working copy to the names.bin/phone.bin layout of the "Area codes" setting (see
-// convertAreaCodeMode). Returns an error message, or null. "10 Area Codes" needs 10 or fewer area codes in use.
-async function applyAreaCodeSetting(phone: string, setting: string): Promise<string | null> {
-  if (!await workingBuffers(phone)) return null; // no working copy yet
+// convertAreaCodeMode). Returns { problem } (an error message), or { before }: the working copy before, when it changed.
+// "10 Area Codes" needs 10 or fewer area codes in use.
+async function applyAreaCodeSetting(phone: string, setting: string): Promise<{ problem?: string; before: BoardBuffers | null }> {
+  const before = await workingBuffers(phone);
+  if (!before) return { before: null }; // no working copy yet
+  const ctx: EditContext = { before };
   try {
-    await applyToCache(phone, (bufs) => dk.convertAreaCodeMode(bufs, dk.areaCodeLimit(setting)));
-  } catch (e) { return (e as Error).message; }
-  return null;
+    await applyToCache(phone, (bufs) => dk.convertAreaCodeMode(bufs, dk.areaCodeLimit(setting)), ctx);
+  } catch (e) { return { problem: (e as Error).message, before: null }; }
+  return { before: ctx.after && WORK_FILES.some((n) => !ctx.after![n].equals(before[n])) ? before : null };
 }
 
 // Downloads a working-copy file (.bin, or its change map as .map), built from the database.
@@ -1065,7 +1164,6 @@ function sendDocs(res: ServerResponse, body: string | Buffer, type: string) {
   });
   res.end(body);
 }
-const DEBUG_ADMIN = 'Only gate admins can use the debug log';
 
 const ROUTES = [
   // The user guide (docs/MANUAL.md) as a page, read on each request so edits show at once. Public: it holds no gate data.
@@ -1102,17 +1200,23 @@ const ROUTES = [
     const pw = String(body.password || '');
     if (!user || !pw) return [400, { error: 'Username and password are required' }];
     const key = user.toLowerCase();
-    if (recentFailures(key).length >= MAX_FAILED_SIGN_INS) {
-      DEBUG.write('session', `${user}: sign-in refused after ${MAX_FAILED_SIGN_INS} failed tries`);
+    const ip = clientIp(req);
+    const keys = signInKeys(key, ip);
+    // The typed username is logged only when it is an account (people sometimes type their password there).
+    const who = async () => ((await dk.getUser(STORE, key)) ? key : 'an unknown username');
+    if (blocked(keys)) {
+      DEBUG.write('session', `Sign-in for ${await who()} refused after too many failed tries (${ip})`);
       return [429, { error: `Too many failed sign-ins. Try again in ${SIGN_IN_WINDOW_MS / 60000} minutes.` }];
     }
-    const u = await dk.authenticate(STORE, user, pw, passwordOff);
+    const takeBack = countTry(keys);
+    let u: dk.User | null;
+    try { u = await dk.authenticate(STORE, user, pw, passwordOff); } catch (e) { takeBack(); throw e; }
     if (!u) {
-      failedSignIns.set(key, [...recentFailures(key), Date.now()]);
-      DEBUG.write('session', `${user}: sign-in refused (wrong username or password)`);
-      return [401, { error: 'Wrong username or password' }];
+      DEBUG.write('session', `Sign-in for ${await who()} refused: wrong username or password (${ip})`);
+      return [401, { error: `Wrong username or password${SSO_LIST.length ? '. Accounts that sign in with a work account use its button.' : ''}` }];
     }
-    failedSignIns.delete(key);
+    takeBack();
+    failedSignIns.delete(`${key}|${ip}`);
     const tok = await dk.createSession(STORE, u.username);
     DEBUG.write('session', `${u.username} signed in`);
     res.setHeader('Set-Cookie', `sid=${tok}${cookieAttrs(req)}`);
@@ -1149,13 +1253,19 @@ const ROUTES = [
   // old confirmed address is told about the change.
   route('PUT', '/api/me', 'user', async ({ s, body }) => {
     const was = (await dk.getUser(STORE, s.user))!;
-    const u = await dk.updateUserSettings(STORE, s.user, { email: body.email, dark: body.dark, phone: body.phone, notifyAccess: body.notifyAccess, notifyAlerts: body.notifyAlerts });
-    if (u.pendingEmail && u.pendingEmail !== was.pendingEmail) {
-      await sendVerification(u.username);
-      if (u.email) await mailTo(u.email, dk.messages.emailChanged(u.username, u.pendingEmail), 'security');
-      DEBUG.write('session', `${u.username} asked to change their email (confirmation ${MAILER ? 'sent' : 'not sent: email is off'})`);
+    if (body.email !== undefined && ![was.email, was.pendingEmail].includes(String(body.email).trim().toLowerCase())) {
+      const refused = await reauthRefusal(s, 'email', body.password); // a changed email could take over the account by password reset
+      if (refused) return refused;
     }
-    return [200, meReply(u)];
+    const u = await dk.updateUserSettings(STORE, s.user, { email: body.email, dark: body.dark, phone: body.phone, notifyAccess: body.notifyAccess, notifyAlerts: body.notifyAlerts });
+    let warning = '';
+    if (u.pendingEmail && u.pendingEmail !== was.pendingEmail) {
+      // The new address is saved (waiting) either way; a failed confirmation email is reported, not refused.
+      try { await sendVerification(u.username); } catch { warning = 'Saved, but the confirmation email couldn\'t be sent. Use Send the link again.'; }
+      if (u.email) await mailTo(u.email, dk.messages.emailChanged(u.username, u.pendingEmail), 'security');
+      DEBUG.write('session', `${u.username} asked to change their email (confirmation ${!MAILER ? 'not sent: email is off' : warning ? 'not queued' : 'sent'})`);
+    }
+    return [200, { ...meReply(u), ...(warning && { warning }) }];
   }),
   // Sends the confirmation link for the pending email again.
   route('POST', '/api/me/email/resend', 'user', async ({ s }) => {
@@ -1177,18 +1287,18 @@ const ROUTES = [
     DEBUG.write('session', `${u.username} confirmed their email`);
     return [200, { username: u.username, email: u.email }];
   }),
-  route('POST', '/api/password-reset/request', 'public', async ({ body }) => {
+  // The reply is the same whether or not the account exists, and when a limit is reached (per client address, then per
+  // account), so it can't be used to find accounts.
+  route('POST', '/api/password-reset/request', 'public', async ({ req, body }) => {
     if (!MAILER) return [503, { error: NO_EMAIL }];
     const id = String(body.identifier || '').trim().toLowerCase();
     if (!id) return [400, { error: 'Enter your username or email' }];
-    const now = Date.now();
-    const recent = (k: string) => (resetRequests.get(k) || []).filter((t) => now - t < SIGN_IN_WINDOW_MS);
     const reply: Reply = [200, { ok: true, message: 'If that account exists and has a confirmed email, a reset link is on its way. It works for 1 hour.' }];
-    if (recent(id).length >= RESET_PER_ID || recent('*').length >= RESET_TOTAL) { DEBUG.write('session', `Password reset for "${id}" not sent: too many requests`); return reply; }
-    resetRequests.set(id, [...recent(id), now]);
-    resetRequests.set('*', [...recent('*'), now]);
+    const ip = clientIp(req);
+    if (overLimit(`reset:${ip}`, PER_ADDRESS)) { DEBUG.write('session', `Password reset not sent: too many requests from ${ip}`); return reply; }
     const found = await dk.userForReset(STORE, id);
     const u = found && !await passwordOff(found.username) ? found : null;
+    if (u && overLimit(`reset-account:${u.username}`, RESET_PER_ACCOUNT)) { DEBUG.write('session', `Password reset for ${u.username} not sent: too many requests`); return reply; }
     if (u) {
       await mailTo(u.email, dk.messages.reset(APP, u.username, await dk.createToken(STORE, 'reset', u.username)), 'reset');
       DEBUG.write('session', `Password reset link sent to ${u.username}`);
@@ -1201,8 +1311,8 @@ const ROUTES = [
     if (!t) return [400, { error: 'This reset link is invalid, used or expired. Ask for a new one.' }];
     const off = await passwordOff(t.username);
     if (off) return [403, { error: off }];
-    await dk.setPassword(STORE, t.username, body.password);
-    failedSignIns.delete(t.username);
+    await dk.setPassword(STORE, t.username, body.password, { byEmail: true });
+    clearFailures(t.username);
     await securityAlert(t.username, 'Your password was reset');
     DEBUG.write('session', `${t.username} reset their password with an email link`);
     return [200, { username: t.username }];
@@ -1226,6 +1336,8 @@ const ROUTES = [
   route('PUT', '/api/me/password', 'user', async ({ s, body }) => {
     const off = await passwordOff(s.user);
     if (off) return [403, { error: off }];
+    const refused = await confirmOwnPassword(s.user, body.current);
+    if (refused) return refused;
     await dk.changeOwnPassword(STORE, s.user, body.current, body.password, s.tokenHash);
     await securityAlert(s.user, 'Your password was changed');
     DEBUG.write('session', `${s.user} changed their password`);
@@ -1239,7 +1351,7 @@ const ROUTES = [
   route('POST', '/api/me/passkeys/options', 'user', async ({ s, req, body }) => {
     const rp = relyingParty(req);
     if (!rp) return [400, { error: NO_PASSKEY_SITE }];
-    const refused = await confirmOwnPassword(s.user, body.password);
+    const refused = await reauthRefusal(s, 'add-passkey', body.password);
     if (refused) return refused;
     return [200, await dk.registrationOptions(STORE, s.user, rp)];
   }),
@@ -1256,6 +1368,8 @@ const ROUTES = [
     return [200, { passkeys: await dk.listPasskeys(STORE, s.user) }];
   }),
   route('DELETE', '/api/me/passkeys/:id', 'user', async ({ s, params }) => {
+    const refused = await reauthRefusal(s, 'remove-passkey');
+    if (refused) return refused;
     const name = await dk.removePasskey(STORE, s.user, params.id);
     DEBUG.write('session', `${s.user} removed passkey "${name}"`);
     await securityAlert(s.user, `A passkey ("${name}") was removed`);
@@ -1265,6 +1379,7 @@ const ROUTES = [
   // Passkey sign-in: POST options (no username: the browser offers this site's passkeys), then POST session
   // { response }; sets the sid cookie like a password sign-in.
   route('POST', '/api/passkey/options', 'public', async ({ req }) => {
+    if (overLimit(`passkey:${clientIp(req)}`, PER_ADDRESS)) return [429, { error: 'Too many sign-in attempts. Try again in a few minutes.' }];
     const rp = relyingParty(req);
     return rp ? [200, await dk.authenticationOptions(rp)] : [400, { error: NO_PASSKEY_SITE }];
   }),
@@ -1307,6 +1422,7 @@ const ROUTES = [
   // account has none). The provider sends the browser back to the callback, which signs in (or links) and goes to the
   // page: / signed in, /#sso=linked, or /#sso-error=<message>.
   route('POST', '/api/sso/start', 'public', async ({ req, res, body }) => {
+    if (overLimit(`sso:${clientIp(req)}`, PER_ADDRESS)) return [429, { error: 'Too many sign-in attempts. Try again in a few minutes.' }];
     const p = providerOf(body.provider);
     if (!p) return [404, { error: 'Unknown sign-in provider' }];
     const redirectUri = ssoRedirect(req, p);
@@ -1452,10 +1568,15 @@ const ROUTES = [
     const invite = Boolean(MAILER && body.email && !body.password);
     const u = await dk.createUser(STORE, { username: body.username, password: body.password, email: body.email, createdBy: s.user, invite });
     await dk.grantAccess(STORE, g.phoneNumber, u.username, role, s.user);
-    if (invite) await sendInvite(u.username, s.user, g.phoneNumber);
-    else await sendVerification(u.username);
     await dk.addEvent(STORE, g.phoneNumber, { user: s.user, action: 'access', summary: `${invite ? 'Invited' : 'Created'} user ${u.username} (${roleText(role)})` });
     DEBUG.write('gates', `${s.user} ${invite ? 'invited' : 'created'} user ${u.username} with ${role} access to gate ${g.phoneNumber}`);
+    try {
+      if (invite) await sendInvite(u.username, s.user, g.phoneNumber);
+      else await sendVerification(u.username);
+    } catch (e) {
+      return [502, { error: `Account ${u.username} was created, but ${(e as Error).message.replace(/^The/, 'the')}${invite ? ' Use Send again in the list.' : ''}`,
+        users: await dk.gateUsers(STORE, g.phoneNumber) }];
+    }
     return [201, { users: await dk.gateUsers(STORE, g.phoneNumber), invited: invite }];
   })),
   // Sends a user's invitation again (new link; the old one stops working).
@@ -1531,16 +1652,26 @@ const ROUTES = [
   }),
 
   // Transactions and settings views from the pulled files.
-  route('GET', `${G}/data`, 'gate', async ({ g }) => [200, await gateData(g.phoneNumber)]),
+  // ?limit= (default TX_PAGE, at most TX_PAGE_MAX) newest transactions, ?before= the previous reply's transactions.next.
+  route('GET', `${G}/data`, 'gate', async ({ g, req }) => {
+    const q = new URL(req.url!, 'http://localhost').searchParams;
+    const limit = q.has('limit') ? Number(q.get('limit')) : TX_PAGE;
+    const before = q.has('before') ? Number(q.get('before')) : undefined;
+    if (!Number.isInteger(limit) || limit < 1 || limit > TX_PAGE_MAX || (before !== undefined && !(Number.isInteger(before) && before >= 1 && before <= 2147483647))) {
+      return [400, { error: `limit must be 1-${TX_PAGE_MAX} and before a positive whole number` }];
+    }
+    return [200, await gateData(g.phoneNumber, { before, limit })];
+  }),
 
   // Residents/vendors in the working copy, keyed by directory code.
   route('GET', `${G}/residents`, 'gate', ({ g }) => editorResidents(g)),
 
   route('POST', `${G}/residents`, 'gate-admin', ({ s, g, body }) => withHistory(s, g,
-    { summary: `Added ${body.vendor ? 'vendor' : 'resident'} ${body.directoryCode}` }, async () => {
+    { summary: `Added ${body.vendor ? 'vendor' : 'resident'} ${body.directoryCode}` }, async (ctx) => {
+      dk.checkName(body.name);
       const opts = await editOpts(g);
       const { hidden: _hidden, ...fields } = body;
-      const [, out] = await applyToCache(g.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.addEntry(bufs, fields, opts), body.directoryCode)));
+      const [, out] = await applyToCache(g.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.addEntry(bufs, fields, opts), body.directoryCode)), ctx);
       return [201, out];
     })),
 
@@ -1552,10 +1683,11 @@ const ROUTES = [
   }),
 
   route('PUT', `${G}/residents/:code`, 'gate-admin', ({ s, g, params, body }) => withHistory(s, g,
-    { summary: `Edited directory code ${params.code}` }, async () => {
+    { summary: `Edited directory code ${params.code}` }, async (ctx) => {
+      if ('name' in body) dk.checkName(body.name);
       const opts = await editOpts(g);
       const { hidden: _hidden, ...fields } = body;
-      return applyToCache(g.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode: params.code }, opts), params.code)));
+      return applyToCache(g.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode: params.code }, opts), params.code)), ctx);
     })),
 
   // What History recorded for a directory code, newest first: { changes: [EntryChange] }.
@@ -1574,13 +1706,13 @@ const ROUTES = [
 
   // Blanks the slot (the code stays on the gate as an empty unit).
   route('DELETE', `${G}/residents/:code`, 'gate-admin', async ({ s, g, params }) => dropNote(s, g, params.code, await withHistory(s, g,
-    { summary: `Deleted the entry at directory code ${params.code}` }, () => applyToCache(g.phoneNumber,
-      (bufs) => dk.tidyBoard(dk.deleteResident(bufs, params.code)))))),
+    { summary: `Deleted the entry at directory code ${params.code}` }, (ctx) => applyToCache(g.phoneNumber,
+      (bufs) => dk.tidyBoard(dk.deleteResident(bufs, params.code)), ctx)))),
 
   // Takes the directory code off the gate entirely.
   route('DELETE', `${G}/directory-codes/:code`, 'gate-admin', async ({ s, g, params }) => dropNote(s, g, params.code, await withHistory(s, g,
-    { summary: `Removed directory code ${params.code}` }, () => applyToCache(g.phoneNumber,
-      (bufs) => dk.tidyBoard(dk.removeDirectoryCode(bufs, params.code)))))),
+    { summary: `Removed directory code ${params.code}` }, (ctx) => applyToCache(g.phoneNumber,
+      (bufs) => dk.tidyBoard(dk.removeDirectoryCode(bufs, params.code)), ctx)))),
 
   // "Num of Digits in Dir Code". Decreasing wipes all resident data, so it needs confirm: true.
   route('PUT', `${G}/dir-digits`, 'gate-admin', async ({ s, g, body }) => {
@@ -1589,7 +1721,7 @@ const ROUTES = [
       return [400, { error: 'Decreasing the directory code digits destroys all resident data; confirm is required' }];
     }
     return withHistory(s, g, { summary: `Changed directory code digits from ${from} to ${body.digits}` },
-      () => applyToCache(g.phoneNumber, (bufs) => dk.convertDirDigits(bufs, body.digits)));
+      (ctx) => applyToCache(g.phoneNumber, (bufs) => dk.convertDirDigits(bufs, body.digits), ctx));
   }),
 
   // Gate settings in the working copy's names.bin. PUT body: { <field key>: value, ... }.
@@ -1823,26 +1955,6 @@ const ROUTES = [
     else sendImage(res, file);
     return undefined;
   }),
-
-  // Debug log (one for the whole server, see src/debug-log.ts): { enabled, file, size }; PUT { enabled }. It covers
-  // every gate, so only users who are admin of at least one gate may use it.
-  route('GET', '/api/debug-log', 'user', async ({ s }) => (await dk.isAnyGateAdmin(STORE, s.user) ? [200, DEBUG.info()] : [403, { error: DEBUG_ADMIN }])),
-  route('PUT', '/api/debug-log', 'user', async ({ s, body }) => {
-    if (!await dk.isAnyGateAdmin(STORE, s.user)) return [403, { error: DEBUG_ADMIN }];
-    const on = body.enabled === true;
-    if (on !== debugOn) {
-      if (!on) DEBUG.write('server', `Debug logs turned off by ${s.user}`);
-      await dk.setDebugLogEnabled(STORE, on);
-      debugOn = on;
-      if (on) DEBUG.write('server', `Debug logs turned on by ${s.user}`);
-    }
-    return [200, DEBUG.info()];
-  }),
-  route('GET', '/api/debug-log/file', 'user', async ({ s, res }) => {
-    if (!await dk.isAnyGateAdmin(STORE, s.user)) return [403, { error: DEBUG_ADMIN }];
-    send(res, 200, DEBUG.read(), 'text/plain');
-    return undefined;
-  }),
 ];
 
 // Sensitive actions: a signed-in session needs a passkey confirmation (sign-in with a passkey, or POST
@@ -1886,7 +1998,7 @@ async function checkSchedules() {
       await dk.updateScheduleRun(STORE, sch.id, { lastDue: dk.lastDue(sch, now)!.toISOString() });
       queueSchedule(sch);
     }
-  } catch (e) { console.error(`Schedule check failed: ${(e as Error).message}`); DEBUG.write('schedule', `Schedule check failed: ${(e as Error).message}`); }
+  } catch (e) { DEBUG.write('schedule', `Schedule check failed: ${(e as Error).message}`); }
   finally { checkingSchedules = false; }
 }
 
@@ -1936,7 +2048,7 @@ async function runSchedule(sch: Schedule) {
   } catch (e) { errors.push((e as Error).message); }
   DEBUG.write('schedule', `Gate ${sch.phoneNumber}: schedule ${sch.id} ${errors.length ? `failed: ${errors.join('; ')}` : 'done'}${notes.length ? ` (${notes.join('; ')})` : ''}`);
   if (errors.length) {
-    await gateAlert(sch.phoneNumber, 'Scheduled transfer failed', `Schedule ${sch.days.map((d) => DAY_NAMES[d]).join(' ')} ${sch.time} (${sch.actions.join(', ')}).\nErrors: ${errors.join('; ')}`).catch(() => {});
+    await gateAlert(sch.phoneNumber, 'Scheduled transfer failed', `Schedule ${sch.days.map((d) => DAY_NAMES[d]).join(' ')} ${sch.time} (${sch.actions.join(', ')}).\nErrors: ${errors.join('; ')}`).catch(logged('email', 'Gate alert not sent'));
   }
   try {
     await dk.updateScheduleRun(STORE, sch.id, {
@@ -1944,7 +2056,7 @@ async function runSchedule(sch: Schedule) {
       lastResult: errors.length ? 'failed' : 'done',
       lastError: [...errors, ...notes].join('; ') || null,
     });
-  } catch (e) { console.error(`Schedule result not saved: ${(e as Error).message}`); DEBUG.write('schedule', `Schedule result not saved: ${(e as Error).message}`); }
+  } catch (e) { DEBUG.write('schedule', `Schedule result not saved: ${(e as Error).message}`); }
 }
 
 async function busyMessage(g: Gate): Promise<string> {
@@ -1964,8 +2076,9 @@ function match(method: string | undefined, pathname: string):
   const hits = ROUTES.map((r) => ({ r, m: r.re.exec(pathname) })).filter((x): x is { r: Route; m: RegExpExecArray } => x.m !== null);
   const hit = hits.find((x) => x.r.method === method);
   if (!hit) return { allow: hits.map((x) => x.r.method) };
-  const params = Object.fromEntries(hit.r.keys.map((k, i) => [k, decodeURIComponent(hit.m[i + 1])]));
-  return { route: hit.r, params };
+  try {
+    return { route: hit.r, params: Object.fromEntries(hit.r.keys.map((k, i) => [k, decodeURIComponent(hit.m[i + 1])])) };
+  } catch { return { allow: [] }; } // a bad %-escape in the path (/api/gates/%E0): not found
 }
 
 const server = http.createServer(async (req, res) => {
@@ -2000,7 +2113,7 @@ const server = http.createServer(async (req, res) => {
       if (!r.scope.startsWith('gate') || r.webOnly || String(params.phone || '').replace(/\D/g, '') !== k.phone) {
         return send(res, 403, { error: `This API key works only on /api/gates/${k.phone}/… (gate login, users, API keys and deleting data are web-only)` });
       }
-      s = { tokenHash: '', user: `api:${k.name}`, gate: null, mustChangePassword: false, strongAt: null, apiKey: { phone: k.phone, role: k.role } };
+      s = { tokenHash: '', user: `api:${k.name}`, gate: null, mustChangePassword: false, strongAt: null, signedInAt: 0, apiKey: { phone: k.phone, role: k.role } };
     } else s = await currentSession(req);
     if (!s && r.scope !== 'public') return send(res, 401, { error: 'Not logged in' });
     if (s && s.mustChangePassword && r.scope !== 'public' && !(r.method === 'PUT' && url.pathname === '/api/me/password')) {
@@ -2072,7 +2185,7 @@ server.listen(PORT, HOST, () => {
   setInterval(sweepSessions, 60000);
   sendEmails();
   setInterval(sendEmails, 30000);
-  setInterval(() => { dk.deleteExpiredTokens(STORE).catch(() => {}); }, 3600000);
-  tidyAllSnapshots().catch(() => {});
-  setInterval(() => { tidyAllSnapshots().catch(() => {}); }, SNAPSHOT_TIDY_MS);
+  setInterval(() => { dk.deleteExpiredTokens(STORE).catch(logged('session', 'Expired link clean-up failed')); }, 3600000);
+  tidyAllSnapshots().catch(logged('camera', 'Snapshot clean-up failed'));
+  setInterval(() => { tidyAllSnapshots().catch(logged('camera', 'Snapshot clean-up failed')); }, SNAPSHOT_TIDY_MS);
 });

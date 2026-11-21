@@ -12,14 +12,15 @@ import { spawn } from 'node:child_process';
 import { openTunnel } from 'dahua-p2p';
 import type { AddressInfo } from 'node:net';
 import type { Writable } from 'node:stream';
-import { encrypt, decrypt } from './db.ts';
+import { encrypt, decrypt, phoneDigits } from './db.ts';
 import { all, one, run, type Store } from './db.ts';
 import type { CameraChannel, CameraSettings, SnapshotMinute } from './types.ts';
+import { frameOffsets, posterFile } from './snapshot-files.ts';
 
 // Settings as validated by normalizeCameraSettings; with the recorder password for the runner.
-export type CameraConfig = Omit<CameraSettings, 'savedBy' | 'savedAt'>;
+type CameraConfig = Omit<CameraSettings, 'savedBy' | 'savedAt'>;
 type WithPassword = { password: string };
-export interface Recorder { serial: string; username: string; password: string }
+interface Recorder { serial: string; username: string; password: string }
 type RecorderConfig = CameraConfig & WithPassword;
 type CodedError = Error & { code?: string; status?: number };
 type Shifts = Record<string, number>;
@@ -30,9 +31,9 @@ interface PendingMinute { minute: string; ts: number }
 interface FrameJob { channel: number; off: number; file: string; video?: boolean }
 
 const BIN_DIR = path.join(import.meta.dirname, '..', 'tools', 'bin');
-export const CAMERA_EVENTS: CameraSettings['events'][] = ['access', 'all']; // access: admitted/denied entries only
-export const CAMERA_MODES: CameraSettings['mode'][] = ['snapshots', 'video'];
-export const VIDEO_SECS = 120;
+const CAMERA_EVENTS: CameraSettings['events'][] = ['access', 'all']; // access: admitted/denied entries only
+const CAMERA_MODES: CameraSettings['mode'][] = ['snapshots', 'video'];
+const VIDEO_SECS = 120;
 const CLIP_RESUMES = 2;
 const CLIP_SHORT_SECS = 5; // a video this much shorter than VIDEO_SECS counts as cut off
 const CLIP_GAP_STEP = 5; // seconds a video request moves on past a gap in the recording
@@ -47,12 +48,12 @@ const MAX_CHANNELS = 8;
 const MAX_MINUTES_PER_RUN = 60;
 const MAX_ATTEMPTS = 3;
 const SETTLE_MS = 90000; // a minute this recent may not be fully recorded yet
-export const KEEP_DAYS = [15, 30, 60, 90, 0]; // how long saved snapshots are kept (setting keepDays); 0 = forever
+const KEEP_DAYS = [15, 30, 60, 90, 0]; // how long saved snapshots are kept (setting keepDays); 0 = forever
 const DAY_MS = 86400000;
-// Pieces of a video being fetched (grabClipOnce parts, grabClip's best try, saveClip's new video) and their pictures.
-const LEFTOVER = /\.(rec\d+|best|new)\.(mp4|jpg)$/;
+// Pieces of a video being fetched (grabClipOnce parts, grabClip's best try, saveClip's new video) and their pictures,
+// and finishClip's list of parts.
+const LEFTOVER = /\.(rec\d+|best|new)\.(mp4|jpg)$|\.parts\.txt$/;
 
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 const pad = (n: number): string => String(n).padStart(2, '0');
 const int = (v: unknown, def: number): number => (v === undefined || v === null || v === '' ? def : Number(v));
 const bad = (msg: string) => Object.assign(new Error(msg), { status: 400 });
@@ -137,7 +138,6 @@ export function playbackTime(d: Date): string {
 }
 
 // Seconds into the minute for each frame: 3 -> [0, 20, 40].
-export const frameOffsets = (n: number): number[] => Array.from({ length: n }, (_, i) => Math.floor((i * 60) / n));
 
 // Each channel's frames for a minute: [{ channel, off, file, video }], off in seconds from the minute's start.
 // Frames after the minute (framesAfter) are at 60 + their offset, named ch<N>-a<SS>.jpg. Video mode: one
@@ -150,14 +150,12 @@ const frameJobs = (cfg: CameraConfig): FrameJob[] => (cfg.mode === 'video'
   ]));
 // Extra wait before a minute can be fetched when its recording reaches into the next minute.
 const afterMs = (cfg: CameraConfig): number => (cfg.mode === 'video' || cfg.framesAfter ? 60000 : 0);
-// A video's first-frame picture: ch<N>.mp4 -> ch<N>.jpg.
-export const posterFile = (file: string): string => String(file).replace(/\.mp4$/, '.jpg');
 
 // Transactions that never get camera footage: the gate's data transfers (RS232, modem), its hold-open schedule
 // (Hold Begin / Hold End), anti-pass back maintenance (Re-Sync, Counter) and the System relay commands (hold, release,
 // 1 hour, H/U) except a momentary open (System Admit, someone let in). They aren't fetched, even with events 'all',
 // nor for one minute on request.
-export const NO_FOOTAGE_EVENTS = new Set(['RS232', 'Modem-to-Modem', 'Modem', 'Hold Begin', 'Hold End', 'APB Re-Sync', 'APB Counter']);
+const NO_FOOTAGE_EVENTS = new Set(['RS232', 'Modem-to-Modem', 'Modem', 'Hold Begin', 'Hold End', 'APB Re-Sync', 'APB Counter']);
 export const NO_FOOTAGE_MSG = 'Gate data transfers, hold-open events and other gate commands don\'t get camera footage';
 export const footageApplies = (t: { eventType?: string; access?: string }): boolean => !NO_FOOTAGE_EVENTS.has(t.eventType || '')
   && !(t.eventType === 'System' && t.access !== 'Admit');
@@ -214,7 +212,7 @@ function mediaIn(folder: string): { files: number; bytes: number } {
   return { files, bytes };
 }
 
-export interface TidyResult { minutes: number; files: number; bytes: number; leftovers: number; leftoverBytes: number; missing: number }
+interface TidyResult { minutes: number; files: number; bytes: number; leftovers: number; leftoverBytes: number; missing: number }
 
 // Tidies a gate's saved snapshots (<dir>/snapshots): deletes leftover pieces of videos whose fetch was cut off
 // (LEFTOVER), deletes the minute folders older than keepDays (0 = keep forever), and marks the log entries whose
@@ -403,12 +401,12 @@ interface Bridge {
   timer?: ReturnType<typeof setTimeout>; busy?: number; dead?: boolean; connected?: boolean;
 }
 
-export interface CameraRunnerOptions {
+interface CameraRunnerOptions {
   binDir?: string; ffmpegPath?: string; idleMs?: number; readyMs?: number; grabMs?: number; clipExtraMs?: number;
   connectTries?: number; connectWaitMs?: number; retryWaitMs?: number; log?: Log;
 }
-export interface GrabOptions { signal?: AbortSignal; onRetry?: (e: Error) => void; once?: boolean; video?: number }
-export interface LiveOptions { sub?: boolean; signal?: AbortSignal; onStart?: () => void; maxMs?: number }
+interface GrabOptions { signal?: AbortSignal; onRetry?: (e: Error) => void; once?: boolean; video?: number }
+interface LiveOptions { sub?: boolean; signal?: AbortSignal; onStart?: () => void; maxMs?: number }
 
 // ffmpegPath: the ffmpeg program to run; empty = ffmpegCommand(binDir).
 export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs = 120000, readyMs = 45000, grabMs = 45000,
@@ -443,11 +441,14 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     };
     b.port = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const opening = openTunnel({ serial: cfg.serial, log: note });
+      let opened = false;
       try {
         const tunnel = await Promise.race([
-          openTunnel({ serial: cfg.serial, log: note }),
+          opening,
           new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Camera bridge did not connect within ${readyMs / 1000} s${tail()}`)), readyMs); }),
         ]);
+        opened = true;
         closeTunnel = () => tunnel.close('stopped');
         if (killed) { tunnel.close('stopped'); throw new Error('Camera bridge stopped'); }
         tunnel.on('closed', (reason) => { server?.close(); ended(String(reason || 'closed')); });
@@ -457,6 +458,8 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
         log(`Recorder ${cfg.serial}: bridge connected (${tunnel.stats.handshakeMs} ms)`);
         return (srv.address() as AddressInfo).port;
       } catch (e) {
+        // Close what is open: a tunnel that connects after the timeout, or one whose local port failed.
+        if (opened) { server?.close(); closeTunnel(); } else opening.then((t) => t.close('timed out'), () => {});
         ended((e as Error).message);
         throw new Error(`Camera bridge: ${maskSecrets((e as Error).message, [cfg.password])}`);
       } finally { clearTimeout(timer); }
@@ -497,7 +500,11 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
       const timer = setTimeout(() => proc.kill(), video ? video * 1000 + clipExtraMs : grabMs + 5000);
       const onAbort = () => proc.kill();
       if (signal) signal.addEventListener('abort', onAbort, { once: true });
-      proc.on('error', (e) => { clearTimeout(timer); reject(new Error(`ffmpeg: ${e.message}`)); });
+      proc.on('error', (e) => {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+        reject(new Error(`ffmpeg: ${e.message}`));
+      });
       proc.on('exit', (code) => {
         clearTimeout(timer);
         if (signal) signal.removeEventListener('abort', onAbort);
@@ -649,7 +656,12 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
       });
       const onAbort = () => proc.kill();
       if (signal) signal.addEventListener('abort', onAbort, { once: true });
-      proc.on('error', (e) => { clearTimeout(firstTimer); clearTimeout(endTimer); reject(new Error(`ffmpeg: ${e.message}`)); });
+      proc.on('error', (e) => {
+        clearTimeout(firstTimer);
+        clearTimeout(endTimer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+        reject(new Error(`ffmpeg: ${e.message}`));
+      });
       proc.on('exit', (code) => {
         clearTimeout(firstTimer);
         clearTimeout(endTimer);
@@ -665,7 +677,7 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
   return { grabFrame, clipSeconds, finishClip, liveStream, stopAll, running: () => bridges.size };
 }
 
-export type CameraRunner = ReturnType<typeof createCameraRunner>;
+type CameraRunner = ReturnType<typeof createCameraRunner>;
 
 type Settled<T> = { value: T; error?: undefined } | { value?: undefined; error: CodedError };
 
@@ -685,7 +697,7 @@ async function settleAll<T>(fns: (() => Promise<T>)[], limit: number): Promise<S
 
 // The frames of a minute still to grab: { kept, jobs } (kept: files in have that are on disk). Partial videos
 // (short: { [file]: seconds }) are kept and grabbed again.
-export function missingFrames(cfg: CameraConfig, dir: string, minute: string, have: string[] = [], short: Shifts = {}):
+function missingFrames(cfg: CameraConfig, dir: string, minute: string, have: string[] = [], short: Shifts = {}):
   { kept: string[]; jobs: FrameJob[] } {
   const folder = path.join(dir, 'snapshots', minute);
   const kept = have.filter((f) => fs.existsSync(path.join(folder, f)));
@@ -745,24 +757,26 @@ async function grabClip(runner: CameraRunner, cfg: RecorderConfig, channel: numb
 // one). Throws when there is no video in file.
 async function saveClip(runner: CameraRunner, cfg: RecorderConfig, channel: number, at: number, file: string, have: number,
   opts: ClipOptions = {}): Promise<ClipResult & { saved: boolean }> {
-  const tmp = have ? file.replace(/\.mp4$/, '.new.mp4') : file;
+  // Always fetched beside the video and moved in when done, so a crash never leaves a cut-off ch<N>.mp4.
+  const tmp = file.replace(/\.mp4$/, '.new.mp4');
   const { log = () => {} } = opts;
   let r: ClipResult;
   try {
     r = await grabClip(runner, cfg, channel, at, tmp, { ...opts, log: (m) => log(m.replace(path.basename(tmp), path.basename(file))) });
   } catch (e) {
+    dropClip(tmp);
     if (!have || (e as Error).message === STOPPED_MSG) throw e;
     return { secs: have, error: e as CodedError, saved: false };
   }
-  if (tmp === file) return { ...r, saved: true };
-  if (r.error && r.secs <= have) { dropClip(tmp); return { secs: have, error: r.error, saved: false }; }
+  if (have && r.error && r.secs <= have) { dropClip(tmp); return { secs: have, error: r.error, saved: false }; }
   moveClip(tmp, file);
   return { ...r, saved: true };
 }
 
-// Seconds of the video file in a minute's folder: 0 when missing, its short seconds when partial, else VIDEO_SECS.
-const clipHave = (folder: string, file: string, short: Shifts = {}): number =>
-  (fs.existsSync(path.join(folder, file)) ? short[file] || VIDEO_SECS : 0);
+// Seconds of the video file in a minute's folder: 0 when missing or not in the snapshot log (logged false: a file left
+// by a crash), its short seconds when partial, else VIDEO_SECS.
+const clipHave = (folder: string, file: string, logged: boolean, short: Shifts = {}): number =>
+  (logged && fs.existsSync(path.join(folder, file)) ? short[file] || VIDEO_SECS : 0);
 
 // One try of grabClip; returns the saved video's seconds plus the seconds the recorder has no recording of.
 // A playback stream stops at a gap in the recording (a 404 just after it; a 15 s gap was seen 2026-10-20), so
@@ -845,7 +859,7 @@ async function grabNearby(runner: CameraRunner, cfg: Recorder, channel: number, 
 // stopped, unreachable, shifts, short } with files including have, shifts { [file]: seconds } for the new pictures
 // taken off their planned time (see grabNearby) and short the minute's partial videos (see listSnapshots; given
 // ones are grabbed again and kept unless a longer one comes). log(message) gets each retried, shifted and failed frame.
-export async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: string, { minute, ts }: PendingMinute, have: string[] = [],
+async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: string, { minute, ts }: PendingMinute, have: string[] = [],
   { signal, onFrame = () => {}, log = () => {}, short: given = {} }: { signal?: AbortSignal; onFrame?: () => void; log?: Log; short?: Shifts } = {}) {
   const folder = path.join(dir, 'snapshots', minute);
   fs.mkdirSync(folder, { recursive: true });
@@ -862,7 +876,7 @@ export async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, 
     const onRetry = (e: Error) => log(`${minute}/${file} failed, trying again (${query}): ${e.message}`);
     try {
       if (video) {
-        const r = await saveClip(runner, cfg, channel, at, path.join(folder, file), clipHave(folder, file, given),
+        const r = await saveClip(runner, cfg, channel, at, path.join(folder, file), clipHave(folder, file, have.includes(file), given),
           { signal, onRetry, log: (m) => log(`${minute}/${m}`) });
         if (isShort(r.secs)) short[file] = Math.round(r.secs);
         else delete short[file];
@@ -937,7 +951,7 @@ export async function refreshSnapshot(store: Store, runner: CameraRunner, phone:
   try {
     if (frame.video) {
       const r = await saveClip(runner, cfg, frame.channel, at, path.join(folder, file),
-        clipHave(folder, file, short), { ...opts, log: (m) => log(`${minute}/${m}`) });
+        clipHave(folder, file, Boolean(s && s.files.includes(file)), short), { ...opts, log: (m) => log(`${minute}/${m}`) });
       if (!r.saved) throw r.error;
       if (isShort(r.secs)) short[file] = Math.round(r.secs);
       else delete short[file];

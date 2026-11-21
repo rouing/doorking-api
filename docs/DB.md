@@ -61,7 +61,7 @@ case-insensitively). Times are `TIMESTAMPTZ`; the app reads and writes them as I
 | `key` | TEXT, primary key | name |
 | `value` | TEXT | value |
 
-Keys: `debugLogs` (`1` = Debug logs on, `0` = off), `jsonImported` (time the pre-database JSON files were
+Keys: `debugLogs` (no longer used: the server log is always on), `jsonImported` (time the pre-database JSON files were
 imported; the import code was removed 2026-11-13), `gatesVerifiedBackfill` (time gates were marked connected from history, once;
 removed 2026-11-13), `localAccountsMigrated` (time the move from DKS sign-in to local accounts ran, once), `emailsUnconfirmed`
 (time earlier saved emails were made pending, once).
@@ -81,6 +81,7 @@ removed 2026-11-13), `localAccountsMigrated` (time the move from DKS sign-in to 
 | `phone` | TEXT, null | the user's phone number in E.164 (`+12145550100`); optional, not unique, not verified; shown to admins of their gates |
 | `pending_email` | TEXT, null | an address waiting for its confirmation link (not unique; `email` holds only confirmed addresses since 2026-11-13) |
 | `notify_access`, `notify_alerts` | BOOLEAN | the user's email notifications: gate access changes; gate alerts as an admin |
+| `reset_at` | TIMESTAMPTZ | the last password reset by email link (a sign-in after it may change passkeys for `security.stepUpMinutes`) |
 
 `password_hash` is `!` for an invited account that hasn't accepted its invitation, and `!sso` for an account created or
 accepted through single sign-on that has no password (it can set one with a reset link, if allowed). Nothing matches
@@ -342,7 +343,7 @@ the text the app shows, so with no unsent edits they show what the gate holds. T
 send are built from them (below).
 
 **A residents pull** (`applyPull`) becomes the base at once: with no unsent changes the rows are the pull's values;
-otherwise the unsent changes (old base to working copy, compared per resident by directory code, card by slot and
+otherwise the unsent changes (old base to working copy, compared per resident by directory code, card by card number and
 editable setting by key) are put back on top of the pull's values (`rebasePlan`). An item changed differently at the
 gate and here is a conflict, listed in `gate_working.conflicts` (`[{ kind, key, label }]`) and kept as the working
 copy has it until it's decided (`resolveConflict`: mine, or the gate's value); sends are refused meanwhile. Changes the

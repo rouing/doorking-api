@@ -419,6 +419,7 @@ function SingleSignOn({ session }: { session: SignedIn }) {
 
 export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved: () => void }) {
   const [email, setEmail] = useState(session.pendingEmail || session.email);
+  const [emailPassword, setEmailPassword] = useState('');
   const [phone, setPhone] = useState(fmtIntlPhone(session.phone));
   const [info, setInfo] = useState('');
   const [phoneInfo, setPhoneInfo] = useState('');
@@ -431,12 +432,17 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
     } catch (e) { setPhoneInfo(`Not saved: ${errorText(e)}`); }
   };
   const save = async (body: Record<string, unknown>, done: string) => {
-    try { await api('PUT', '/api/me', body); setInfo(done); onSaved(); } catch (e) { setInfo(`Not saved: ${errorText(e)}`); }
+    try {
+      const r = await api<{ warning?: string }>('PUT', '/api/me', body);
+      setInfo(r.warning || done);
+      onSaved();
+    } catch (e) { setInfo(`Not saved: ${errorText(e)}`); }
   };
   const resend = async () => {
     try { await api('POST', '/api/me/email/resend', {}); setInfo(`Confirmation link sent again to ${session.pendingEmail}.`); } catch (e) { setInfo(errorText(e)); }
   };
   const next = email.trim().toLowerCase();
+  const emailChanges = next !== session.email && next !== session.pendingEmail; // needs the current password
   return (
     <Flex direction="column" gap="4">
       <Heading>User Settings</Heading>
@@ -465,8 +471,12 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
           )}
           {!session.emailEnabled && <Text size="2" color="amber">This server can't send email yet, so addresses can't be confirmed for now.</Text>}
           <TextField.Root type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          {session.hasPassword && emailChanges && (
+            <Labelled label="Your current password"><TextField.Root type="password" value={emailPassword} autoComplete="current-password"
+              onChange={(e) => setEmailPassword(e.target.value)} /></Labelled>
+          )}
           <Flex gap="3" align="center">
-            <Button onClick={() => save({ email: next }, !next ? 'Email removed.' : next === session.email ? 'Saved.' : `Saved. Open the link we sent to ${next} to confirm it.`)}>Save email</Button>
+            <Button onClick={() => save({ email: next, ...(emailChanges && { password: emailPassword }) }, !next ? 'Email removed.' : next === session.email ? 'Saved.' : `Saved. Open the link we sent to ${next} to confirm it.`)}>Save email</Button>
             <Text size="2" color="gray">{info}</Text>
           </Flex>
         </Flex>

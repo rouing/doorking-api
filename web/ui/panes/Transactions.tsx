@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { errorText } from '../api.ts';
 import { Button, Flex, Heading, Link, Progress, Select, Table, Text, TextField } from '@radix-ui/themes';
 import type { ResidentRow, TransactionRow } from '../../../src/types.ts';
 import { cell, downloadCsv, fmtTime, residentFinder, txTone } from '../format.ts';
@@ -14,9 +15,11 @@ const txValue = (col: string) => (col === 'time'
   : (t: TransactionRow) => (t as unknown as Record<string, unknown>)[col]);
 
 // The gate's transaction log (rcv_out.bin), newest first. Names and numbers link to the resident/vendor; with
-// camera settings saved, a Camera column shows each transaction's pictures (or videos).
-export function Transactions({ tx, residents, onOpenResident, snaps, onOpenSnap }: {
-  tx: { updated: string; rows: TransactionRow[] } | null;
+// camera settings saved, a Camera column shows each transaction's pictures (or videos). The newest transactions are
+// loaded first; Load older transactions adds the page before them (onLoadOlder).
+export function Transactions({ tx, onLoadOlder, residents, onOpenResident, snaps, onOpenSnap }: {
+  tx: { updated: string; rows: TransactionRow[]; next?: number | null } | null;
+  onLoadOlder: () => Promise<void>;
   residents: ResidentRow[];
   onOpenResident: (r: ResidentRow) => void;
   snaps: Snaps;
@@ -27,6 +30,11 @@ export function Transactions({ tx, residents, onOpenResident, snaps, onOpenSnap 
   const [days, setDays] = useState('7');
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
+  const [older, setOlder] = useState('');
+  const loadOlder = async () => {
+    setOlder('Loading…');
+    try { await onLoadOlder(); setOlder(''); } catch (e) { setOlder(`Not loaded: ${errorText(e)}`); }
+  };
   const who = useMemo(() => residentFinder(residents), [residents]);
 
   const rows = useMemo(() => {
@@ -81,6 +89,11 @@ export function Transactions({ tx, residents, onOpenResident, snaps, onOpenSnap 
           {!tx ? 'No transactions yet. Pull transactions from the gate.'
             : `${rows.length} transactions${rows.length > MAX_ROWS ? ` (first ${MAX_ROWS} shown)` : ''} · downloaded ${fmtTime(tx.updated)}`}
         </Text>
+        {tx && tx.next != null && (
+          <Button variant="soft" color="gray" onClick={loadOlder} disabled={older === 'Loading…'}
+            title={`Only the newest ${tx.rows.length} transactions are loaded`}>Load older transactions</Button>
+        )}
+        {older && <Text size="2" color="gray">{older}</Text>}
       </Flex>
       {snaps.settings && snaps.info && <Text size="2" color="gray">{snaps.info}</Text>}
       <Table.Root size="1" variant="surface">

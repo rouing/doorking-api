@@ -6,12 +6,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CameraSettings, SnapshotMinute, SnapshotRun, SnapshotsReply } from '../../../src/types.ts';
 import { errorText, gateUrl, type GateApi } from '../api.ts';
 import { fmtTime } from '../format.ts';
+import { frameOffsets, posterFile } from '../../../src/snapshot-files.ts';
 
 export const isVideo = (f: string) => f.endsWith('.mp4');
-export const posterOf = (f: string) => f.replace(/\.mp4$/, '.jpg');
+export const posterOf = posterFile;
 export const fileChannel = (f: string) => Number(/^ch(\d+)/.exec(f)![1]);
 export const fmtMinute = (m: string) => `${m.slice(0, 4)}-${m.slice(4, 6)}-${m.slice(6, 8)} ${m.slice(9, 11)}:${m.slice(11)}`;
-const frameSecs = (n: number) => Array.from({ length: n }, (_, i) => String(Math.floor((i * 60) / n)).padStart(2, '0'));
+const frameSecs = (n: number) => frameOffsets(n).map((s) => String(s).padStart(2, '0'));
 
 export function frameCaption(f: string) {
   if (isVideo(f)) return '2-minute video';
@@ -73,20 +74,30 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
   const [errors, setErrors] = useState<Record<string, string>>({}); // "<minute>/<file>" -> why its refresh failed
   const [note, setNote] = useState('');
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pollGen = useRef(0);
+  const runActive = useRef(false);
   const video = Boolean(settings && settings.mode === 'video');
   const noun = video ? 'videos' : 'pictures';
 
+  // Polls every 2 s while a run is going (a failed check is tried again). pollGen: bumped on cleanup, so a check still
+  // on its way doesn't start polling again for a closed gate.
   const load = useCallback(async () => {
     clearTimeout(timer.current);
     if (!settings) { setSnapshots({}); setRun(null); return; }
+    const gen = pollGen.current;
     const out = await gapi<SnapshotsReply>('GET', '/snapshots').catch(() => null);
-    if (!out) return;
+    if (gen !== pollGen.current) return;
+    if (!out) {
+      if (runActive.current) timer.current = setTimeout(load, 2000);
+      return;
+    }
+    runActive.current = Boolean(out.run && out.run.state === 'running');
     setSnapshots((prev) => (JSON.stringify(prev) === JSON.stringify(out.snapshots) ? prev : out.snapshots));
     setRun(out.run as SnapshotRun | null);
     if (out.run && out.run.state === 'running') timer.current = setTimeout(load, 2000);
   }, [gapi, settings]);
 
-  useEffect(() => { load(); return () => clearTimeout(timer.current); }, [load]);
+  useEffect(() => { load(); return () => { pollGen.current++; clearTimeout(timer.current); }; }, [load]);
 
   const act = async (fn: () => Promise<unknown>, prefix = '') => {
     try { setNote(''); await fn(); await load(); } catch (e) { setNote(`${prefix}${errorText(e)}`); }

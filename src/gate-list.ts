@@ -3,7 +3,7 @@
 // calling registerGate), by a user who becomes its first admin. Its DKS login and master code are encrypted.
 // Roles: 'admin' (everything, including the gate's users and login) and 'readonly' (view, pull, cameras). A gate
 // always keeps at least one admin.
-import { all, encrypt, decrypt, getMeta, one, run, setMeta, transaction } from './db.ts';
+import { all, encrypt, decrypt, getMeta, one, run, setMeta, transaction, phoneDigits } from './db.ts';
 import type { Store } from './db.ts';
 import { userKey } from './users.ts';
 import type { GateRole, GateUser } from './types.ts';
@@ -17,7 +17,6 @@ export interface GateRecord {
 
 interface GateRow { phone: string; master_code: string; dks_user: string; dks_password: string; added_by: string; added_at: string }
 
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 const err = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 export const ALREADY_ADDED = 'This gate is already managed here. Ask one of its gate admins to add you to it.';
 const LAST_ADMIN = 'A gate must keep at least one admin. Make someone else an admin first.';
@@ -100,10 +99,6 @@ export async function userGates(store: Store, username: unknown): Promise<{ phon
   return (await all<{ phone: string; role: GateRole; added_at: string }>(store, `SELECT a.phone, a.role, g.added_at FROM gate_access a
     JOIN managed_gates g ON g.phone = a.phone WHERE a.username = $1 ORDER BY g.added_at, a.phone`, [userKey(username)]))
     .map((r) => ({ phoneNumber: r.phone, role: r.role, addedAt: r.added_at }));
-}
-
-export async function isAnyGateAdmin(store: Store, username: unknown): Promise<boolean> {
-  return Boolean(await one(store, "SELECT 1 AS x FROM gate_access WHERE username = $1 AND role = 'admin'", [userKey(username)]));
 }
 
 // Everyone with access to the gate, admins first.

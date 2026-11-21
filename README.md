@@ -31,7 +31,7 @@ This README is the technical overview.
 3. [How settings are stored](#how-settings-are-stored)
 4. [Scheduled transfers](#scheduled-transfers)
 5. [Cameras](#cameras)
-6. [Debug logs](#debug-logs)
+6. [Server log](#server-log)
 7. [How data flows](#how-data-flows)
 8. [REST API](#rest-api)
 9. [Command-line tool](#command-line-tool)
@@ -51,7 +51,10 @@ Sign in (local account, passkey or SSO) ──> Your gates (admin / read only) �
    case-insensitive and unique. An optional phone number (E.164, not verified) is shown to admins of the user's gates. Passwords are scrypt hashes (minimum 12 characters). There is no sign-up page:
    gate admins create accounts (with a temporary password the user must replace at their first sign-in). Nobody
    can read or set another user's password from the web; whoever runs the server can (`node cli.ts reset-password`).
-   After 5 failed sign-ins within 15 minutes a username is refused for the rest of that time.
+   Failed sign-ins within 15 minutes are limited per username and client address (5), per address (20) and per
+   username from any address (50); the client address comes from Caddy's `X-Forwarded-For` (`clientIp`). Password
+   reset requests, passkey sign-in starts and single sign-on starts are limited per address (30), resets also per
+   account (3).
 2. **Passkeys** (`src/passkeys.ts`, table `passkeys`, `@simplewebauthn/server` and `/browser`): another way to sign in.
    Added under User Settings after re-entering the password; discoverable (no username at sign-in), user verification
    required. Each is tied to the site name it was made on: `server.publicHost` (over HTTPS) or `localhost` on the
@@ -82,8 +85,8 @@ Sign in (local account, passkey or SSO) ──> Your gates (admin / read only) �
    granted/changed/removed (opt-out), security alerts (password changed or reset, passkey added/removed, email change to
    the old address; always), gate alerts to the gate's admins (Send to gate or scheduled transfer failed; opt-out).
 5. **Sessions.** A random token in the `sid` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS); the database keeps
-   only its SHA-256 hash (table `sessions`), so sessions survive a restart. They end after **30 minutes idle**, on
-   **Sign out**, or when the user changes their password (other sessions). The open gate is kept in the session.
+   only its SHA-256 hash (table `sessions`), so sessions survive a restart. They end after **30 minutes idle**, **7 days**
+   after signing in (`security.sessionMaxHours`), on **Sign out**, or when the user changes their password (other sessions). The open gate is kept in the session.
 6. **Step-up** (`STEP_UP` in `web/server.ts`). Sensitive actions need a passkey confirmation in the session within
    `security.stepUpMinutes` (180): Send to gate, scheduled transfers (add, change, run now), gate users (add,
    invite, share, role, remove), API keys (create, revoke), the gate's DKS login and master code, deleting the gate's
@@ -133,7 +136,7 @@ connection runs at a time across all gates. When a pull or send finishes, the da
 | Page | Features |
 |---|---|
 | **Residents / Vendors** | Table of the working copy: directory code, name, hidden, phone, entry code, security level, floor, elevator, cards, notes (vendors: name, entry code, security level, cards, notes). Security level shows **Enabled** for 1 and **Disabled** for 0 (display only; the gate stores the number). Filter, sort by any column. **Export CSV** writes the whole directory (residents, vendors, empty units) as `ResidentsExport.csv` in DoorKing's cloud export format (`doorKingCsv` in `web/ui/format.ts`: the same 62 columns in the same order, quoting and CRLF line ends; rows in directory order; ACCOUNT = the gate's site name; cards ascending as 5 digits, up to 25; per-device NOTES columns kept empty; RESIDENTNOTES = the local note; cards without a directory code listed on code 000, as the cloud does). Card numbers show their Device Association name on hover (red when no range holds them). **Duplicates** (a directory code, entry code or card held by more than one entry, `findDuplicates` in `src/residents-edit.ts`) are listed in a red alert and marked red, and **Send to gate is refused** until they're fixed; edits never create one (409). Click a row for its last 5 transactions (green = admitted, red = denied; with camera pictures), **Last edited by <user> · <time>** when History has a change for it (click it for every recorded change: when, who, and each field before and after; `GET /residents/{code}/history`, `entryHistory` in `src/audit.ts`), and **Edit**: name, phone (formats as you type; 7 digits, 10 with area code, or 11 as 1 + area code for long distance), entry code, security level, floor, elevator reference, cards (add/remove, at most 25 per directory code as in DoorKing32 (`MAX_CARDS_PER_ENTRY`); device codes 00001-65407), notes (up to 500 characters, saved in the shared database so every user of the gate sees them, never sent to the gate; the column shows one line, hover for all of it), **Delete** (blank the slot; also clears the note) or **Remove code** (take the code off the gate). After every add, edit, delete or code removal the files are put in the layout DoorKing's software leaves (`tidyBoard`: directory sorted by name, empty slots first and vendors last; cards sorted by card number with no gaps; unused area codes dropped). **Hidden** isn't edited: every add and edit sets it (`applyShownRule`): residents with a name and a phone number are shown in the entry-panel directory, others and vendors are hidden. **Add resident / Add vendor** suggests vacant codes, other than 000 and 001 (they always get the maximum talk time, so they're best kept for the office or an emergency number). Working-copy badge with **Reset to gate** (back to the last pull) and **Send to gate** (shows the changed blocks first; a residents pull afterwards checks the gate). |
-| **Transactions** | The gate's transaction history, newest first (every pull is added to it, so events stay after they roll out of the gate's buffer): last 24 hours / 7 days / 30 days / all, filter, sort (clicking Time after Date sorts times within each date), **Download CSV**. Rows are green (admitted), red (denied) or amber (system events). Names and numbers link to the resident or vendor. With cameras set up: a Camera column, **Get camera snapshots** (or videos), **Stop**, progress (see [Cameras](#cameras)). |
+| **Transactions** | The gate's transaction history, newest first (every pull is added to it, so events stay after they roll out of the gate's buffer), loaded 2000 at a time (`GET /data?before=`, **Load older transactions**): last 24 hours / 7 days / 30 days / all, filter, sort (clicking Time after Date sorts times within each date), **Download CSV**. Rows are green (admitted), red (denied) or amber (system events). Names and numbers link to the resident or vendor. With cameras set up: a Camera column, **Get camera snapshots** (or videos), **Stop**, progress (see [Cameras](#cameras)). |
 | **Display** | LCD messages. Choose Single Line or 8 Line (remembered in this browser; the gate stores both). Each box allows the gate's limit: System message 27 characters, System instruction 52, each 8-line message 20. |
 | **Relays** | **Live relay control**: buttons for relays 0-2, plus the Tracker relays when their box is ticked, read from the gate when the page opens (green = held open, red = released); tapping one changes the gate **immediately**. A Tracker command relay is greyed out (the server refuses it too). Relay settings: **name** (a box per relay, saved on leaving it; Tracker relays get a name-only row), strike time, the four open tones, entry-code range, and whether the postal switch and rotary dial 9 activate each relay. A tone digit used twice turns both boxes red with an alert, and saving is refused (also by the server) until they differ. With **Tracker** on (Gate configuration): **Additional Relays For Tracker 2** (relays 3-10, commanded by relay 2) and **... Tracker 1** (relays 11-18, commanded by relay 1); ticking one sets that command relay's strike time to 00 in the working copy ("times are set at the hardware"), as DoorKing32 does (unticking puts the earlier time back), and locks that relay's whole row: strike time, tone open numbers, entry code range, postal switch and rotary dial 9. Per the DoorKing manual (3.1.3), tones, postal switch and rotary dial 9 then go on relay 0. The boxes are saved for the page only. |
 | **Hold Open** | Begin/end times, days and relays (0-2, plus 3-10 / 11-18 with the Tracker boxes) for 7 rows plus the Holiday row. |
@@ -145,7 +148,7 @@ connection runs at a time across all gates. When a pull or send finishes, the da
 | **Anti-Pass Back** | Mode, In/Out relays (up to 10; 0-2, plus 3-10 / 11-18 with the Tracker boxes), facility counter, one-time re-sync, scheduled Re-Sync All. Applies only to cards in security levels 02-27; levels 01, 28, 29 and 30 are never limited by it. |
 | **History** | Every user's last sign-in; this gate's pulls, sends, relay changes, camera setting changes and working-copy changes, newest first. Click a change for a From/To table; **Revert** undoes it in the working copy (refused if a later change touched the same data). |
 | **Scheduled Transfers** | Entries the server runs on set days and times: send, pull residents, pull transactions, camera snapshots. Edit, Run now, Delete. They run with the gate's DKS login. See [Scheduled transfers](#scheduled-transfers). |
-| **System Settings** | (admins) **Gate login** (DKS user/password and master code, checked before saving) and **Gate users** (create accounts for the gate, share with existing accounts, roles, remove); **Gate configuration** (must match the gate; a new gate starts at 255 area codes, the default in the DoorKing 6.5 manual; also lists the working copy's area codes, where a 4-digit code is 1 + area code for long-distance dialing, and **Num of digits in dir code** (1-4), where decreasing wipes all resident data; **Show on the page**: switch off **Floors** to hide the Residents Floor column and field and the Security Levels Floors column, or **Elevators** to hide the Residents Elevator column and field and the Elevator Reference page; page only, the stored values are kept). **Gate settings** (master code read-only; talk time as m:ss, up to 4:14; outside line digit). **Working copy files** (download `names.bin`, `names.map`, `phone.bin`, `cards.bin`). **Tracker** (shows the Additional Relays boxes on the Relays page; page only). **Device association** (names for card-number ranges), **Gate cameras**, **Debug logs**, **Appearance** (dark mode), **Delete stored gate data** (after a warning, deletes every database row about the gate for every user, including its gate-list entries, and its `media/<phone>/` folder; nothing on the gate changes). |
+| **System Settings** | (admins) **Gate login** (DKS user/password and master code, checked before saving) and **Gate users** (create accounts for the gate, share with existing accounts, roles, remove); **Gate configuration** (must match the gate; a new gate starts at 255 area codes, the default in the DoorKing 6.5 manual; also lists the working copy's area codes, where a 4-digit code is 1 + area code for long-distance dialing, and **Num of digits in dir code** (1-4), where decreasing wipes all resident data; **Show on the page**: switch off **Floors** to hide the Residents Floor column and field and the Security Levels Floors column, or **Elevators** to hide the Residents Elevator column and field and the Elevator Reference page; page only, the stored values are kept). **Gate settings** (master code read-only; talk time as m:ss, up to 4:14; outside line digit). **Working copy files** (download `names.bin`, `names.map`, `phone.bin`, `cards.bin`). **Tracker** (shows the Additional Relays boxes on the Relays page; page only). **Device association** (names for card-number ranges), **Gate cameras**, **Appearance** (dark mode), **Delete stored gate data** (after a warning, deletes every database row about the gate for every user, including its gate-list entries, and its `media/<phone>/` folder; nothing on the gate changes). |
 
 Hold Open, Holidays, Facility Codes, Elevator and Anti-Pass Back have **Save to working copy**, **Discard unsaved**
 and **Clear** (fills every setting on the page with its unset value as an unsaved edit; nothing changes until Save).
@@ -159,7 +162,6 @@ Settings live in one of five places, depending on what they belong to:
 | **Database, per gate** (PostgreSQL, keyed by phone number) | Gate configuration, Floors/Elevators switches, relay names, Device Association (`prefs` table); resident/vendor notes (`notes`, by directory code without leading zeros); transaction history (`tx_history`, every event pulled); camera settings (`cameras`, password encrypted); snapshot log (`snapshots`); scheduled transfers (`schedules`); history (`history`). Not sent to the gate (DoorKing32 kept relay names and Device Association in `ACCOUNT.DAT`). | Every account that manages the gate on this PC |
 | **Database, per account** | Account (`users`: scrypt password hash, email, dark mode, last sign-in), sessions (`sessions`, token hashes), access to gates (`gate_access`: role per gate). | That user (access: the gate's admins) |
 | **Database, per gate (system)** | The gate's master code and DKS login (`managed_gates`, encrypted). | The gate's admins |
-| **Database, whole server** | Debug logs on/off (`meta` key `debugLogs`). | Everyone |
 | **This browser** (localStorage) | Remember user and the username, the last dark mode (for the sign-in page), the Display page's layout choice. Never a password or master code. | That browser |
 
 `config.json` (`gateDefaults`) gives gate-match
@@ -178,7 +180,7 @@ while `config.json` or the key can be read by other users (Linux/macOS).
 | `config.json` | the server's settings, including the database password (`config.example.json` is the committed template) | **No** |
 | `doorking.key` | AES-256-GCM key for the encrypted columns | **No**: with the database it decrypts master codes and passwords |
 | `media/<phone>/` | `snapshots/` (camera pictures and videos). The board files are in the database (`gate_files`) | No: camera pictures |
-| `logs/debug.log` | written only while Debug logs is on | No: holds phone numbers and recorder serials |
+| `logs/debug.log` | the server log, always written (also printed to the console) | No: holds phone numbers and recorder serials |
 
 ## Scheduled transfers
 DoorKing32's Scheduled Transfers, reworked: each gate has its own list of entries instead of four shared
@@ -273,7 +275,7 @@ camera settings is recorded in History (never the password).
   already finished are not fetched again when the setting changes.
 - Only keyframes are decoded. A frame with decoder errors (cut off in transfer) is deleted and tried once more
   ("Picture damaged in transfer"); any other failed frame, including a recorder 404, is tried once more after
-  2 s. With **Debug logs** on, each retry and each frame that still fails is written to `debug.log`.
+  2 s. Each retry and each frame that still fails is written to the server log.
 
 ### Video clips
 - **Save → 2-minute video clips** saves video instead of frames: for each channel, 2 minutes of recording from
@@ -345,9 +347,9 @@ pictures** changes (skipped while a run or refresh uses the folder):
   video** / **Get pictures** button next to it fetches that minute once more on request); minutes older than Keep
   pictures are not fetched either.
 
-## Debug logs
-System Settings → **Debug logs** turns logging on or off for the whole server (saved in the database, `meta`
-key `debugLogs`; off by default). While on, `logs/debug.log` (see `--logs`) gets one line per entry:
+## Server log
+Always on, with no page in the app (until there is an admin panel): each entry is printed to the console
+(`journalctl -u doorking`) as `[area] message` and appended to `logs/debug.log` (see `paths.logs`) as
 `<ISO time> [area] message`. Areas:
 
 | Area | Written for |
@@ -356,14 +358,14 @@ key `debugLogs`; off by default). While on, `logs/debug.log` (see `--logs`) gets
 | `gate` | every gate connection line, as in the Gate connection window, without repeated statuses, and how it ended; live relay changes |
 | `change` | every working-copy, preference, note and revert change recorded in History, with the user and the files it touched |
 | `gates` | gates added (or a failed add), users created, shared, changed or removed, the gate login or master code changed, a gate's stored data deleted (with the rows removed per table) |
-| `session` | sign-ins, refused sign-ins (wrong password, too many failures), sign-outs (also after 30 minutes idle), password changes, the first account, the gate a user opens |
+| `session` | sign-ins, refused sign-ins (wrong password, too many failures; the typed username only when it is an account, and the client address), sign-outs (also after 30 minutes idle), password changes, the first account, the gate a user opens |
 | `api` | API keys created or revoked; requests refused for a wrong, expired or revoked key |
 | `schedule` | entries added, changed, deleted or queued with Run now; each run started and its result |
 | `camera` | snapshot runs started, stopped and finished, frame retries and failures, minutes not done, bridge starts, connections, exits and connection failures, live views opened and ended, camera tests, settings saved or removed, pictures deleted |
 | `request` | requests answered with an error status |
 | `server` | start, the one-time import, uncaught errors |
 
-Above 5 MB the file is moved to `debug.log.1`. **Open log** shows the file. Passwords and master codes are never
+Above 5 MB the file is moved to `debug.log.1`. Passwords and master codes are never
 written (the DKS session request is masked); the file still holds gate phone numbers, user names and recorder
 serials, so `logs/` is in `.gitignore`.
 
@@ -392,12 +394,12 @@ base + values ──build──> files ──send──> gate ──verify pull�
 - Every edit (residents, settings, area codes, digits) changes only the **working copy**. Nothing reaches the
   gate until **Send**.
 - A residents pull becomes the base at once. Unsent changes are put back on top of it (resident by directory code,
-  card by slot, setting by key); an item changed differently at the gate and here is a **conflict**, kept as the
+  card by card number, setting by key); an item changed differently at the gate and here is a **conflict**, kept as the
   working copy has it until someone chooses Keep mine or Take the gate's (sends wait). When the directory code digits
   or the area-code mode changed, the gate's version is taken and unsent changes are dropped. **Reset to gate**
   (`DELETE .../working-copy`) drops the unsent changes.
-- A send uploads the changed blocks, then pulls residents again. If the pull matches, the working copy becomes
-  the new base; if not, the pull is applied like any residents pull (what the gate doesn't hold stays unsent) and the
+- A send uploads the changed blocks, then pulls residents again. If the pull matches what was sent, it becomes
+  the new base and the working copy (edits saved while the send ran are kept on top, as after any pull); if not, the pull is applied like any residents pull (what the gate doesn't hold stays unsent) and the
   differing blocks are logged.
 - One gate connection (pull or send) runs at a time across all gates.
 - Transactions (`rcv_out.bin`) are read-only. A pull reads the gate's whole buffer (10,000 events, oldest
@@ -434,16 +436,16 @@ against changes observed on the gate. The database tests use the `doorking_test`
   `sid` cookie gets `Secure` there (INSTALL.md section 6a).
 - DKS Cloud is reached over **HTTPS** by default (`DEFAULT_URL` in `src/dks-cloud.ts`), so the DKS password and
   master codes are encrypted on the way. `DKS_URL` can override it.
-- Sign-in: local accounts with scrypt password hashes; after 5 failed sign-ins for a username within 15 minutes,
-  further tries are refused (429) for the rest of that time. A wrong username takes as long as a wrong password.
+- Sign-in: local accounts with scrypt password hashes; failed sign-ins are limited per username and client address,
+  per address and per username (see Accounts above), counted before the password is checked so a burst can't pass. A wrong username takes as long as a wrong password.
 - Sessions: random tokens, stored only as SHA-256 hashes; idle sessions are removed every minute after 30 minutes
-  without use. A user whose password was set by someone else reaches nothing but the password change until they
+  without use, and every session 7 days after its sign-in. A user whose password was set by someone else reaches nothing but the password change until they
   choose their own.
 - The first account needs the setup code printed in the server's console, so a fresh public install can't be
   claimed by a stranger. A gate is only added after a successful pull with its DKS login and master code.
 - Each gate's DKS login and master code are encrypted with AES-256-GCM in the database; the key is `doorking.key`,
   so anyone with the key and the database (or a dump of it) can decrypt them. They are never sent to the browser or
-  logged. Pull/send logs mask credentials. The debug log (all gates) is open only to users who are admin of a gate.
+  logged. Pull/send logs mask credentials. The server log (all gates) is read on the server only (console or `logs/`); the app has no route for it.
 - Step-up: sensitive actions need a passkey confirmation within 3 hours (see Signing in, item 6).
 - Passkeys: WebAuthn with user verification required, origin and site name checked, one-use challenges, rising
   signature counter; adding one needs the current password (5 wrong tries pause it, like sign-in), unless the account has none.
@@ -480,7 +482,7 @@ against changes observed on the gate. The database tests use the `doorking_test`
   tsconfig.json          type check settings for the server code (tsc, no output)
   config.json            server settings incl. the database password (not in git; copy config.example.json)
   doorking.key           the encryption key (created on first start; not in git)
-  logs/                  debug.log (only while Debug logs is on)
+  logs/                  debug.log (the server log)
   src/
     config.ts            server settings: config.json + environment + flags, checked at startup
     types.ts             shapes shared by the server and the web page (types only)
@@ -508,7 +510,7 @@ against changes observed on the gate. The database tests use the `doorking_test`
     holidays.ts          fixed-date holiday names
     transactions.ts      reader for the desktop app's TRANSnnn.TRA files
     carchive.ts          MFC CArchive reader (used by transactions.ts)
-    debug-log.ts         debug log file, on only while Debug logs is checked
+    debug-log.ts         the server log: console and logs/debug.log
     markdown.ts          renders docs/MANUAL.md as the /help page (small Markdown subset, all text escaped)
   web/
     server.ts            HTTP server: the built page, /help + REST API

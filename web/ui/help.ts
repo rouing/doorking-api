@@ -69,7 +69,6 @@ export const HELP: Record<string, string> = {
 
   // System Settings
   deviceAssociation: 'Names for ranges of card numbers, for example "Residents 00001–00500". The name is shown as the Event Type of card visits on the Transactions page.',
-  debugLogs: 'Records detailed technical information to help find a problem. Leave it off unless someone supporting the app asks you to turn it on.',
   deleteGateData: 'Removes everything this app has stored about this gate, for everyone on this computer. The gate itself is not changed.',
 
   // Cameras

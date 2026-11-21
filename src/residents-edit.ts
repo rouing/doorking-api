@@ -12,6 +12,7 @@
 import {
   NAMES_LAYOUTS, namesLayout, readPhoneFields, writePhoneFields, NAMES_DIR_DIGITS_OFFSET, namesDirDigits, namesEntryCode,
 } from './board-files.ts';
+import { GATE_SETTING_FIELDS } from './gate-settings.ts';
 
 export interface BoardBuffers { names: Buffer; phone: Buffer; cards: Buffer }
 // Fields of a resident edit; only those present are changed (see applyResidentEdit).
@@ -20,9 +21,9 @@ export interface EditOptions { areaCodeSlots?: number }
 export interface AreaCodeUse { index: number; code: string | null; uses: number }
 
 const NAMES_ENTRY_SIZE = 20;
+const PHONE_FIELDS = ['areaCode', 'phone', 'entryCode', 'securityLevel', 'elevatorRef', 'floor'];
 const NAMES_AREA_CODE_SLOTS = 255;
 const NAMES_MIDDLE_POINTER_OFFSET = 0xf8; // 3-byte BE offset of the middle shown entry (DoorKing32.exe.c:119433)
-export const NAMES_MODE_DELTA = NAMES_LAYOUTS[255].directoryOffset - NAMES_LAYOUTS[10].directoryOffset; // 0x380
 const PHONE_SIZE = 10;
 const CARD_SIZE = 4;
 // Cards (device numbers) one directory code may hold: DoorKing32 refuses more ("You can only add up to 25 additional
@@ -102,7 +103,7 @@ export function updateMiddlePointer(names: Buffer): void {
 }
 
 // Recomputes the middle pointer only when the directory itself changed, so other edits leave the header alone.
-function withPointer<T extends { names: Buffer }>(before: Buffer, result: T): T {
+export function withPointer<T extends { names: Buffer }>(before: Buffer, result: T): T {
   const start = dirStart(before);
   const end = Math.max(directoryEnd(before), directoryEnd(result.names));
   if (!before.subarray(start, end).equals(result.names.subarray(start, end))) updateMiddlePointer(result.names);
@@ -216,7 +217,7 @@ function holderLabel(names: Buffer | undefined, code: string | null): string {
 // A card number already held by another directory code is refused (409); more than MAX_CARDS_PER_ENTRY cards too,
 // unless the entry already had that many (only removing is then allowed to stay above it).
 export function applyCards(cards: Buffer, code: string, desired: unknown[] | null | undefined, names?: Buffer): void {
-  const want = new Set((desired || []).map((c) => digits(c)).filter(Boolean));
+  const want = new Set((desired || []).map((c) => digits(c)).filter(Boolean).map((c) => String(Number(c)))); // "5" and "00005" are one card
   const have = new Set<string>();
   const free: number[] = [];
   const codeBcd = encodeBcd(code, 2);
@@ -225,15 +226,15 @@ export function applyCards(cards: Buffer, code: string, desired: unknown[] | nul
     if (rec.every((b) => b === 0xff)) { free.push(o); continue; }
     if (bcdToStr(rec.subarray(2, 4)) !== code) continue;
     const num = String(rec.readUInt16BE(0));
-    if (want.has(num) || want.has(num.padStart(5, '0'))) have.add(num);
+    if (want.has(num)) have.add(num);
     else { cards.fill(0xff, o, o + CARD_SIZE); free.push(o); } // remove
   }
-  if (want.size > MAX_CARDS_PER_ENTRY && [...want].some((c) => !have.has(String(Number(c))))) {
+  if (want.size > MAX_CARDS_PER_ENTRY && [...want].some((c) => !have.has(c))) {
     throw err(`A directory code can have at most ${MAX_CARDS_PER_ENTRY} cards (${want.size} given)`);
   }
   for (const c of want) {
     const num = Number(c);
-    if (have.has(String(num))) continue;
+    if (have.has(c)) continue;
     if (num < 1 || num > 65407) throw err(`Card number ${c} is out of range (device codes are 00001-65407)`);
     for (let p = 0; p + CARD_SIZE <= cards.length; p += CARD_SIZE) {
       if (cards.readUInt16BE(p) !== num || cards.subarray(p, p + CARD_SIZE).every((b) => b === 0xff)) continue;
@@ -250,13 +251,20 @@ export function applyCards(cards: Buffer, code: string, desired: unknown[] | nul
 // edit: { directoryCode (required), name, hidden, vendor, areaCode, phone, entryCode, securityLevel,
 //   elevatorRef, floor, cards[] }. Only provided fields are changed. Returns new buffers.
 // opts.areaCodeSlots limits where a new area code may go (see areaCodeLimit).
+// A name typed by a user: refused (400) when it has a character the files can't hold (one byte each, plain ASCII
+// 0x20-0x7E; "Œ" would otherwise be stored as "R"). Names already on the gate aren't checked.
+export function checkName(name: unknown): void {
+  const bad = [...String(name ?? '')].find((c) => c < ' ' || c > '~');
+  if (bad) throw err(`Names can use only plain letters, digits, spaces and punctuation ("${bad}" can't be stored on the gate)`);
+}
+
 export function applyResidentEdit(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
   return withPointer(buffers.names, editBuffers(buffers, edit, opts));
 }
 
 function editBuffers(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
   const names = Buffer.from(buffers.names);
-  const phone = Buffer.from(buffers.phone);
+  let phone: Buffer = Buffer.from(buffers.phone);
   const cards = Buffer.from(buffers.cards);
   const code = dirCode(names, edit.directoryCode);
 
@@ -274,8 +282,17 @@ function editBuffers(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOption
     names[no + 15] = flag;
   }
 
-  const po = findPhoneRecord(phone, code);
-  if (po < 0) throw err(`No phone record for code ${code}`, 404);
+  let po = findPhoneRecord(phone, code);
+  if (po < 0) {
+    // A names entry with no phone record (other software can leave one): it gets a blank record when a phone field is
+    // given a value; otherwise only names and cards change.
+    if (!PHONE_FIELDS.some((k) => k in edit && String(edit[k] ?? '') !== '')) {
+      if ('cards' in edit) applyCards(cards, code, edit.cards, names);
+      return { names, phone, cards };
+    }
+    phone = insertPhoneRecord(phone, code);
+    po = findPhoneRecord(phone, code);
+  }
   if ('areaCode' in edit || 'phone' in edit) {
     const mode = phoneMode(names);
     const f = readPhoneFields(phone.subarray(po, po + PHONE_SIZE), mode);
@@ -386,12 +403,25 @@ export function removeDirectoryCode(buffers: BoardBuffers, directoryCode: unknow
   return withPointer(buffers.names, { names, phone, cards });
 }
 
+// The directory codes the gate's memory holds (System memory, names.bin 0xBF), or null when it isn't set.
+function memoryEntries(names: Buffer): number | null {
+  const f = SYSTEM_MEMORY;
+  const v = f ? f.type.decode(names.subarray(f.offset, f.offset + f.type.size)) : '';
+  return /^\d+$/.test(v) ? Number(v) : null;
+}
+const SYSTEM_MEMORY = GATE_SETTING_FIELDS.find((f) => f.key === 'systemMemory');
+
 // Inserts a new directory code: the names entry goes in DoorKing32's name order and the phone record
-// (fields blank, byte 8 = 0x01) in code order; later entries/records move down.
+// (fields blank, byte 8 = 0x01) in code order; later entries/records move down. Refused when the directory already
+// holds as many codes as the gate's System memory.
 function insertDirectoryCode(buffers: BoardBuffers, code: string, name: string, flag: number): BoardBuffers {
   const names = Buffer.from(buffers.names);
   const phone = Buffer.from(buffers.phone);
   const nEnd = directoryEnd(names);
+  const memory = memoryEntries(names);
+  if (memory !== null && (nEnd - dirStart(names)) / NAMES_ENTRY_SIZE >= memory) {
+    throw err(`The gate's memory holds ${memory} directory codes (System memory), and all are used. Remove one first.`, 409);
+  }
   if (nEnd + NAMES_ENTRY_SIZE > names.length || !names.subarray(nEnd, nEnd + NAMES_ENTRY_SIZE).every((b) => b === 0xff)) {
     throw err('No room for another directory entry', 409);
   }
@@ -407,6 +437,12 @@ function insertDirectoryCode(buffers: BoardBuffers, code: string, name: string, 
   names[at + 15] = flag;
   names.write(code.padStart(4, ' '), at + 16, 4, 'latin1');
 
+  return { names, phone: insertPhoneRecord(phone, code), cards: buffers.cards };
+}
+
+// A copy of phone.bin with a blank record for code (fields blank, byte 8 = 0x01) in code order; later records move down.
+function insertPhoneRecord(buf: Buffer, code: string): Buffer {
+  const phone = Buffer.from(buf);
   const pEnd = phoneEnd(phone);
   if (pEnd + PHONE_SIZE > phone.length) throw err('No room for another phone record', 409);
   let po = 0;
@@ -416,7 +452,7 @@ function insertDirectoryCode(buffers: BoardBuffers, code: string, name: string, 
   }
   phone.copyWithin(po + PHONE_SIZE, po, pEnd);
   Buffer.concat([encodeBcd(code, 2), Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0xff])]).copy(phone, po);
-  return { names, phone, cards: buffers.cards };
+  return phone;
 }
 
 // True when a directory slot is unused: blank name and flag 0x00 (no vendor/shown bits). A hidden resident

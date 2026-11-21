@@ -57,76 +57,22 @@ function holdOpenRow(beginHour, beginPm, endHour, endPm, dayIdxs) {
   return [hr(beginHour, beginPm), 0, hr(endHour, endPm), 0, flags];
 }
 
-test('parseNamesBin securityTimes: decodes days, relays, and floors; empty records stay empty', () => {
+// Settings decoded from names.bin (decodeGateSettings): security time zones (real L5 TZ1 sample bytes), facility codes,
+// elevator relays and hold-open rows.
+test('gate settings decode security, facility, elevator and hold-open bytes', () => {
   const buf = Buffer.alloc(64000, 0xff);
-  // Blank out the directory area start so parseNamesBin doesn't choke; we only assert security here.
-  // Real L5 TZ1 record bytes (10AM-4PM, Mon/Wed/Fri, relays 1+18, floors 1+8) at offset 0x303.
-  const rec = [0x90, 0x00, 0xa4, 0x00, 0x54, 0x80, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x81];
-  rec.forEach((b, k) => { buf[0x303 + k] = b; });
-  const st = dk.parseNamesBin(buf).securityTimes;
-  const l5tz1 = st.find((r) => r.level === 5 && r.timeZone === 1);
-  assert.deepStrictEqual(l5tz1.days, [false, true, false, true, false, true, false]); // Mon, Wed, Fri
-  assert.deepStrictEqual(l5tz1.relays, [1, 18]);
-  assert.deepStrictEqual(l5tz1.floors, [1, 8]);
-  assert.strictEqual(l5tz1.begin, '10:00 AM');
-  assert.strictEqual(l5tz1.end, '04:00 PM');
-  // An untouched (0xFF) record must read as empty, not all-bits-set.
-  const l7tz1 = st.find((r) => r.level === 7 && r.timeZone === 1);
-  assert.deepStrictEqual(l7tz1.relays, []);
-  assert.deepStrictEqual(l7tz1.floors, []);
-  assert.deepStrictEqual(l7tz1.days, Array(7).fill(false));
-});
-
-test('parseNamesFacilityCodes: enable flag + 10 big-endian codes, 0xFFFF unused', () => {
-  const buf = Buffer.alloc(64000, 0xff);
-  const put16 = (i, v) => { buf[0x1e + i * 2] = v >> 8; buf[0x1e + i * 2 + 1] = v & 0xff; };
-  put16(0, 123); // code 1
-  put16(1, 45);  // code 2
-  put16(9, 255); // code 10
-  buf[0x32] = 0x00; // enabled
-  const fc = dk.parseNamesFacilityCodes(buf);
-  assert.strictEqual(fc.enabled, true);
-  assert.strictEqual(fc.codes.length, 10);
-  assert.strictEqual(fc.codes[0].code, '123');
-  assert.strictEqual(fc.codes[1].code, '45');
-  assert.strictEqual(fc.codes[9].code, '255');
-  assert.strictEqual(fc.codes[2].code, ''); // unused
-  // Disabled flag reads as off.
-  buf[0x32] = 0xff;
-  assert.strictEqual(dk.parseNamesFacilityCodes(buf).enabled, false);
-});
-
-test('parseNamesElevator: relay->elevator bitmaps and per-relay seconds', () => {
-  const buf = Buffer.alloc(64000, 0xff);
-  buf[0xc6] = 0x15; // relay 1 -> elevators 1,3,5
-  buf[0xc7] = 0x80; // relay 2 -> elevator 8
-  buf[0xcd] = 0x03; // relay 8 -> elevators 1,2
-  for (let i = 2; i <= 6; i++) buf[0xc6 + i] = 0x00; // relays 3-7 empty
-  buf[0x97] = 120; buf[0x98] = 1; buf[0x9d] = 1; // times: relay1=120s, relay2=1s, relay8=1s
-  const el = dk.parseNamesElevator(buf);
-  assert.strictEqual(el.length, 8);
-  assert.deepStrictEqual(el[0], { relay: 1, elevators: [1, 3, 5], seconds: 120 });
-  assert.deepStrictEqual(el[1].elevators, [8]);
-  assert.deepStrictEqual(el[7].elevators, [1, 2]);
-  assert.deepStrictEqual(el[2].elevators, []);
-});
-
-test('parseNamesHoldOpen: decodes times, days, relays, and empty rows', () => {
-  const buf = Buffer.alloc(64000, 0xff);
-  const put = (i, bytes) => bytes.forEach((b, k) => { buf[HOLDOPEN_OFFSET + i * 5 + k] = b; });
-  put(0, holdOpenRow(11, false, 1, true, [1]));       // row 1: 11AM-1PM, Monday
-  put(6, holdOpenRow(8, true, 9, true, [0, 1, 2, 3, 4, 5, 6])); // row 7: 8PM-9PM, all days
-  put(7, holdOpenRow(6, false, 7, false, []));         // Hol: 6AM-7AM, no days
-  // rows 2-6 left as 0xFF (empty)
-  buf.fill(0, 0x5c, 0x6f);
-  buf[0x5c + 1] = 0x81;  // relay 1: row 1 + Hol
-  buf[0x5c + 18] = 0x40; // relay 18: row 7
-  const ho = dk.parseNamesHoldOpen(buf);
-  assert.strictEqual(ho.length, 8);
-  assert.deepStrictEqual(ho[0], { row: '1', begin: '11:00 AM', end: '01:00 PM', days: [false, true, false, false, false, false, false], relays: [1] });
-  assert.deepStrictEqual(ho[1], { row: '2', begin: '', end: '', days: Array(7).fill(false), relays: [] });
-  assert.deepStrictEqual(ho[6], { row: '7', begin: '08:00 PM', end: '09:00 PM', days: Array(7).fill(true), relays: [18] });
-  assert.deepStrictEqual(ho[7], { row: 'Hol', begin: '06:00 AM', end: '07:00 AM', days: Array(7).fill(false), relays: [1] });
+  // L5 TZ1: 10AM-4PM, Mon/Wed/Fri, relays 1+18, floors 1+8.
+  [0x90, 0x00, 0xa4, 0x00, 0x54, 0x80, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x81].forEach((b, k) => { buf[0x303 + k] = b; });
+  buf[0x1e] = 0; buf[0x1f] = 123; buf[0x32] = 0x00; // facility code 1 = 123, enabled
+  buf[0xc6] = 0x15; buf[0x97] = 120; // elevator relay 1 -> elevators 1,3,5 for 120 s
+  holdOpenRow(11, false, 1, true, [1]).forEach((b, k) => { buf[HOLDOPEN_OFFSET + k] = b; }); // row 1: 11AM-1PM, Monday
+  const v = Object.fromEntries(dk.decodeGateSettings(buf).map((f) => [f.key, f.value]));
+  assert.deepStrictEqual([v.sec5tz1Begin, v.sec5tz1End, v.sec5tz1Days, v.sec5tz1Relays, v.sec5tz1Floors],
+    ['10:00', '16:00', '0101010', '0100000000000000001', '1,8']);
+  assert.deepStrictEqual([v.sec7tz1Days, v.sec7tz1Floors], ['', '']); // an untouched (0xFF) record reads as empty
+  assert.deepStrictEqual([v.facilityEnabled, v.facilityCode1, v.facilityCode2], ['Yes', '123', '']);
+  assert.deepStrictEqual([v.elevator1Elevators, v.elevator1Time], ['10101000', '120']);
+  assert.deepStrictEqual([v.holdOpen1Begin, v.holdOpen1End, v.holdOpen1Days], ['11:00', '13:00', '0100000']);
 });
 
 test('gate settings: hold-open relay fields encode one byte per relay, bit per row', () => {
@@ -285,4 +231,10 @@ test('Postal switch (0x41) and rotary dial 9 (0x42) are relay bitmasks, bit r = 
   assert.strictEqual(dk.gateSettingsJson(base).relayPostalSwitch, '01000000');
   const r = dk.applyGateSettings(base, { relayPostalSwitch: '11000000', relayRotaryDial9: '11000000' });
   assert.deepStrictEqual(r.bytes, [{ offset: 0x41, from: 0x02, to: 0x03 }, { offset: 0x42, from: 0x02, to: 0x03 }]);
+});
+
+test('decodeFileText: hex text is a file; a message from DKS Cloud is refused', () => {
+  assert.deepStrictEqual([...dk.decodeFileText(' 0aFF\n')], [0x0a, 0xff]);
+  assert.throws(() => dk.decodeFileText('Session not found'), /other than a file: Session not found/);
+  assert.throws(() => dk.decodeFileText('ABC'), /other than a file/); // odd length
 });

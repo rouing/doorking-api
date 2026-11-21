@@ -1,11 +1,10 @@
 // Resident/vendor notes: free text per gate and directory code, kept only in the local database (the gate has no
 // field for them). Keyed by the gate's system phone number, so every account that manages the gate shares them,
 // and by the directory code without leading zeros, so notes survive a change of "Num of Digits in Dir Code".
-import { all, one, run, type Store } from './db.ts';
+import { all, one, run, type Store, phoneDigits } from './db.ts';
 
 export const NOTE_MAX = 500;
 
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 
 // The notes key of a directory code: "0701" and "701" share a note.
 export const noteKey = (code: unknown): string => String(code ?? '').replace(/\D/g, '').replace(/^0+(?=\d)/, '');

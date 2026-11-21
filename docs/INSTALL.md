@@ -130,8 +130,9 @@ Relative paths are relative to the folder `config.json` is in. Unknown names and
 | `database.testName` | `doorking_test` | database the tests use (same login) |
 | `dks.url` | `https://dksdb.dksoftware.com/DkWebService.asmx` | DKS Cloud address |
 | `security.sessionIdleMinutes` | `30` | sign-out after this long without activity |
+| `security.sessionMaxHours` | `168` | sign-out this long after signing in, even when active (7 days) |
 | `security.stepUpMinutes` | `180` | how long a passkey confirmation covers the sensitive changes (Send to gate, gate users, API keys, …); accounts without a passkey can't make them |
-| `security.maxFailedSignIns`, `.signInWindowMinutes` | `5`, `15` | after this many failed sign-ins within the window, that user name is refused for the rest of it |
+| `security.maxFailedSignIns`, `.signInWindowMinutes` | `5`, `15` | after this many failed sign-ins within the window for a user name from one client address, it is refused there for the rest of it (an address is refused after 4 times as many, a user name from any address after 10 times). Behind Caddy on the same machine the client address comes from `X-Forwarded-For` |
 | `schedules.checkSeconds` | `30` | how often scheduled transfers are checked |
 | `cameras.ffmpeg` | `""` | the ffmpeg program: a path (relative to `config.json`'s folder, e.g. `tools/bin/ffmpeg-linux-x64`), or a name looked up on the PATH (`ffmpeg`); empty = the copy in `tools/bin` if there is one, else `ffmpeg` on the PATH |
 | `cameras.tidyMinutes` | `60` | how often old snapshots and leftover pieces are cleaned up |
@@ -382,8 +383,8 @@ schemas in.
 | `Forbidden host` | Open the page as `http://localhost:<port>` or `http://127.0.0.1:<port>`, or by the `server.publicHost` name through the proxy, not by machine name or IP. |
 | `Forbidden origin` on sign-in through the public name | `server.publicHost` isn't set to that name, or the page was opened over `http://` instead of `https://`. |
 | Sign-in says "Login refused" | DKS Cloud rejected the user or password. |
-| Sign-in says "Too many failed sign-ins" | 5 failed tries for that user within 15 minutes. Wait 15 minutes. |
+| Sign-in says "Too many failed sign-ins" | 5 failed tries for that user from this address (or many from this address) within 15 minutes. Wait 15 minutes. |
 | A pull fails with "… Mismatch" | Gate configuration doesn't match the gate (System Settings). Fix the named value. |
 | Pulls fail with a network error | The machine can't reach `dksdb.dksoftware.com` on port 443 (firewall or proxy). |
 | Cameras: "Could not reach the recorder after 3 tries" | Check the recorder serial, user and password, and that it is online in DMSS/SmartPSS. |
-| Something else | Turn on **System Settings → Debug logs**, repeat the action, then **Open log** (`logs/debug.log`). |
+| Something else | Repeat the action, then read the server log: `journalctl -u doorking` or `logs/debug.log`. |

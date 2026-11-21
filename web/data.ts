@@ -68,7 +68,7 @@ function transactions(pulledAt: Date | null, values: WorkingState | null,
 export { residentRows };
 
 // pulledAt: the last transactions pull (txPulledAt); values: the working copy's values (loadWorkingState), or null;
-// history: the saved transactions (readTransactions).
+// history: the saved transactions, or a page of them (readTransactionPage), oldest first.
 export function loadData(pulledAt: Date | null, values: WorkingState | null, devices?: DeviceRange[] | null, history?: RcvRecord[] | null) {
   return { transactions: transactions(pulledAt, values, devices, history) };
 }

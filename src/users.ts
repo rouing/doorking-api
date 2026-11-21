@@ -18,10 +18,12 @@ const scrypt = promisify(crypto.scrypt) as (pw: string, salt: Buffer, len: numbe
 export interface User {
   username: string; email: string; pendingEmail: string; phone: string; dark: boolean; mustChangePassword: boolean; notifyAccess: boolean;
   notifyAlerts: boolean; invited: boolean; hasPassword: boolean; createdAt: string; createdBy: string; lastSignIn: string | null; signIns: number;
+  resetAt: string | null; // the last password reset by email link
 }
 interface UserRow {
   username: string; password_hash: string; email: string | null; pending_email: string | null; phone: string | null; dark: boolean; must_change: boolean;
   notify_access: boolean; notify_alerts: boolean; created_at: string; created_by: string; last_sign_in: string | null; sign_ins: number;
+  reset_at: string | null;
 }
 // The password hash of an invited account that hasn't chosen a password yet: nothing can match it.
 // The password hash of an account that signs in with single sign-on and has no password: nothing can match it either.
@@ -34,6 +36,7 @@ export const userKey = (u: unknown): string => String(u || '').trim().toLowerCas
 const fromRow = (r: UserRow): User => ({
   username: r.username, email: r.email || '', pendingEmail: r.pending_email || '', phone: r.phone || '', dark: r.dark, mustChangePassword: r.must_change,
   notifyAccess: r.notify_access, notifyAlerts: r.notify_alerts, invited: r.password_hash === NO_PASSWORD, hasPassword: hasPasswordHash(r.password_hash), createdAt: r.created_at, createdBy: r.created_by, lastSignIn: r.last_sign_in, signIns: r.sign_ins,
+  resetAt: r.reset_at ? new Date(r.reset_at).toISOString() : null,
 });
 
 // 3-32 letters, digits, '.', '_' or '-', starting with a letter or digit; returned lower case.
@@ -124,9 +127,14 @@ export async function createUser(store: Store, { username, password, email = '',
 export async function acceptInvite(store: Store, username: string, password: unknown): Promise<User> {
   const name = userKey(username);
   const hash = await hashPassword(checkPassword(password));
-  const r = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [name]);
-  if (!r || r.password_hash !== NO_PASSWORD) throw bad('This invitation was already used. Sign in instead.', 409);
-  await run(store, 'UPDATE users SET password_hash = $2, must_change = false WHERE username = $1', [name, hash]);
+  return takeInvite(store, name, hash);
+}
+// Sets the password hash of an invited account only while it still has none (one UPDATE, so of two acceptances at
+// once only one wins) and confirms the invited email.
+async function takeInvite(store: Store, name: string, hash: string): Promise<User> {
+  const r = await one<{ pending_email: string | null }>(store,
+    'UPDATE users SET password_hash = $2, must_change = false WHERE username = $1 AND password_hash = $3 RETURNING pending_email', [name, hash, NO_PASSWORD]);
+  if (!r) throw bad('This invitation was already used. Sign in instead.', 409);
   if (r.pending_email) await confirmEmail(store, name, r.pending_email);
   return (await getUser(store, name))!;
 }
@@ -134,12 +142,7 @@ export async function acceptInvite(store: Store, username: string, password: unk
 // Accepts an invitation through single sign-on: the account gets no password (it signs in with SSO) and its email, which
 // the invitation went to, is confirmed. Returns the user; 409 when the invitation was already used.
 export async function acceptInviteWithSso(store: Store, username: string): Promise<User> {
-  const name = userKey(username);
-  const r = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [name]);
-  if (!r || r.password_hash !== NO_PASSWORD) throw bad('This invitation was already used. Sign in instead.', 409);
-  await run(store, 'UPDATE users SET password_hash = $2, must_change = false WHERE username = $1', [name, SSO_ONLY]);
-  if (r.pending_email) await confirmEmail(store, name, r.pending_email);
-  return (await getUser(store, name))!;
+  return takeInvite(store, userKey(username), SSO_ONLY);
 }
 
 // Creates an account for someone signing in with single sign-on (no password; email confirmed by the provider). The
@@ -170,6 +173,7 @@ export async function confirmEmail(store: Store, username: string, address: stri
     if (!r || r.pending_email !== mail) throw bad('This link is for an address that is no longer waiting to be confirmed');
     if (await emailTaken(tx, mail, name)) throw bad('That email address is already used by another account', 409);
     await run(tx, 'UPDATE users SET email = $2, pending_email = NULL WHERE username = $1', [name, mail]);
+    await run(tx, 'DELETE FROM email_tokens WHERE username = $1 AND kind = \'reset\'', [name]); // links sent to the old address
   });
   return (await getUser(store, name))!;
 }
@@ -201,11 +205,12 @@ export async function unconfirmOldEmails(store: Store): Promise<number | null> {
 export async function authenticate(store: Store, username: unknown, password: unknown,
   refuse?: (username: string) => Promise<string | null>): Promise<User | null> {
   const r = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
-  const usable = r && hasPasswordHash(r.password_hash);
+  // An account whose password sign-in is refused is checked against the dummy hash too, so the answer is the same
+  // whether or not the old password was right.
+  const why = r && refuse ? await refuse(r.username) : null;
+  const usable = r && !why && hasPasswordHash(r.password_hash);
   const ok = await verifyPassword(String(password ?? ''), usable ? r.password_hash : await DUMMY_HASH) && usable;
   if (!r || !ok) return null;
-  const why = refuse ? await refuse(r.username) : null;
-  if (why) throw bad(why, 403);
   await recordSignIn(store, r.username);
   return getUser(store, r.username);
 }
@@ -224,14 +229,15 @@ export async function checkOwnPassword(store: Store, username: unknown, password
 // Sets a new password and ends the user's other sessions (keepSession: the token hash to keep, or none).
 // mustChange: true when someone else set it (the CLI).
 export async function setPassword(store: Store, username: unknown, password: unknown,
-  { mustChange = false, keepSession = '' }: { mustChange?: boolean; keepSession?: string } = {}): Promise<void> {
+  { mustChange = false, keepSession = '', byEmail = false }: { mustChange?: boolean; keepSession?: string; byEmail?: boolean } = {}): Promise<void> {
   const name = userKey(username);
   const hash = await hashPassword(checkPassword(password));
   await transaction(store, async (tx) => {
-    if (!await run(tx, 'UPDATE users SET password_hash = $2, must_change = $3 WHERE username = $1', [name, hash, mustChange])) {
+    if (!await run(tx, `UPDATE users SET password_hash = $2, must_change = $3${byEmail ? ', reset_at = now()' : ''} WHERE username = $1`, [name, hash, mustChange])) {
       throw bad(`No user "${name}"`, 404);
     }
     await run(tx, 'DELETE FROM sessions WHERE username = $1 AND token_hash <> $2', [name, keepSession]);
+    await run(tx, 'DELETE FROM email_tokens WHERE username = $1 AND kind = \'reset\'', [name]); // older reset links stop working
   });
 }
 
@@ -252,7 +258,10 @@ export async function updateUserSettings(store: Store, username: unknown, { emai
   if (email !== undefined) {
     const mail = checkEmail(email);
     const cur = await getUser(store, name);
-    if (!mail) await run(store, 'UPDATE users SET email = NULL, pending_email = NULL WHERE username = $1', [name]);
+    if (!mail) {
+      await run(store, 'UPDATE users SET email = NULL, pending_email = NULL WHERE username = $1', [name]);
+      await run(store, 'DELETE FROM email_tokens WHERE username = $1 AND kind IN (\'reset\', \'verify\')', [name]);
+    }
     else if (cur && mail === cur.email) await run(store, 'UPDATE users SET pending_email = NULL WHERE username = $1', [name]);
     else {
       if (await emailTaken(store, mail, name)) throw bad('That email address is already used by another account', 409);
@@ -268,7 +277,7 @@ export async function updateUserSettings(store: Store, username: unknown, { emai
 }
 
 // strongAt: when the session was last confirmed with a passkey (sign-in or confirmation), ms; null never.
-export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number; strongAt: number | null }
+export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number; strongAt: number | null; createdAt: number }
 
 const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 
@@ -287,18 +296,58 @@ export async function markSessionStrong(store: Store, tokenHashValue: string, no
   return now;
 }
 
-// The session for a cookie token, or null when unknown or idle longer than idleMs (it is then deleted).
+// The client's address. Behind Caddy on the same machine the connection comes from loopback and Caddy puts the client's
+// address in X-Forwarded-For (dropping one the client sent, as no trusted_proxies are set; the last entry is Caddy's);
+// from anywhere else the header is ignored and the connection's address is used.
+export function clientAddress(remote: string | undefined, forwarded: unknown): string {
+  const from = remote || '';
+  if (typeof forwarded === 'string' && forwarded.trim() && /^(::1$|127\.|::ffff:127\.)/.test(from)) return forwarded.split(',').pop()!.trim();
+  return from;
+}
+
+// Failed sign-in limits as [key, limit]: one account from one address (max), one address over any accounts (4x), and one
+// account from any addresses (10x), so a stranger can't lock an account from a single address.
+export const signInKeys = (user: string, ip: string, max: number): [string, number][] =>
+  [[`${user}|${ip}`, max], [`ip:${ip}`, max * 4], [user, max * 10]];
+
+// How a signed-in user must re-confirm who they are before a sensitive account change. strong: confirmed with a
+// passkey within windowMs; resetAt: last password reset by email link (ms). Adding or removing a passkey when there
+// is one needs a passkey confirmation, or a sign-in after a reset within windowMs (the way back for a lost passkey);
+// removing one is then allowed. Otherwise (email, first passkey): the current password; without one, a passkey
+// confirmation when there is a passkey, else a sign-in within windowMs.
+export type ReauthChange = 'email' | 'add-passkey' | 'remove-passkey';
+export type Reauth = 'ok' | 'password' | 'step-up' | 'sign-in-again';
+export function reauthNeeded(a: { strong: boolean; hasPassword: boolean; passkeys: number; signedInAt: number; resetAt: number | null;
+  now: number; windowMs: number }, change: ReauthChange): Reauth {
+  if (a.strong) return 'ok';
+  if (change !== 'email' && a.passkeys > 0) {
+    const recovering = a.resetAt !== null && a.signedInAt >= a.resetAt && a.now - a.resetAt <= a.windowMs;
+    if (!recovering) return 'step-up';
+    if (change === 'remove-passkey') return 'ok';
+  }
+  if (change === 'remove-passkey') return 'ok';
+  if (a.hasPassword) return 'password';
+  if (a.passkeys > 0) return 'step-up';
+  return a.now - a.signedInAt <= a.windowMs ? 'ok' : 'sign-in-again';
+}
+
+// The session for a cookie token, or null when unknown, idle longer than idleMs or signed in longer than maxAgeMs
+// ago (it is then deleted).
 // last_seen is written at most once a minute.
-export async function findSession(store: Store, token: string, idleMs: number): Promise<SessionInfo | null> {
+export async function findSession(store: Store, token: string, idleMs: number, maxAgeMs = Infinity): Promise<SessionInfo | null> {
   const h = tokenHash(token);
-  const r = await one<{ username: string; gate: string | null; last_seen: string; strong_at: string | null }>(store,
-    'SELECT username, gate, last_seen, strong_at FROM sessions WHERE token_hash = $1', [h]);
+  const r = await one<{ username: string; gate: string | null; last_seen: string; strong_at: string | null; created_at: string }>(store,
+    'SELECT username, gate, last_seen, strong_at, created_at FROM sessions WHERE token_hash = $1', [h]);
   if (!r) return null;
   const seen = new Date(r.last_seen).getTime();
   const now = Date.now();
-  if (now - seen > idleMs) { await run(store, 'DELETE FROM sessions WHERE token_hash = $1', [h]); return null; }
+  if (now - seen > idleMs || now - new Date(r.created_at).getTime() > maxAgeMs) {
+    await run(store, 'DELETE FROM sessions WHERE token_hash = $1', [h]);
+    return null;
+  }
   if (now - seen > 60000) await run(store, 'UPDATE sessions SET last_seen = $2 WHERE token_hash = $1', [h, new Date(now).toISOString()]);
-  return { tokenHash: h, username: r.username, gate: r.gate, lastSeen: now, strongAt: r.strong_at ? new Date(r.strong_at).getTime() : null };
+  return { tokenHash: h, username: r.username, gate: r.gate, lastSeen: now, strongAt: r.strong_at ? new Date(r.strong_at).getTime() : null,
+    createdAt: new Date(r.created_at).getTime() };
 }
 
 export async function deleteSession(store: Store, tokenHashValue: string): Promise<void> {
@@ -311,7 +360,9 @@ export async function setSessionGate(store: Store, tokenHashValue: string, phone
 }
 
 // Deletes sessions idle longer than idleMs; returns the usernames whose sessions ended.
-export async function sweepSessions(store: Store, idleMs: number): Promise<string[]> {
+export async function sweepSessions(store: Store, idleMs: number, maxAgeMs = Infinity): Promise<string[]> {
   const cutoff = new Date(Date.now() - idleMs).toISOString();
-  return (await all<{ username: string }>(store, 'DELETE FROM sessions WHERE last_seen < $1 RETURNING username', [cutoff])).map((r) => r.username);
+  const oldest = new Date(Number.isFinite(maxAgeMs) ? Date.now() - maxAgeMs : 0).toISOString();
+  return (await all<{ username: string }>(store, 'DELETE FROM sessions WHERE last_seen < $1 OR created_at < $2 RETURNING username', [cutoff, oldest]))
+    .map((r) => r.username);
 }

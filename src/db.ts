@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { checkPrivate } from './config.ts';
 
+// Gates are keyed by the digits of their phone number.
+export const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
+
 // Timestamps come back as ISO strings (as stored before), bigints (COUNT, identities) as numbers.
 const parseTimestamptz = pg.types.getTypeParser(pg.types.builtins.TIMESTAMPTZ);
 pg.types.setTypeParser(pg.types.builtins.TIMESTAMPTZ, (v: string) => (parseTimestamptz(v) as Date).toISOString());

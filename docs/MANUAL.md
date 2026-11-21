@@ -106,7 +106,8 @@ else).
 
 **Email:** after you type a new address, the app sends it a **confirmation link** (valid 24 hours); it shows "check
 your inbox" until you open it, and **Send the link again** if needed. Only a confirmed email is used. Each email can
-belong to one account only. If you had a confirmed email, it is told about the change.
+belong to one account only. If you had a confirmed email, it is told about the change. Changing or removing your email
+asks for your current password (accounts without one: sign in again first if asked).
 
 **Phone:** optional. Admins of your gates see it in their Gate users list, to reach you. Type a 10-digit US/Canada
 number, or `+` and the country code for other countries; it's saved in international form (for example
@@ -132,7 +133,12 @@ number, or `+` and the country code for other countries; it's saved in internati
   your browser's prompt. Phones and password managers often sync passkeys to your other devices ("synced").
 - A passkey works on the address you added it on (for example **https://gate.yourdomain.com**). Add another one if
   you also use a different address.
-- **Rename** or **Remove** a passkey any time. If you lose a device, remove its passkey here (sign in with your password).
+- **Rename** or **Remove** a passkey here. If you lose a device, remove its passkey (see below for how to confirm it's you).
+- Once you have a passkey, adding or removing one asks you to **Confirm it's you** with a passkey you already have.
+  Lost your only passkey? Use **Forgot your password?** on the sign-in page, sign in with the new password, and you
+  can remove the old passkey and add a new one for the next few hours.
+- Accounts that only sign in with a work account (no password) must have signed in, or confirmed with a passkey,
+  within the last few hours to add their first passkey (sign out and back in if asked).
 
 **Confirming with your passkey.** Some changes need a passkey, as an extra check that it's really you:
 **Send to gate**, scheduled transfers (adding, changing or running one now), gate users (adding, inviting, sharing,
@@ -208,7 +214,7 @@ When adding or editing:
 
 | Field | What to enter |
 |---|---|
-| Name | as it should appear on the gate's directory (up to 15 characters) |
+| Name | as it should appear on the gate's directory (up to 15 characters; plain letters, digits, spaces and punctuation, no accents such as é) |
 | Phone | the number the gate calls: 7 digits, 10 with the area code, or 11 starting with 1 for long distance |
 | Entry code | the code they type at the keypad. Two people can't share one. |
 | Cards | their card or remote numbers (00001–65407), up to 25 per person (the gate's limit). Two people can't share one. |
@@ -230,6 +236,8 @@ When adding or editing:
 The list of everything that happened at the gate, newest first: who came in, who was refused, and gate events. The
 app keeps every transaction it has ever pulled, so old ones stay here even after the gate itself has forgotten them.
 - Choose the last 24 hours, 7 days, 30 days or everything; filter; sort; **Download CSV**.
+- The newest 2,000 transactions are loaded; **Load older transactions** adds the 2,000 before them. Filters, the
+  CSV and a resident's last visits cover what is loaded.
 - **Green** rows were let in, **red** rows were refused, **amber** rows are gate events (for example a gate held open
   by its schedule).
 - Click a name or number to jump to that resident or vendor.
@@ -360,10 +368,6 @@ card visits.
 ### Gate cameras
 See [Cameras](#12-cameras).
 
-### Debug logs
-Leave this off unless someone supporting the app asks you to turn it on. It records detailed information to help
-them find a problem. Turn it off again afterwards.
-
 ### Delete stored gate data
 Deletes **everything this app has stored about the gate**, for everyone on this computer: the gate itself and
 everyone's access to it (with its DKS login and master code), settings, notes, transaction history, History, schedules, camera settings and pictures, and any
@@ -445,4 +449,4 @@ same ones as in the DMSS or SmartPSS app), and the camera channels to use. Click
 | Save is greyed out on the Relays page | Two tones use the same digit; change one of the red boxes. |
 | "This change can't be stored as gate values" | The app couldn't record that change safely, so nothing was saved. Tell the person who supports the app what you changed. |
 | "Editing is locked for this gate" | The app found something in the gate's data it can't rebuild exactly, so it won't let changes through. Tell the person who supports the app. |
-| Anything else | Ask the person who supports the app. They may ask you to turn on **Debug logs**. |
+| Anything else | Ask the person who supports the app. They can look at the server's log. |

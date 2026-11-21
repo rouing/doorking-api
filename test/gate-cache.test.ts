@@ -369,6 +369,94 @@ test('tidied edits save to the working copy and are what a send writes', withPul
   assert.ok(sent['names.bin'].equals(b.names) && sent['cards.bin'].equals(b.cards));
 }));
 
+test('after a send, an edit saved while it ran is kept on top of the check pull', withPull(async (store) => {
+  await dk.ensureCache(store, PHONE);
+  await saveWorking(store, dk.applyResidentEdit(await working(store), { directoryCode: '101', name: 'Smith, Joan' }));
+  const sent = (await dk.prepareSend(store, PHONE)).files;
+  await saveWorking(store, dk.applyResidentEdit(await working(store), { directoryCode: '102', entryCode: '4321' })); // during the send
+  const pulled = { ...sent }; // the gate now holds what was sent
+  assert.strictEqual((await dk.verifySend(store, PHONE, pulled, sent)).matches, true);
+  assert.strictEqual((await dk.verifySend(store, PHONE, sent)).matches, false); // the working copy moved on
+  const r = await dk.acceptSentPull(store, PHONE, pulled, sent);
+  assert.deepStrictEqual([r.outcome, r.kept, r.conflicts], ['rebased', 1, []]);
+  const rows = dk.residentRows(await working(store)).rows;
+  assert.deepStrictEqual([rows.find((x) => x.directoryCode === '101').name, rows.find((x) => x.directoryCode === '102').entryCode], ['Smith, Joan', '4321']);
+  assert.ok((await dk.readBaseFiles(store, PHONE)).names.equals(sent['names.bin']));
+}));
+
+test('a phone record whose directory code is not decimal is left out instead of breaking the gate', () => {
+  const g = syntheticGate();
+  Buffer.from([0x1a, 0x23, 0xff, 0xff, 0xff, 0xff, 0x99, 0x99, 0x01, 0xff]).copy(g.phone, 30);
+  assert.deepStrictEqual(dk.residentRows(g).rows.map((r) => r.directoryCode), ['101', '102', '103']);
+  assert.strictEqual(dk.checkRoundTrip(g).ok, true); // its bytes are kept as they are
+});
+
+test('a new area code after an unsent area-code mode change rebuilds against the new table', () => {
+  let base = syntheticGate(); // 255 mode, table 805, 213 (now unused), 310
+  base = dk.applyResidentEdit(base, { directoryCode: '101', areaCode: '805' });
+  base = dk.applyResidentEdit(base, { directoryCode: '102', areaCode: '213', phone: '5550142' });
+  base = dk.applyResidentEdit(base, { directoryCode: '102', areaCode: '310' });
+  let work = dk.convertAreaCodeMode(base, 10);
+  work = dk.tidyBoard(dk.applyResidentEdit(work, { directoryCode: '101', areaCode: '415' }, { areaCodeSlots: 10 }));
+  assert.deepStrictEqual(dk.parseNamesBin(work.names).areaCodes, [null, '310', '415']);
+  assert.deepStrictEqual(dk.fileDifferences(dk.buildFiles(base, dk.decodeWorking(work)), work), []);
+});
+
+test('entry codes swapped between residents rebuild without a duplicate error', () => {
+  const g = syntheticGate();
+  const w = dk.decodeWorking(g);
+  const code = (c) => w.residents.find((r) => r.directoryCode === c);
+  [code('101').entryCode, code('102').entryCode] = [code('102').entryCode, code('101').entryCode];
+  const rows = dk.residentRows(dk.buildFiles(g, w)).rows;
+  assert.deepStrictEqual(rows.slice(0, 2).map((r) => r.entryCode), ['5678', '1234']);
+});
+
+test('saveCacheFiles and readCache give the same files and status as the separate reads', withPull(async (store) => {
+  const first = await dk.readCache(store, PHONE); // makes the working copy
+  assert.deepStrictEqual(first.status, await dk.cacheStatus(store, PHONE));
+  const edited = dk.applyResidentEdit(await working(store), { directoryCode: '101', name: 'Smith, Joan' });
+  const saved = await dk.saveCacheFiles(store, PHONE, { 'names.bin': edited.names, 'phone.bin': edited.phone, 'cards.bin': edited.cards });
+  const status = await dk.cacheStatus(store, PHONE);
+  assert.deepStrictEqual(saved.status.files.map((f) => f.changedBlocks), status.files.map((f) => f.changedBlocks));
+  assert.strictEqual(saved.status.edited, true);
+  const again = await dk.readCache(store, PHONE);
+  assert.ok(again.files['names.bin'].data.equals(edited.names));
+  assert.deepStrictEqual(again.status.files.map((f) => f.changedBlocks), status.files.map((f) => f.changedBlocks));
+}));
+
+test('after a send with no edits meanwhile, the check pull becomes the base and the working copy', withPull(async (store) => {
+  await dk.ensureCache(store, PHONE);
+  await saveWorking(store, dk.applyResidentEdit(await working(store), { directoryCode: '101', name: 'Smith, Joan' }));
+  const sent = (await dk.prepareSend(store, PHONE)).files;
+  assert.strictEqual(await dk.acceptSentPull(store, PHONE, { ...sent }, sent), null);
+  assert.strictEqual((await dk.cacheStatus(store, PHONE)).edited, false);
+  assert.ok((await dk.readBaseFiles(store, PHONE)).names.equals(sent['names.bin']));
+}));
+
+test('cards are matched by card number, so re-packed slots never make a false conflict', withPull(async (store) => {
+  await dk.ensureCache(store, PHONE);
+  const cardsOf = (b) => Object.fromEntries(dk.residentRows(b).rows.map((r) => [r.directoryCode, [...r.cards].sort()]));
+  // Here: card 200 added to 101 (tidied: it takes slot 0). At the gate: card 50 added to 102 (also slot 0).
+  await saveWorking(store, dk.tidyBoard(dk.applyResidentEdit(await working(store), { directoryCode: '101', cards: ['504', '200'] })));
+  const r = await pullInto(store, dk.tidyBoard(dk.applyResidentEdit(syntheticGate(), { directoryCode: '102', cards: ['50'] })));
+  assert.deepStrictEqual([r.outcome, r.conflicts, r.notKept], ['rebased', [], []]);
+  const w = await working(store);
+  assert.deepStrictEqual(cardsOf(w), { 101: ['00200', '00504'], 102: ['00050'], 103: [] });
+  assert.deepStrictEqual(dk.residentRows(w).unassignedCards, ['15984']);
+}));
+
+test('reverting a card change still works after a later edit re-packed the slots', () => {
+  const gate = syntheticGate();
+  const b1 = dk.tidyBoard(dk.applyResidentEdit(gate, { directoryCode: '101', cards: ['504', '900'] }));
+  const p1 = dk.diffStates(dk.decodeWorking(gate), dk.decodeWorking(b1));
+  assert.deepStrictEqual(Object.keys(p1.cards), ['00900']); // 15984 only moved slot: not a change
+  const b2 = dk.tidyBoard(dk.applyResidentEdit(b1, { directoryCode: '102', cards: ['100'] })); // moves 900 to another slot
+  const undone = dk.undoValues(dk.decodeWorking(b2), p1);
+  assert.ok(undone);
+  const rows = dk.residentRows(dk.buildFiles(b2, undone)).rows;
+  assert.deepStrictEqual(rows.map((x) => [x.directoryCode, x.cards]), [['101', ['00504']], ['102', ['00100']], ['103', []]]);
+});
+
 test('verifySend reports matching files and the blocks that differ', withPull(async (store) => {
   await dk.ensureCache(store, PHONE);
   await setTalkTime(store, '2:30');
@@ -548,7 +636,7 @@ test('transactions take names from the working copy values: directory code, entr
   const values = { dirDigits: 3, areaCodeMode: 255, areaCodes: [], middlePointer: '', settings: {},
     residents: [res('108', 'Lee, K'), res('201', 'Diaz, R', '4821')],
     cards: [{ slot: 0, cardNumber: '12345', directoryCode: '305' }] };
-  const history = dk.orderRcvOut(rcv.data, rcv.mtime); // as readTransactions returns the saved history
+  const history = dk.orderRcvOut(rcv.data, rcv.mtime); // as readTransactionPage returns the saved history
   const tx = loadData(rcv.mtime, values, null, history).transactions;
   assert.deepStrictEqual(tx.rows.map((r) => [r.number, r.name, r.directoryCode]).reverse(),
     [['108', 'Lee, K', '108'], ['4821', 'Diaz, R', '201'], ['12345', '', '305'], ['04369', 'Unknown', '']]);
@@ -690,9 +778,15 @@ test('transaction history keeps events that leave the gate buffer and adds only 
   assert.deepStrictEqual(await dk.mergeTransactions(store, '5550100', rcv(11, 12, 13, 14), at), { added: 2, kept: 2, gap: false });
   assert.deepStrictEqual(await dk.mergeTransactions(store, '5550100', rcv(13, 14), at), { added: 0, kept: 2, gap: false });
   assert.deepStrictEqual(await dk.mergeTransactions(store, '5550100', rcv(30, 31), at), { added: 2, kept: 0, gap: true });
-  const saved = await dk.readTransactions(store, '5550100');
+  const saved = (await dk.readTransactionPage(store, '5550100')).records;
   assert.deepStrictEqual(saved.map((t) => t.minute), [10, 11, 12, 13, 14, 30, 31]);
   assert.ok(saved.every((t) => t.year === 2026 && t.code === '12345'));
+  // Pages, newest first: 3, then the 3 before them, then the last one.
+  const p1 = await dk.readTransactionPage(store, '5550100', { limit: 3 });
+  const p2 = await dk.readTransactionPage(store, '5550100', { limit: 3, before: p1.next });
+  const p3 = await dk.readTransactionPage(store, '5550100', { limit: 3, before: p2.next });
+  assert.deepStrictEqual([p1, p2, p3].map((p) => p.records.map((t) => t.minute)), [[14, 30, 31], [11, 12, 13], [10]]);
+  assert.strictEqual(p3.next, null);
   assert.strictEqual(await dk.txHistoryCount(store, '5550100'), 7);
   assert.strictEqual(await dk.txHistoryCount(store, '5550199'), 0);
   // The last pull time is recorded even when a pull adds nothing; an older time never replaces a newer one.
@@ -718,8 +812,8 @@ test('rcv_out.bin is not kept: a pull skips it, and the stored ones are merged o
   }
   assert.deepStrictEqual(await dk.migrateRcvOut(store), [{ phone: PHONE, added: 0 }, { phone: '5550199', added: 3 }]);
   assert.deepStrictEqual(await dk.migrateRcvOut(store), []);
-  assert.deepStrictEqual((await dk.readTransactions(store, PHONE)).map((t) => t.minute), [10, 11]);
-  assert.deepStrictEqual((await dk.readTransactions(store, '5550199')).map((t) => t.minute), [20, 21, 22]);
+  assert.deepStrictEqual((await dk.readTransactionPage(store, PHONE)).records.map((t) => t.minute), [10, 11]);
+  assert.deepStrictEqual((await dk.readTransactionPage(store, '5550199')).records.map((t) => t.minute), [20, 21, 22]);
   assert.strictEqual((await dk.txPulledAt(store, '5550199')).getTime(), at.getTime());
   assert.strictEqual((await store.db.query("SELECT COUNT(*) AS n FROM gate_files WHERE name = 'rcv_out.bin'")).rows[0].n, 0);
 }));
@@ -778,6 +872,7 @@ test('accounts: rules, scrypt hashes, unique usernames and emails, own settings 
   assert.strictEqual((await dk.updateUserSettings(store, 'jane', { phone: '' })).phone, '');
   // Own password change: needs the current one; ends the other sessions, keeps this one; clears must-change.
   const keep = await dk.findSession(store, await dk.createSession(store, 'jane'), 60000);
+  assert.ok(Math.abs(keep.createdAt - Date.now()) < 60000); // when it signed in (passkey changes on SSO-only accounts)
   const othertoken = await dk.createSession(store, 'jane');
   await assert.rejects(() => dk.changeOwnPassword(store, 'jane', 'wrong password!!', NEW_PW, keep.tokenHash), /current password is wrong/);
   await assert.rejects(() => dk.changeOwnPassword(store, 'jane', PW, PW, keep.tokenHash), /different/);
@@ -831,7 +926,11 @@ test('email: confirmation, unconfirmed addresses never block, reset lookup, invi
   assert.deepStrictEqual([dee.invited, dee.mustChangePassword, dee.pendingEmail], [true, false, 'dee@example.com']);
   assert.strictEqual(await dk.authenticate(store, 'dee', '!'), null);
   assert.strictEqual(await dk.userForReset(store, 'dee'), null);
-  const accepted = await dk.acceptInvite(store, 'dee', NEW_PW);
+  // Accepted twice at once (link and single sign-on): only one wins.
+  const both = await Promise.allSettled([dk.acceptInvite(store, 'dee', NEW_PW), dk.acceptInviteWithSso(store, 'dee')]);
+  assert.deepStrictEqual(both.map((x) => x.status).sort(), ['fulfilled', 'rejected']);
+  const accepted = await dk.getUser(store, 'dee');
+  if (!(await dk.authenticate(store, 'dee', NEW_PW))) await dk.setPassword(store, 'dee', NEW_PW); // the SSO one won
   assert.deepStrictEqual([accepted.invited, accepted.email, accepted.pendingEmail], [false, 'dee@example.com', '']);
   await assert.rejects(() => dk.acceptInvite(store, 'dee', NEW_PW), /already used/);
   assert.ok(await dk.authenticate(store, 'dee', NEW_PW));
@@ -903,6 +1002,51 @@ test('sessions: stored hashed, found by token, ended when idle, open gate kept',
   assert.strictEqual((await store.db.query('SELECT COUNT(*)::int AS n FROM sessions')).rows[0].n, 0);
 }));
 
+test('clientAddress trusts X-Forwarded-For only from Caddy on this machine; signInKeys', () => {
+  assert.strictEqual(dk.clientAddress('127.0.0.1', '203.0.113.7'), '203.0.113.7');
+  assert.strictEqual(dk.clientAddress('::ffff:127.0.0.1', '203.0.113.7'), '203.0.113.7');
+  assert.strictEqual(dk.clientAddress('::1', '10.0.0.1, 203.0.113.7'), '203.0.113.7'); // the last entry
+  assert.strictEqual(dk.clientAddress('198.51.100.9', '203.0.113.7'), '198.51.100.9'); // not from loopback: ignored
+  assert.strictEqual(dk.clientAddress('127.0.0.1', undefined), '127.0.0.1');
+  assert.deepStrictEqual(dk.signInKeys('jane', '203.0.113.7', 5), [['jane|203.0.113.7', 5], ['ip:203.0.113.7', 20], ['jane', 50]]);
+});
+
+test('reauthNeeded: who must re-confirm before an email or passkey change', () => {
+  const H = 3600000;
+  const base = { strong: false, hasPassword: true, passkeys: 0, signedInAt: 0, resetAt: null, now: 4 * H, windowMs: 3 * H };
+  const need = (over, change) => dk.reauthNeeded({ ...base, ...over }, change);
+  assert.strictEqual(need({ strong: true, passkeys: 2 }, 'remove-passkey'), 'ok');
+  assert.strictEqual(need({}, 'email'), 'password');
+  assert.strictEqual(need({}, 'add-passkey'), 'password'); // the first passkey
+  assert.strictEqual(need({ passkeys: 1 }, 'add-passkey'), 'step-up');
+  assert.strictEqual(need({ passkeys: 1 }, 'remove-passkey'), 'step-up');
+  // Lost passkey: signed in after a reset by email, within the window.
+  assert.strictEqual(need({ passkeys: 1, resetAt: 2 * H, signedInAt: 2 * H + 1 }, 'remove-passkey'), 'ok');
+  assert.strictEqual(need({ passkeys: 1, resetAt: 2 * H, signedInAt: 2 * H + 1 }, 'add-passkey'), 'password');
+  assert.strictEqual(need({ passkeys: 1, resetAt: 2 * H, signedInAt: 2 * H - 1 }, 'remove-passkey'), 'step-up'); // session from before the reset
+  assert.strictEqual(need({ passkeys: 1, resetAt: 0, signedInAt: 1 }, 'remove-passkey'), 'step-up'); // reset too long ago
+  // No password (single sign-on only).
+  assert.strictEqual(need({ hasPassword: false, signedInAt: 2 * H }, 'email'), 'ok');
+  assert.strictEqual(need({ hasPassword: false, signedInAt: 0 }, 'email'), 'sign-in-again');
+  assert.strictEqual(need({ hasPassword: false, passkeys: 1, signedInAt: 4 * H }, 'email'), 'step-up');
+});
+
+test('sessions end after their maximum age; a reset by email stops older reset links and is recorded', withStore(async (store) => {
+  await dk.createUser(store, { username: 'jane', password: PW, createdBy: 't', email: 'jane@example.com' });
+  const tok = await dk.createSession(store, 'jane');
+  await store.db.query("UPDATE sessions SET created_at = now() - interval '8 days'");
+  assert.ok(await dk.findSession(store, tok, 3600000)); // no maximum age given
+  assert.strictEqual(await dk.findSession(store, tok, 3600000, 7 * 86400000), null); // too old: refused and deleted
+  await dk.createSession(store, 'jane');
+  await store.db.query("UPDATE sessions SET created_at = now() - interval '8 days'");
+  assert.deepStrictEqual(await dk.sweepSessions(store, 3600000, 7 * 86400000), ['jane']);
+  const old = await dk.createToken(store, 'reset', 'jane');
+  assert.strictEqual((await dk.getUser(store, 'jane')).resetAt, null);
+  await dk.setPassword(store, 'jane', NEW_PW, { byEmail: true });
+  assert.ok((await dk.getUser(store, 'jane')).resetAt);
+  assert.strictEqual(await dk.useToken(store, 'reset', old), null);
+}));
+
 test('gates: added once, roles, sharing, and a gate always keeps an admin', withStore(async (store) => {
   for (const u of ['ann', 'bob', 'cyd']) await dk.createUser(store, { username: u, password: PW, createdBy: 't' });
   await assert.rejects(() => dk.registerGate(store, { ...GATE_A, masterCode: '12' }, 'ann'), /Master code/);
@@ -919,7 +1063,6 @@ test('gates: added once, roles, sharing, and a gate always keeps an admin', with
   await assert.rejects(() => dk.grantAccess(store, '5550100', 'bob', 'admin', 'ann'), (e) => e.status === 409 && /already has access/.test(e.message));
   assert.deepStrictEqual((await dk.userGates(store, 'bob')).map((g) => [g.phoneNumber, g.role]), [['5550100', 'readonly']]);
   assert.deepStrictEqual((await dk.gateUsers(store, '5550100')).map((u) => [u.username, u.role, u.grantedBy]), [['ann', 'admin', 'ann'], ['bob', 'readonly', 'ann']]);
-  assert.strictEqual(await dk.isAnyGateAdmin(store, 'bob'), false);
   // The last admin can't be demoted or removed (or leave); with a second admin they can.
   await assert.rejects(() => dk.setRole(store, '5550100', 'ann', 'readonly'), /keep at least one admin/);
   await assert.rejects(() => dk.revokeAccess(store, '5550100', 'ann'), /keep at least one admin/);
@@ -1134,6 +1277,7 @@ test('config: defaults, file, environment and flags, checked values and private 
   assert.strictEqual(dk.connectionSettings(c.database, c.database.testName).database, 'doorking_test');
   assert.strictEqual(dk.maskedConfig(c).database.password, '***');
   assert.strictEqual(c.security.sessionIdleMinutes, 30);
+  assert.strictEqual(c.security.sessionMaxHours, 168);
   assert.strictEqual(c.cameras.ffmpeg, '');
   write({ database: { password: 'pw' }, cameras: { ffmpeg: '../bin/ffmpeg' } });
   assert.strictEqual(dk.loadConfig({ file, env: {}, args: [] }).cameras.ffmpeg, path.join(dir, 'bin', 'ffmpeg'));
@@ -1334,7 +1478,7 @@ test('cameras: tidySnapshots deletes old minutes and leftover pieces, and marks 
   };
   put('20261001-0900', { 'ch1.mp4': 100, 'ch1.jpg': 10 }); // 43 days old
   put('20261110-0900', { 'ch1.mp4': 100, 'ch1.jpg': 10, 'ch1.rec0.mp4': 50, 'ch1.best.mp4': 20, 'ch1.best.jpg': 5 });
-  put('20261111-0900', { 'ch1.rec2.mp4': 7 }); // only a leftover: the folder goes too
+  put('20261111-0900', { 'ch1.rec2.mp4': 7, 'ch1.mp4.parts.txt': 3 }); // only leftovers: the folder goes too
   put('live', { 'ch1.jpg': 10, 'ch1.new.mp4': 3 });
   await dk.recordSnapshot(store, '5550100', '20261001-0900', { status: 'done', files: ['ch1.mp4'], video: true });
   await dk.recordSnapshot(store, '5550100', '20261110-0900', { status: 'done', files: ['ch1.mp4'], video: true });
@@ -1346,7 +1490,7 @@ test('cameras: tidySnapshots deletes old minutes and leftover pieces, and marks 
 
   // Forever: only leftovers and missing files.
   assert.deepStrictEqual(await dk.tidySnapshots(store, '5550100', dir, 0, now),
-    { minutes: 0, files: 0, bytes: 0, leftovers: 5, leftoverBytes: 85, missing: 1 });
+    { minutes: 0, files: 0, bytes: 0, leftovers: 6, leftoverBytes: 88, missing: 1 });
   assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'snapshots')).sort(), ['20261001-0900', '20261110-0900', '20261112-0900', 'live']);
   assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'snapshots', '20261110-0900')).sort(), ['ch1.jpg', 'ch1.mp4']);
   let log = await dk.listSnapshots(store, '5550100');
@@ -1539,10 +1683,10 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   assert.deepStrictEqual(await dk.runSnapshots(store, videoRunner, '5550100', dir, [], { now: ts + 600000, minute: '20261019-0940' }),
     { minutes: 1, done: 1, partial: 0, failed: 0, stopped: false });
   assert.deepStrictEqual(calls, [
-    ['/cam/playback?channel=1&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05', 'ch1.rec0.mp4', 120],
-    ['finish', ['ch1.rec0.mp4'], 'ch1.mp4', 'ch1.jpg'],
-    ['/cam/playback?channel=2&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05', 'ch2.rec0.mp4', 120],
-    ['finish', ['ch2.rec0.mp4'], 'ch2.mp4', 'ch2.jpg'],
+    ['/cam/playback?channel=1&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05', 'ch1.new.rec0.mp4', 120],
+    ['finish', ['ch1.new.rec0.mp4'], 'ch1.new.mp4', 'ch1.new.jpg'],
+    ['/cam/playback?channel=2&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05', 'ch2.new.rec0.mp4', 120],
+    ['finish', ['ch2.new.rec0.mp4'], 'ch2.new.mp4', 'ch2.new.jpg'],
   ]);
   assert.deepStrictEqual((await dk.listSnapshots(store, '5550100'))['20261019-0940'].files.sort(), ['ch1.mp4', 'ch2.mp4']);
   assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'snapshots', '20261019-0940')).sort(), ['ch1.jpg', 'ch1.mp4', 'ch2.jpg', 'ch2.mp4']);
@@ -1578,6 +1722,12 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   assert.ok(shortLog.includes('Gate 5550100: 20261019-0940/ch1.mp4: the recorder sent 7 s of 120 s, deleted it (not longer than the one kept)'));
   assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'snapshots', '20261019-0940')).sort(), ['ch1.jpg', 'ch1.mp4', 'ch2.jpg', 'ch2.mp4']);
   assert.deepStrictEqual((await dk.listSnapshots(store, '5550100'))['20261019-0940'].short, {});
+  // A video cut off by a crash (on disk, not in the log) is fetched again, not taken as a full one.
+  fs.mkdirSync(path.join(dir, 'snapshots', '20261019-0942'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'snapshots', '20261019-0942', 'ch1.mp4'), 'cut off');
+  await dk.runSnapshots(store, videoRunner, '5550100', dir, [], { now: ts + 600000, minute: '20261019-0942' });
+  assert.strictEqual((await dk.listSnapshots(store, '5550100'))['20261019-0942'].short['ch1.mp4'], 7);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'snapshots', '20261019-0942', 'ch1.mp4'), 'utf8'), 'mp4');
   // With no saved video, the longest partial one is kept and marked short; runs fetch it again, keeping it
   // unless a longer one comes, and a complete one clears the mark.
   fs.rmSync(path.join(dir, 'snapshots', '20261019-0940', 'ch2.mp4'));
@@ -1588,7 +1738,7 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
     const r = { ...videoRunner, finishClip: async (parts, out, poster) => { await videoRunner.finishClip(parts, out, poster); return list.shift(); } };
     const out = await dk.runSnapshots(store, r, '5550100', dir, [], { now: ts + 600000, minute: '20261019-0940' });
     const e = (await dk.listSnapshots(store, '5550100'))['20261019-0940'];
-    assert.deepStrictEqual(calls.filter((c) => c[0] !== 'finish').map((c) => c[1]), i ? ['ch2.new.rec0.mp4', 'ch2.new.rec0.mp4'].slice(0, secsList.length) : ['ch2.rec0.mp4', 'ch2.rec0.mp4']);
+    assert.deepStrictEqual(calls.filter((c) => c[0] !== 'finish').map((c) => c[1]), i ? ['ch2.new.rec0.mp4', 'ch2.new.rec0.mp4'].slice(0, secsList.length) : ['ch2.new.rec0.mp4', 'ch2.new.rec0.mp4']);
     assert.deepStrictEqual(e.files.sort(), ['ch1.mp4', 'ch2.mp4']);
     assert.deepStrictEqual(e.short, i < 2 ? { 'ch2.mp4': 30 } : {});
     assert.strictEqual(out.partial, i < 2 ? 1 : 0);
@@ -1668,26 +1818,15 @@ test('cameras: finishClip turns a recorded fragmented MP4 into .mp4 (hvc1) and a
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('debug log: written only while turned on, one line per entry, moved aside when too big', withStore(async (store, dir) => {
+test('log: one line per entry in the file, moved aside when too big', withStore(async (store, dir) => {
   const file = path.join(dir, 'logs', 'debug.log');
-  let on = await dk.debugLogEnabled(store);
-  const log = dk.createDebugLog(file, { enabled: () => on, maxBytes: 200 });
-  log.write('camera', 'not written');
-  assert.deepStrictEqual(log.info(), { enabled: false, file, size: 0 });
-  await dk.setDebugLogEnabled(store, true);
-  on = await dk.debugLogEnabled(store);
-  assert.strictEqual(on, true);
+  const log = dk.createDebugLog(file, { maxBytes: 200, toConsole: false });
   log.write('camera', 'first\nsecond');
-  assert.match(log.read(), /^\d{4}-\d\d-\d\dT[\d:.]+Z \[camera\] first \| second\n$/);
+  assert.match(fs.readFileSync(file, 'utf8'), /^\d{4}-\d\d-\d\dT[\d:.]+Z \[camera\] first \| second\n$/);
   log.write('server', 'x'.repeat(250));
   log.write('server', 'after');
   assert.ok(fs.existsSync(`${file}.1`));
-  assert.match(log.read(), /^\S+ \[server\] after\n$/);
-  await dk.setDebugLogEnabled(store, false);
-  on = await dk.debugLogEnabled(store);
-  log.write('server', 'off');
-  assert.strictEqual(log.info().enabled, false);
-  assert.doesNotMatch(log.read(), /off/);
+  assert.match(fs.readFileSync(file, 'utf8'), /^\S+ \[server\] after\n$/);
 }));
 
 // --- Single sign-on (OpenID Connect) ---
@@ -1890,7 +2029,7 @@ test('single sign-on invitations by link, password rules and unlinking', withSto
   await dk.completeSso(store, p, ssoResult({ sub: 'e', email: 'eve@example.com' }, { mode: 'link', username: 'eve' }));
   assert.deepStrictEqual([await dk.passwordAllowed(store, 'eve', [p]), await dk.passwordBlockers(store, 'eve', [p])], [false, ['Work']]);
   const refuse = async (u) => ((await dk.passwordBlockers(store, u, [p])).length ? 'use Work' : null);
-  await assert.rejects(dk.authenticate(store, 'eve', PW, refuse), (e) => e.status === 403 && e.message === 'use Work');
+  assert.strictEqual(await dk.authenticate(store, 'eve', PW, refuse), null); // refused like a wrong password, so it can't confirm an old one
   assert.strictEqual((await dk.getUser(store, 'eve')).signIns, 0);
   // Unlinking keeps a way to sign in: dee (no password) can't drop her only sign-in; eve's password works again once unlinked.
   await assert.rejects(dk.unlinkIdentity(store, 'dee', 'work', 'd', [p]), (e) => e.status === 409 && /only way to sign in/.test(e.message));

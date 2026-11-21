@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   applyResidentEdit, applyShownRule, tidyBoard, deleteResident, removeDirectoryCode, addEntry, emptySlots, encodeBcd,
-  areaCodeLimit, areaCodeUsage, convertAreaCodeMode, convertDirDigits, findDuplicates,
+  areaCodeLimit, areaCodeUsage, convertAreaCodeMode, convertDirDigits, findDuplicates, checkName,
 } from '../src/residents-edit.ts';
 import { parsePhoneBin, parseNamesBin } from '../src/board-files.ts';
 
@@ -151,6 +151,13 @@ test('addEntry as a vendor sets the vendor bit and leaves it out of the resident
 test('addEntry refuses an occupied code (409) and a blank name', () => {
   assert.throws(() => addEntry(baseline(), { directoryCode: '701', name: 'x' }), (e) => e.status === 409); // 701 = Cody
   assert.throws(() => addEntry(withVacant('101'), { directoryCode: '101', name: '  ' }), /name is required/);
+});
+
+test('the same card typed twice (with or without leading zeros) takes one slot', () => {
+  const r = applyResidentEdit(baseline(), { directoryCode: '701', cards: ['5', '00005', '0005'] });
+  const slots = [];
+  for (let o = 0; o + 4 <= r.cards.length; o += 4) if (r.cards.readUInt16BE(o) === 5) slots.push(o);
+  assert.strictEqual(slots.length, 1);
 });
 
 test('a directory code holds at most 25 cards', () => {
@@ -391,4 +398,35 @@ test('convertDirDigits 4 -> 3 wipes all resident data and keeps the rest of the 
   assert.strictEqual(parseNamesBin(r.names).directory.length, 0);
   assert.throws(() => convertDirDigits(b, 5), /must be 1, 2, 3 or 4/);
   assert.throws(() => convertDirDigits(b, 0), /must be 1, 2, 3 or 4/);
+});
+
+test('adding a code is refused when the directory holds as many codes as the System memory', () => {
+  const withMemory = (n) => {
+    const b = baseline(); // 14 codes
+    b.names.writeUIntBE(0xf80 + n * 20, 0xbf, 3);
+    b.names.writeUIntBE(0x10d80 + n * 10, 0xc2, 3);
+    return b;
+  };
+  assert.throws(() => addEntry(withMemory(14), { directoryCode: '702', name: 'Roe, R' }), /memory holds 14 directory codes/);
+  assert.doesNotThrow(() => addEntry(withMemory(15), { directoryCode: '702', name: 'Roe, R' }));
+  assert.doesNotThrow(() => addEntry(baseline(), { directoryCode: '702', name: 'Roe, R' })); // not set: no limit
+});
+
+test('a names entry with no phone record can be renamed; a phone field for it adds the record', () => {
+  const b = baseline();
+  b.phone.fill(0xff, PHONE_OFF, PHONE_OFF + 10);
+  const r = applyResidentEdit(b, { directoryCode: '701', name: 'Doe, Janet', phone: '', entryCode: '', floor: '' });
+  assert.strictEqual(parseNamesBin(r.names).directory.find((e) => e.directoryCode === '701').name, 'Doe, Janet');
+  assert.ok(r.phone.equals(b.phone));
+  // A phone field with a value (as the edit form sends security level 1): a blank record is added first.
+  const e = applyResidentEdit(b, { directoryCode: '701', name: 'Doe, Janet', securityLevel: 1, entryCode: '', phone: '5550100' });
+  const rec = parsePhoneBin(e.phone).find((x) => x.directoryCode === '701');
+  assert.deepStrictEqual([rec.phone, rec.securityLevel], ['555-0100', 1]);
+});
+
+test('checkName: plain ASCII only', () => {
+  assert.doesNotThrow(() => checkName("O'Brien-Smith, J. #2"));
+  assert.throws(() => checkName('Œuvre'), /"Œ" can't be stored/);
+  assert.throws(() => checkName('José'), /"é"/);
+  assert.throws(() => checkName('tab\there'), /plain letters/);
 });

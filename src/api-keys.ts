@@ -3,7 +3,7 @@
 // is created; only its SHA-256 is stored. Role 'admin' or 'readonly' like people's; optional expiry. Scripts send it
 // as "Authorization: Bearer <key>" (web/server.ts decides which routes a key may use).
 import crypto from 'node:crypto';
-import { all, one, run, type Store } from './db.ts';
+import { all, one, run, type Store, phoneDigits } from './db.ts';
 import { checkRole, type GateRole } from './gate-list.ts';
 import { userKey } from './users.ts';
 import type { ApiKeyInfo } from './types.ts';
@@ -18,7 +18,6 @@ interface ApiKeyRow {
   expires_at: string | null; last_used_at: string | null;
 }
 
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 const bad = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest();
 const fromRow = (r: ApiKeyRow): ApiKeyInfo => ({

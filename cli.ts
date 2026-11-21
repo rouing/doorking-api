@@ -173,7 +173,7 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
 
   'test-email': async ([to]) => {
     if (!to) throw new Error('Usage: test-email <address>');
-    const cfg = dk.loadConfig({ args: process.argv.slice(2).filter((a, i, all) => a === '--config' || all[i - 1] === '--config') });
+    const cfg = serverConfig();
     const mailer = dk.createMailer(cfg.email);
     if (!mailer) throw new Error('Email is off: set email.host (and from, user, password) in config.json');
     await mailer.sendMail({ from: cfg.email.from, to, subject: 'DoorKing Gate Manager test email',
@@ -246,11 +246,7 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
       lines.push(f ? `${name.padEnd(12)} ${fn(fs.readFileSync(path.join(dir, f)))}` : `${name.padEnd(12)} (not found)`);
     };
     report('names.bin', (b) => `${dk.parseNamesBin(b).directory.length} directory entries`);
-    report('phone.bin', (b) => {
-      const n = find('names.bin');
-      const mode = n ? dk.namesLayout(fs.readFileSync(path.join(dir, n))).areaCodeMode : 255;
-      return `${dk.parsePhoneBin(b, mode).filter((e) => e.phone).length} phone numbers`;
-    });
+    report('phone.bin', (b) => `${dk.parsePhoneBin(b, phoneModeFor(path.join(dir, find('phone.bin')!))).filter((e) => e.phone).length} phone numbers`);
     report('cards.bin', (b) => `${dk.parseCardsBin(b).length} cards`);
     report('rcv_out.bin', (b) => `${dk.parseRcvOut(b).length} raw transactions`);
     for (const m of ['names.map', 'phone.map', 'cards.map']) {

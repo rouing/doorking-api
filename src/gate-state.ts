@@ -16,10 +16,10 @@
 // built from these values. Rebuild check: the files are built from blank ones with the values alone (and the master
 // code from managed_gates) and must match the pull too, so no byte is known only from a stored file.
 import { namesDirDigits, namesLayout, parseNamesBin, residentRows } from './board-files.ts';
-import { all, one, run, transaction, type Store } from './db.ts';
+import { all, one, run, transaction, type Store, phoneDigits } from './db.ts';
 import { GATE_SETTING_FIELDS, WRITTEN_FIELDS, decodeGateSettings } from './gate-settings.ts';
 import {
-  addEntry, addStoredEntry, applyResidentEdit, convertAreaCodeMode, convertDirDigits, encodeBcd, removeDirectoryCode,
+  addEntry, addStoredEntry, applyResidentEdit, convertAreaCodeMode, convertDirDigits, encodeBcd, findPhoneRecord, removeDirectoryCode,
   type BoardBuffers, type EditOptions,
 } from './residents-edit.ts';
 import type { ResidentRow } from './types.ts';
@@ -34,7 +34,6 @@ const PHONE_RECORD = 10;
 const DIR_DIGITS = 0x40;
 // names.bin ranges DoorKing32 fills with spaces on every send ([from, to)); the other undecoded bytes it fills with 0xFF.
 const BLANK_SPACES: [number, number][] = [[0x100, 0x114], [0x144, 0x145], [0x179, 0x18d]];
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 const fail = (msg: string, status: number) => Object.assign(new Error(msg), { status });
 
 // rawCode: the record's bytes 2-3 as hex when they aren't a directory code (e.g. a mass-enabled AB record).
@@ -195,9 +194,10 @@ function orderPhone(bufs: BoardBuffers, residents: ResidentValues[]): Buffer {
 }
 
 // The board files of a working copy: the base files with the values written over them. Steps, in this order:
-// directory code digits; the area-code table (when the layout is unchanged); directory codes removed, resident
-// values that differ, codes added (a blank name as the gate's empty slot); the area-code layout and then its table
-// (when the layout changed); settings that differ (read-only ones too, from their stored values); the extra bytes;
+// directory code digits; the area-code table (when the layout is unchanged); directory codes removed, entry codes
+// that change cleared (so codes moved or swapped between residents never collide half-way), resident values that
+// differ, codes added (a blank name as the gate's empty slot); the area-code layout and then its table
+// (when the layout changed, with every resident's area code pointed at the new table); settings that differ (read-only ones too, from their stored values); the extra bytes;
 // the directory order and middle-entry pointer; the master code, when given (from managed_gates; it isn't in the
 // values tables; else the base's bytes stay); the phone records' positions; cards.bin from its slots.
 export function buildFiles(base: BoardBuffers, w: WorkingState, { masterCode, ...opts }: BuildOptions = {}): BoardBuffers {
@@ -209,6 +209,11 @@ export function buildFiles(base: BoardBuffers, w: WorkingState, { masterCode, ..
   const have = new Map(residentRows(bufs).rows.map((r) => [r.directoryCode, r as ResidentValues]));
   for (const code of have.keys()) if (!want.has(code)) bufs = removeDirectoryCode(bufs, code);
   for (const r of w.residents) {
+    const was = have.get(r.directoryCode);
+    const o = was && (was.entryCode || '') !== (r.entryCode || '') ? findPhoneRecord(bufs.phone, r.directoryCode) : -1;
+    if (o >= 0) bufs.phone.fill(0xff, o + 6, o + 8);
+  }
+  for (const r of w.residents) {
     if (have.has(r.directoryCode) && differs(have.get(r.directoryCode)!, r)) bufs = applyResidentEdit(bufs, editOf(r), opts);
   }
   for (const r of w.residents) {
@@ -217,6 +222,8 @@ export function buildFiles(base: BoardBuffers, w: WorkingState, { masterCode, ..
   if (!sameLayout) {
     bufs = convertAreaCodeMode(bufs, w.areaCodeMode);
     writeAreaCodes(bufs.names, w.areaCodes);
+    // The residents' area codes were written against the old table; point each at its place in the new one.
+    for (const r of w.residents) if (r.areaCode) bufs = applyResidentEdit(bufs, { directoryCode: r.directoryCode, areaCode: r.areaCode }, opts);
   }
   const names = Buffer.from(bufs.names);
   for (const f of written) {
@@ -291,17 +298,43 @@ const canon = (v: unknown): string => JSON.stringify(v, (_, x) => (x && typeof x
   ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
 const same = (a: unknown, b: unknown) => canon(a ?? null) === canon(b ?? null);
 
-function diffMap<T>(before: Map<string, T>, after: Map<string, T>): Record<string, [T | null, T | null]> | undefined {
+function diffMap<T>(before: Map<string, T>, after: Map<string, T>, eq: (a: unknown, b: unknown) => boolean = same):
+  Record<string, [T | null, T | null]> | undefined {
   const out: Record<string, [T | null, T | null]> = {};
   for (const k of new Set([...before.keys(), ...after.keys()])) {
     const a = before.get(k) ?? null;
     const b = after.get(k) ?? null;
-    if (!same(a, b)) out[k] = [a, b];
+    if (!eq(a, b)) out[k] = [a, b];
   }
   return Object.keys(out).length ? out : undefined;
 }
 const residentMap = (w: WorkingState) => new Map(w.residents.map((r) => [r.directoryCode, r]));
-const cardMap = (w: WorkingState) => new Map(w.cards.map((c) => [String(c.slot), c]));
+// Cards by card number (a repeated number: "<number>#<slot>"), not by slot: tidyBoard re-packs the slots after every
+// edit, so a slot holds different cards over time. Two cards are the same item whatever slot they sit in.
+function cardMap(w: WorkingState): Map<string, GateCard> {
+  const m = new Map<string, GateCard>();
+  for (const c of w.cards) m.set(m.has(c.cardNumber) ? `${c.cardNumber}#${c.slot}` : c.cardNumber, c);
+  return m;
+}
+const sameCard = (a: unknown, b: unknown) => same(a && { ...(a as GateCard), slot: undefined }, b && { ...(b as GateCard), slot: undefined });
+// Cards with slots that don't collide: each keeps its slot when free (earlier cards first), else takes the first free
+// one. Beyond the end of cards.bin when it is full (building the files then fails).
+function placeCards(cards: GateCard[], sizeBytes: number): GateCard[] {
+  const total = Math.floor(sizeBytes / CARD_SIZE);
+  const used = new Set<number>();
+  const out: GateCard[] = [];
+  const moved: GateCard[] = [];
+  for (const c of cards) {
+    if (c.slot >= 0 && c.slot < total && !used.has(c.slot)) { used.add(c.slot); out.push(c); } else moved.push(c);
+  }
+  let free = 0;
+  for (const c of moved) {
+    while (used.has(free)) free++;
+    used.add(free);
+    out.push({ ...c, slot: free });
+  }
+  return out.sort((a, b) => a.slot - b.slot);
+}
 const settingMap = (w: WorkingState) => new Map(Object.entries(w.settings));
 
 // What changed from one working copy to another, or null when nothing did.
@@ -310,7 +343,7 @@ export function diffStates(before: WorkingState, after: WorkingState): ValuesPat
   for (const k of LAYOUT_KEYS) if (!same(before[k], after[k])) layout[k] = [before[k], after[k]];
   const patch: ValuesPatch = {
     residents: diffMap(residentMap(before), residentMap(after)),
-    cards: diffMap(cardMap(before), cardMap(after)),
+    cards: diffMap(cardMap(before), cardMap(after), sameCard),
     settings: diffMap(settingMap(before), settingMap(after)),
     ...(Object.keys(layout).length && { layout }),
   };
@@ -319,24 +352,27 @@ export function diffStates(before: WorkingState, after: WorkingState): ValuesPat
 }
 
 // Undoes a patch on the current working copy. Every changed value must still hold its "after" value; otherwise a
-// later change touched it and null is returned.
+// later change touched it and null is returned. Card changes are matched by card number (patches before 2026-11-21
+// are keyed by slot and list cards that only moved slot; those are skipped).
 export function undoValues(current: WorkingState, patch: ValuesPatch): WorkingState | null {
-  const undo = <T>(now: Map<string, T>, changes: Record<string, [T | null, T | null]> = {}): Map<string, T> | null => {
+  const undo = <T>(now: Map<string, T>, changes: Record<string, [T | null, T | null]> = {}, eq = same): Map<string, T> | null => {
     const out = new Map(now);
     for (const [k, [before, after]] of Object.entries(changes)) {
-      if (!same(now.get(k) ?? null, after)) return null;
+      if (!eq(now.get(k) ?? null, after)) return null;
       if (before === null) out.delete(k); else out.set(k, before);
     }
     return out;
   };
   const res = undo(residentMap(current), patch.residents);
-  const cards = undo(cardMap(current), patch.cards);
+  const cardChanges = Object.fromEntries(Object.values(patch.cards || {}).filter(([a, b]) => !sameCard(a, b))
+    .map(([a, b]) => [(b ?? a)!.cardNumber, [a, b] as [GateCard | null, GateCard | null]]));
+  const cards = undo(cardMap(current), cardChanges, sameCard);
   const settings = undo(settingMap(current), patch.settings);
   if (!res || !cards || !settings) return null;
   const out: WorkingState = {
     ...current,
     residents: [...res.values()].sort((a, b) => a.directoryCode.localeCompare(b.directoryCode)),
-    cards: [...cards.values()].sort((a, b) => a.slot - b.slot),
+    cards: placeCards([...cards.values()], current.sizes?.cards ?? Infinity),
     settings: Object.fromEntries(settings),
   };
   for (const [k, [before, after]] of Object.entries(patch.layout || {}) as [typeof LAYOUT_KEYS[number], [unknown, unknown]][]) {
@@ -347,7 +383,7 @@ export function undoValues(current: WorkingState, patch: ValuesPatch): WorkingSt
 }
 
 // Rebasing unsent changes onto a newer pull. A conflict: an item both the gate and the working copy changed
-// differently since the old base (resident by directory code, card by slot, setting by key). The working copy keeps
+// differently since the old base (resident by directory code, card by card number, setting by key). The working copy keeps
 // its value until someone chooses Keep mine or Take the gate's.
 export type ConflictKind = 'resident' | 'card' | 'setting';
 export interface Conflict { kind: ConflictKind; key: string; label: string }
@@ -358,6 +394,7 @@ export interface RebasePlan { gate: WorkingState; changes: ItemChange[]; conflic
 const residentKey = (r: ResidentValues | null) => r && Object.fromEntries([...VALUE_FIELDS, 'directoryCode'].map((k) => [k, (r as never)[k]]));
 // Whether two values of an item are the same (residents compare values, not where they sit in the files).
 export function sameItem(kind: ConflictKind, a: unknown, b: unknown): boolean {
+  if (kind === 'card') return sameCard(a, b);
   return kind === 'resident' ? same(residentKey(a as ResidentValues | null), residentKey(b as ResidentValues | null)) : same(a, b);
 }
 const EDITABLE = new Set(GATE_SETTING_FIELDS.filter((f) => f.editable && !f.secret).map((f) => f.key));
@@ -371,7 +408,7 @@ export function itemsOf(w: WorkingState): Record<ConflictKind, Map<string, Resid
   };
 }
 function itemLabel(kind: ConflictKind, key: string, ...values: unknown[]): string {
-  if (kind === 'card') return `Card slot ${key}`;
+  if (kind === 'card') return `Card ${key.split('#')[0]}`;
   if (kind === 'setting') return GATE_SETTING_FIELDS.find((f) => f.key === key)?.name || key;
   const name = values.map((v) => (v as ResidentValues | null)?.name).find((n) => n && n.trim());
   return `Directory code ${key}${name ? ` (${name})` : ''}`;
@@ -405,12 +442,14 @@ export function rebasePlan(oldBase: WorkingState, mine: WorkingState, gate: Work
   return plan;
 }
 
-// A working copy with one item set (null removes it). A resident keeps the gate's place in the files when it has one.
+// A working copy with one item set (null removes it). A resident keeps the gate's place in the files when it has one;
+// a card keeps its slot when free, else takes the first free one.
 export function withItem(w: WorkingState, kind: ConflictKind, key: string, value: ResidentValues | GateCard | string | null): WorkingState {
   if (kind === 'setting') return { ...w, settings: { ...w.settings, [key]: value as string } };
   if (kind === 'card') {
-    const cards = w.cards.filter((c) => String(c.slot) !== key);
-    return { ...w, cards: (value ? [...cards, value as GateCard] : cards).sort((a, c) => a.slot - c.slot) };
+    const cards = cardMap(w);
+    cards.delete(key);
+    return { ...w, cards: placeCards(value ? [...cards.values(), value as GateCard] : [...cards.values()], w.sizes?.cards ?? Infinity) };
   }
   const at = w.residents.find((r) => r.directoryCode === key);
   const rest = w.residents.filter((r) => r.directoryCode !== key);

@@ -67,7 +67,8 @@ export interface TransactionRow {
 }
 
 // GET G/data: views of the pulled files (null where the file isn't there).
-export interface DataReply { transactions: { updated: string; rows: TransactionRow[] } | null; [view: string]: unknown }
+// transactions.next: ask GET /data?before=<next> for the older page (null: none).
+export interface DataReply { transactions: { updated: string; rows: TransactionRow[]; next?: number | null } | null; [view: string]: unknown }
 
 // An item changed differently at the gate and in the working copy since the last pull: decided with Keep mine or
 // Take the gate's (POST G/working-copy/conflicts). gate / mine: how the two values differ, in words.
@@ -266,6 +267,5 @@ export interface SnapshotsReply { snapshots: Record<string, SnapshotMinute>; run
 
 export interface Relay { relay: number; code: string; state: string; name: string }
 
-export interface DebugLogInfo { enabled: boolean; file: string; size: number }
 
 export interface ApiError { error: string }

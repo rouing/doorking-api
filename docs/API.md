@@ -43,7 +43,7 @@ role); update `docs/openapi.json` with any change to those routes.
 | 409 | conflict (a gate connection or snapshot run is running, duplicate entry code, revert refused, …) |
 | 413 | request body over 10,000 bytes |
 | 415 | `POST`/`PUT` without a JSON content type |
-| 429 | 5 failed sign-ins for a user name within 15 minutes; sign-in is refused for the rest of that time |
+| 429 | too many failed sign-ins within 15 minutes: 5 for a user name from one client address, 20 from one address, or 50 for a user name from any address; 30 passkey or single sign-on sign-in starts from one address |
 | 500 | unexpected server error |
 | 502 | DKS Cloud or the camera recorder failed |
 
@@ -70,23 +70,23 @@ A user whose password was set by someone else (a new account, or the CLI's `rese
 |---|---|---|---|---|
 | GET | `/help` | public | | the user guide (`MANUAL.md`) as an HTML page (not under `/api`) |
 | GET | `/api/session` | public | | `{ loggedIn: false, setup?, emailEnabled, sso }` (`setup`: no account exists yet; `sso`: the single sign-on providers `[{ id, name }]`), or `{ loggedIn: true, user, email, pendingEmail, phone, dark, notifyAccess, notifyAlerts, mustChangePassword, emailEnabled, sso, hasPassword, passwordAllowed, hasPasskey, stepUpMinutes, strongUntil, gate, defaults, holidayList }` (`strongUntil`: until when this session's passkey confirmation covers the sensitive actions, ISO, or null) (`hasPassword`: false for an account that signs in with single sign-on only; `passwordAllowed`: false when linked to a provider with `passwords: false`); `gate`: `{ phoneNumber, siteName, addedAt, role }` |
-| POST | `/api/session` | public | `{ user, password }` | local account; 200 `{ ok: true }` and the `sid` cookie; 401 wrong username or password; 403 password sign-in is off for the account (it must use its single sign-on provider); 429 too many failures |
+| POST | `/api/session` | public | `{ user, password }` | local account; 200 `{ ok: true }` and the `sid` cookie; 401 wrong username or password, also when password sign-in is off for the account (it must use its single sign-on provider; the same answer, so an old password can't be confirmed); 429 too many failures |
 | DELETE | `/api/session` | public | | sign out: `{ ok: true }` |
 | POST | `/api/setup` | public | `{ setupCode, username, password, email? }` | only while no account exists: creates the first account (admin of every gate without an admin) and signs it in: 201 `{ ok, gates }`; 403 wrong setup code (printed in the server's console at start); 409 once an account exists |
 | GET | `/api/me` | user | | `{ username, email, pendingEmail, phone, dark, notifyAccess, notifyAlerts }` (`phone`: E.164 such as `+12145550100`, or `""`) (`email`: confirmed; `pendingEmail`: waiting for its link) |
-| PUT | `/api/me` | user | `{ email?, phone?, dark?, notifyAccess?, notifyAlerts? }` | your own settings; `phone` is stored in international form (10 digits = US/Canada, else `+` and the country code; `""` removes it; 400 when it doesn't look like a number); a new `email` becomes `pendingEmail` and gets a confirmation link (the old confirmed address is told); `""` removes it; 409 when another account has confirmed it |
+| PUT | `/api/me` | user | `{ email?, password?, phone?, dark?, notifyAccess?, notifyAlerts? }` | your own settings; `phone` is stored in international form (10 digits = US/Canada, else `+` and the country code; `""` removes it; 400 when it doesn't look like a number); a new `email` becomes `pendingEmail` and gets a confirmation link (the old confirmed address is told); `""` removes it; changing or removing `email` needs `password` (your current one), or a passkey confirmation within `security.stepUpMinutes`, or (no password) a sign-in within that time: 403 otherwise (wrong passwords count like sign-ins); confirming a new address ends reset links sent to the old one; `warning` in the reply when the new address was saved but its confirmation email couldn't be queued; 409 when another account has confirmed it |
 | POST | `/api/me/email/resend` | user | | sends the confirmation link again; 503 when email is off |
 | POST | `/api/email/verify` | public | `{ token }` | confirms the email from a link (`#verify=<token>`): `{ username, email }`; 400 invalid, used or expired |
 | POST | `/api/password-reset/request` | public | `{ identifier }` (username or confirmed email) | always 200 with the same message; a reset link (`#reset=`, 1 hour) goes to the account's confirmed email if there is one. 3 per account and 50 in total per 15 minutes; 503 when email is off |
 | POST | `/api/password-reset` | public | `{ token, password }` | sets the new password, ends all the account's sessions, sends a security alert: `{ username }` |
 | POST | `/api/invite/check` | public | `{ token }` | `{ username }` of an invitation link (`#invite=`), without using it up |
 | POST | `/api/invite` | public | `{ token, password }` | accepts the invitation: sets the password, confirms the email, signs in (`sid` cookie) |
-| PUT | `/api/me/password` | user | `{ current, password }` | change your own password (12+ characters); ends your other sessions; 403 wrong current password, or password sign-in is off for the account (linked to a provider with `passwords: false`) |
+| PUT | `/api/me/password` | user | `{ current, password }` | change your own password (12+ characters); ends your other sessions; 403 wrong current password, or password sign-in is off for the account (linked to a provider with `passwords: false`); wrong current passwords count like sign-ins (5 per 15 minutes, then 429) |
 | GET | `/api/me/passkeys` | user | | `{ passkeys: [{ id, name, site, synced, createdAt, lastUsedAt }] }` |
-| POST | `/api/me/passkeys/options` | user | `{ password }` (your current one; not asked when the account has none) | WebAuthn creation options for `startRegistration()`; 403 wrong password (5 tries per 15 minutes, then 429); 400 when the page isn't on the public name or `localhost` |
+| POST | `/api/me/passkeys/options` | user | `{ password }` (your current one; not asked when the account has none) | WebAuthn creation options for `startRegistration()`; with a passkey already, 403 `{ stepUp }` unless you confirmed with one, or signed in after a password reset by email link, within `security.stepUpMinutes` (the way back for a lost passkey); for an account with no password, 403 unless it signed in or confirmed with a passkey within that time; 403 wrong password (5 tries per 15 minutes, then 429); 400 when the page isn't on the public name or `localhost` |
 | POST | `/api/me/passkeys` | user | `{ name?, response }` (the browser's registration answer) | 201 `{ passkeys }`; 400 when the check fails; 409 already registered |
 | PUT | `/api/me/passkeys/{id}` | user | `{ name }` | rename: `{ passkeys }` |
-| DELETE | `/api/me/passkeys/{id}` | user | | remove: `{ passkeys }` |
+| DELETE | `/api/me/passkeys/{id}` | user | | remove: `{ passkeys }`; 403 `{ stepUp }` unless you confirmed with a passkey, or signed in after a password reset by email link, within `security.stepUpMinutes` |
 | POST | `/api/me/step-up/options` | user | | WebAuthn request options for `startAuthentication()`, limited to your passkeys for this site; 409 when you have none; 400 when the page isn't on the public name or `localhost` |
 | POST | `/api/me/step-up` | user | `{ response }` (the browser's answer) | confirms the session for `security.stepUpMinutes`: `{ strongUntil }`; 401 another account's passkey, bad signature, used or expired challenge |
 | POST | `/api/passkey/options` | public | | WebAuthn request options for `startAuthentication()` (no username: any passkey for this site) |
@@ -111,8 +111,8 @@ A user whose password was set by someone else (a new account, or the CLI's `rese
 | GET | `/login` | gate-admin | | `{ dksUser, dksPasswordSet }` (the password and master code are never returned) |
 | PUT | `/login` | gate-admin | `{ dksUser?, dksPassword? (empty keeps), masterCode? (empty keeps) }` | a new DKS login is checked with DKS Cloud, then saved: 200 `{ changed }`; a new master code starts a residents pull with it: 202 `{ checking: true }`, saved when the pull succeeds (progress via `/job`) |
 | GET | `/users` | gate-admin | | `{ users: [{ username, email, pendingEmail, phone, invited, role, grantedBy, grantedAt, lastSignIn }] }` |
-| POST | `/users` | gate-admin | `{ username, password?, email?, role? ("readonly" default \| "admin") }` | creates an account with access to this gate: with `email` and no `password` (and email on), an **invitation** link goes to the email; otherwise `password` is a temporary one (changed at first sign-in) and an `email` gets a confirmation link. 201 `{ users, invited }`; 409 `{ exists: true }` when the username is taken (share instead) |
-| POST | `/users/{username}/invite` | gate-admin | | sends the invitation again (new link): `{ users }`; 409 already accepted |
+| POST | `/users` | gate-admin | `{ username, password?, email?, role? ("readonly" default \| "admin") }` | creates an account with access to this gate: with `email` and no `password` (and email on), an **invitation** link goes to the email; otherwise `password` is a temporary one (changed at first sign-in) and an `email` gets a confirmation link. 201 `{ users, invited }`; 409 `{ exists: true }` when the username is taken (share instead); 502 `{ error, users }` when the account was created but its email couldn't be queued |
+| POST | `/users/{username}/invite` | gate-admin | | sends the invitation again (new link): `{ users }`; 409 already accepted; 502 the email couldn't be queued |
 | POST | `/share` | gate-admin | `{ username, role? }` | gives an existing account access: `{ users }`; 404 no such user; 409 already has access |
 | PUT | `/users/{username}` | gate-admin | `{ role }` | changes a role: `{ users }`; 409 when it would leave the gate without an admin |
 | DELETE | `/users/{username}` | gate-admin | | takes the user off this gate (the account stays): `{ users }`; 409 for the last admin |
@@ -137,7 +137,7 @@ refused (409) when the working copy is missing files, conflicts with the gate ar
 more entries share a directory code, entry code or card (the error lists them; see `duplicates` below).
 
 A residents pull updates the working copy at once: its files become what the gate holds, and unsent changes are put
-back on top (resident by directory code, card by slot, setting by key). An item changed differently at the gate and
+back on top (resident by directory code, card by card number, setting by key). An item changed differently at the gate and
 here is a **conflict**: the working copy keeps its value until someone decides. When the directory code digits or the
 area-code mode changed (at the gate or in the working copy), the gate's version is taken and unsent changes are
 dropped. The pull's job log says which happened.
@@ -168,7 +168,7 @@ card numbers are 00001–65407.
 |---|---|---|---|---|
 | GET | `/settings` | gate | | `{ fields: [{ key, group, name, offset, size, value, gate, editable, secret, note, maxLength }], pulled, saved, cache }`; secret values are masked. Read-only fields (`editable: false`) include `dialType` (`Tone`/`Rotary`), `multipleSystems` (`Yes`/`No`), `systemMemory` (e.g. `3000`), `memoryChips` (`Standard`/`MemPLUS`/`Anti-pass back`) and `downloadStamp1`/`2` (`2026-11-05 17:40:00 UTC`); a value that doesn't fit shows as `? (<hex>)` |
 | PUT | `/settings` | gate-admin | `{ "<field key>": value, … }` | saves editable fields to the working copy: `{ changed, changedBlocks }`; 400 when nothing changed, or when it changes a tone-open digit (`relay{0-2}Tone…`) and two tones of relays 0–2 would share a digit (Tracker command relays are left out) |
-| GET | `/data` | gate | | `{ transactions }`: `{ updated, rows }` from the transaction history, `updated` = the last transactions pull, `null` before the first; names looked up in the working copy's values (`gate_residents`, `gate_cards`) (until 2026-11-12 also `residents`, `holdOpen`, `holidays`, `securityLevels`, `facilityCodes`, `elevator`; use `/residents` and `/settings` for those) |
+| GET | `/data?limit=&before=` | gate | | `{ transactions }`: `{ updated, rows, next }` from the transaction history, one page at a time (the newest `limit`, default 2000, at most 10000; `next`: the `before` for the older page, `null` when there is none), `updated` = the last transactions pull, `null` before the first; names looked up in the working copy's values (`gate_residents`, `gate_cards`) (until 2026-11-12 also `residents`, `holdOpen`, `holidays`, `securityLevels`, `facilityCodes`, `elevator`; use `/residents` and `/settings` for those) |
 | GET | `/working-copy` | gate | | `{ exists, edited, conflicts: [{ kind, key, label, gate, mine }], files }`; `kind` is `resident`, `card` or `setting`, `gate`/`mine` say in words how the two values differ |
 | DELETE | `/working-copy` | gate-admin | | Reset to gate: unsent changes and conflicts are dropped; the working copy becomes what the gate holds |
 | POST | `/working-copy/conflicts` | gate-admin | `{ kind, key, choice: "mine" \| "gate" }` | decides a conflict: keep the working copy's value, or take the gate's (saved like an edit, in History); returns the status; 404 for no such conflict |
@@ -229,14 +229,6 @@ listed in `src/gate-settings.ts`; [`BITMAP.md`](BITMAP.md) lists each key's addr
 
 `run` is `{ state: running|done|stopped|failed, startedAt, finishedAt?, progress: { minutes, minutesDone, frames,
 framesDone, current, byMinute }, result, log, error?, stopping? }`, or `null`.
-
-## Debug log
-
-| Method | Path | Level | Body | Result |
-|---|---|---|---|---|
-| GET | `/api/debug-log` | user | | `{ enabled, file, size }` |
-| PUT | `/api/debug-log` | user | `{ enabled }` | turns Debug logs on or off for the whole server: `{ enabled, file, size }` |
-| GET | `/api/debug-log/file` | user | | `debug.log` as plain text (empty when there is none) |
 
 ## Example (`curl`)
 

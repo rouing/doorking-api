@@ -88,136 +88,6 @@ export function writePhoneFields(
   if (phone == null) buf.fill(0xff, o + 3, o + 6);
   else buf.writeUIntBE(Number(phone), o + 3, 3);
 }
-const NAMES_DISPLAY_LINES_OFFSET = 0x190; // user message 1-4, instructions 1-4 (matches ACCOUNT.DAT)
-const NAMES_DISPLAY_LINE_COUNT = 8;
-const NAMES_DISPLAY_LINE_SIZE = 20;
-
-// Security level time zones: 16 bytes each, levels 02-30 x TZ1-TZ4, in level order. Confirmed: begin and end
-// time (hour byte: 0x80 = set, 0x20 = PM, low 5 bits = BCD hour; BCD minute byte), 0xFF hour = not set.
-// Byte 4 = days; bytes 5-7 = relays; bytes 8-15 = floors (all confirmed against ACCOUNT.DAT, see helpers below).
-const NAMES_SECURITY_OFFSET = 0x243;
-const NAMES_SECURITY_RECORDS = 29 * 4;
-const NAMES_SECURITY_RECORD_SIZE = 16;
-// Holidays: 32 rows, month and day in packed decimal, 0xFF 0xFF = not set. Holiday NAMES are not stored
-// in names.bin (gate only keeps month/day); the names live only in ACCOUNT.DAT / our own records.
-const NAMES_HOLIDAY_OFFSET = 0x9c3;
-const NAMES_HOLIDAY_ROWS = 32;
-
-function namesTime(h: number, m: number): string {
-  if (h === 0xff) return '';
-  const hour = bcd([h & 0x1f]);
-  const minute = bcd([m]);
-  if (!(h & 0x80) || hour === null || minute === null) return `? (${h.toString(16)} ${m.toString(16)})`;
-  return `${hour}:${minute} ${h & 0x20 ? 'PM' : 'AM'}`;
-}
-
-// Day-of-week flags used by both hold-open and security time zones: day d (0=Sun..6=Sat) is bit (7-d),
-// i.e. bit7=Sun .. bit1=Sat (the reverse of ACCOUNT.DAT's array). Confirmed byte-for-byte.
-function namesDayFlags(byte: number): boolean[] {
-  return Array.from({ length: 7 }, (_, d) => Boolean(byte & (1 << (7 - d))));
-}
-
-// Security relays: 24-bit big-endian field over bytes 5-7, relay r (0..18) at bit (r+5). Confirmed for
-// relays 0, 1, 7 and 18; the linear pattern covers the rest.
-function namesSecurityRelays(buf: Buffer, o: number): number[] {
-  const v = (buf[o + 5] << 16) | (buf[o + 6] << 8) | buf[o + 7];
-  const relays: number[] = [];
-  for (let r = 0; r <= 18; r++) if (v & (1 << (r + 5))) relays.push(r);
-  return relays;
-}
-
-// Security floors: bytes 8-15, floor f at byte (15 - floor((f-1)/8)), bit ((f-1)%8). Confirmed for floors 1-8
-// (byte 15); the higher bytes extend the same scheme to floor 64 but are not yet sampled.
-function namesSecurityFloors(buf: Buffer, o: number): number[] {
-  const floors: number[] = [];
-  for (let f = 1; f <= 64; f++) {
-    if (buf[o + 15 - ((f - 1) >> 3)] & (1 << ((f - 1) & 7))) floors.push(f);
-  }
-  return floors;
-}
-
-function parseNamesSecurityTimes(buf: Buffer) {
-  if (buf.length < NAMES_SECURITY_OFFSET + NAMES_SECURITY_RECORDS * NAMES_SECURITY_RECORD_SIZE) return null;
-  return Array.from({ length: NAMES_SECURITY_RECORDS }, (_, i) => {
-    const o = NAMES_SECURITY_OFFSET + i * NAMES_SECURITY_RECORD_SIZE;
-    const base = { level: 2 + (i >> 2), timeZone: (i & 3) + 1 };
-    if (buf[o] === 0xff) return { ...base, begin: '', end: '', days: Array<boolean>(7).fill(false), relays: [] as number[], floors: [] as number[] };
-    return {
-      ...base,
-      begin: namesTime(buf[o], buf[o + 1]), end: namesTime(buf[o + 2], buf[o + 3]),
-      days: namesDayFlags(buf[o + 4]), relays: namesSecurityRelays(buf, o), floors: namesSecurityFloors(buf, o),
-    };
-  });
-}
-
-export function parseNamesHolidays(buf: Buffer): ({ month: number; day: number } | null)[] | null {
-  if (buf.length < NAMES_HOLIDAY_OFFSET + NAMES_HOLIDAY_ROWS * 2) return null;
-  return Array.from({ length: NAMES_HOLIDAY_ROWS }, (_, i) => {
-    const rec = buf.subarray(NAMES_HOLIDAY_OFFSET + i * 2, NAMES_HOLIDAY_OFFSET + i * 2 + 2);
-    const month = allFF(rec) ? null : bcd(rec.subarray(0, 1));
-    const day = allFF(rec) ? null : bcd(rec.subarray(1, 2));
-    return month && day ? { month: Number(month), day: Number(day) } : null;
-  });
-}
-
-// Elevator Reference table (ER1-ER8; `relay` in the result is the ER number): one byte each at 0xc6 — bit (e-1)
-// set means visitors may use elevator e (1-8) — and the floor-button time in seconds, one byte each at 0x97
-// (0xFF = unset). Confirmed byte-for-byte against a known pattern and time values.
-const NAMES_ELEVATOR_RELAY_OFFSET = 0xc6;
-const NAMES_ELEVATOR_TIME_OFFSET = 0x97;
-const NAMES_ELEVATOR_COUNT = 8;
-
-export function parseNamesElevator(buf: Buffer): { relay: number; elevators: number[]; seconds: number | null }[] | null {
-  if (buf.length < NAMES_ELEVATOR_RELAY_OFFSET + NAMES_ELEVATOR_COUNT) return null;
-  return Array.from({ length: NAMES_ELEVATOR_COUNT }, (_, i) => {
-    const byte = buf[NAMES_ELEVATOR_RELAY_OFFSET + i];
-    const elevators: number[] = [];
-    for (let e = 1; e <= 8; e++) if (byte & (1 << (e - 1))) elevators.push(e);
-    const t = buf[NAMES_ELEVATOR_TIME_OFFSET + i];
-    return { relay: i + 1, elevators, seconds: t === 0xff ? null : t };
-  });
-}
-
-// Facility codes: an enable flag at 0x32 (0xFF = off, 0x00 = on) and 10 codes at 0x1e, each a 16-bit
-// big-endian value (0xFFFF = unused). Confirmed against a disabled/enabled sample pair.
-const NAMES_FACILITY_OFFSET = 0x1e;
-const NAMES_FACILITY_COUNT = 10;
-const NAMES_FACILITY_ENABLE = 0x32;
-
-export function parseNamesFacilityCodes(buf: Buffer): { enabled: boolean; codes: { row: number; code: string }[] } | null {
-  if (buf.length < NAMES_FACILITY_ENABLE + 1) return null;
-  const codes = Array.from({ length: NAMES_FACILITY_COUNT }, (_, i) => {
-    const o = NAMES_FACILITY_OFFSET + i * 2;
-    const v = (buf[o] << 8) | buf[o + 1];
-    return { row: i + 1, code: v === 0xffff ? '' : String(v) };
-  });
-  return { enabled: buf[NAMES_FACILITY_ENABLE] !== 0xff, codes };
-}
-
-// Relay hold-open schedule: 8 rows (7 time rows + a Holiday row), 5 bytes each at 0x6f.
-// Record = [beginHour, beginMin, endHour, endMin, dayFlags]; begin hour 0xFF = unused row.
-// Day bits run Sun..Sat in bit7..bit1 (the reverse of ACCOUNT.DAT's array), bit0 unused.
-// Confirmed byte-for-byte against ACCOUNT.DAT (times and days).
-// Relay assignments: 19 bytes at 0x5c, one per relay 0-18; bit i set means row i (bit 7 = Holiday)
-// holds that relay open. Taken from DoorKing32's hold-open grid code; confirmed for relay 5 row 1.
-const NAMES_HOLDOPEN_OFFSET = 0x6f;
-const NAMES_HOLDOPEN_ROWS = 8; // rows 1-7 + Holiday
-const NAMES_HOLDOPEN_SIZE = 5;
-const NAMES_HOLDOPEN_RELAY_OFFSET = 0x5c;
-const NAMES_HOLDOPEN_RELAYS = 19;
-
-export function parseNamesHoldOpen(buf: Buffer): { row: string; begin: string; end: string; days: boolean[]; relays: number[] }[] | null {
-  if (buf.length < NAMES_HOLDOPEN_OFFSET + NAMES_HOLDOPEN_ROWS * NAMES_HOLDOPEN_SIZE) return null;
-  return Array.from({ length: NAMES_HOLDOPEN_ROWS }, (_, i) => {
-    const o = NAMES_HOLDOPEN_OFFSET + i * NAMES_HOLDOPEN_SIZE;
-    const row = i < 7 ? String(i + 1) : 'Hol';
-    const relays: number[] = [];
-    for (let r = 0; r < NAMES_HOLDOPEN_RELAYS; r++) if (buf[NAMES_HOLDOPEN_RELAY_OFFSET + r] & (1 << i)) relays.push(r);
-    if (buf[o] === 0xff) return { row, begin: '', end: '', days: Array<boolean>(7).fill(false), relays };
-    return { row, begin: namesTime(buf[o], buf[o + 1]), end: namesTime(buf[o + 2], buf[o + 3]), days: namesDayFlags(buf[o + 4]), relays };
-  });
-}
-
 // Packed decimal digits; 0xF nibbles are padding.
 export function bcd(bytes: Iterable<number>): string | null {
   let s = '';
@@ -230,7 +100,7 @@ export function bcd(bytes: Iterable<number>): string | null {
   return s;
 }
 
-const allFF = (bytes: Uint8Array): boolean => bytes.every((b) => b === 0xff);
+export const allFF = (bytes: Uint8Array): boolean => bytes.every((b) => b === 0xff);
 
 // phone.bin: 10 bytes per directory code. Bytes 2-5 depend on the area-code mode (see readPhoneFields).
 // Byte 8 is packed: bits 0-4 = security level (0-30), bits 5-7 = elevator reference index
@@ -270,7 +140,7 @@ export function parseCardsBin(buf: Buffer): CardEntry[] {
   return cards;
 }
 
-// names.bin: settings header, display messages, area code table, then the A-Z directory (see NAMES_LAYOUTS).
+// names.bin: area code table and the A-Z directory (see NAMES_LAYOUTS; settings are decoded by gate-settings.ts).
 // Area code table: 2-byte BCD entries (F-padded), indexed by phone.bin's area code index.
 // Directory entry (20 bytes): name (15, space padded), flag byte, directory code (bytes 16-19, see namesEntryCode).
 export function parseNamesBin(buf: Buffer) {
@@ -298,17 +168,7 @@ export function parseNamesBin(buf: Buffer) {
       hidden: !(flag & 0x20),
     });
   }
-  const displayLines = buf.length >= NAMES_DISPLAY_LINES_OFFSET + NAMES_DISPLAY_LINE_COUNT * NAMES_DISPLAY_LINE_SIZE
-    ? Array.from({ length: NAMES_DISPLAY_LINE_COUNT }, (_, i) => {
-      const o = NAMES_DISPLAY_LINES_OFFSET + i * NAMES_DISPLAY_LINE_SIZE;
-      const rec = buf.subarray(o, o + NAMES_DISPLAY_LINE_SIZE);
-      return rec.every((c) => c >= 0x20 && c < 0x7f) ? rec.toString('latin1') : null;
-    })
-    : null;
-  return {
-    areaCodeMode: layout.areaCodeMode, dirDigits: namesDirDigits(buf), areaCodes, displayLines, directory,
-    securityTimes: parseNamesSecurityTimes(buf), holidays: parseNamesHolidays(buf),
-  };
+  return { areaCodeMode: layout.areaCodeMode, dirDigits: namesDirDigits(buf), areaCodes, directory };
 }
 
 // rcv_out.bin: raw 10-byte transaction records read from the board.
@@ -447,11 +307,12 @@ export function parseMap(buf: Buffer): { blocks: number; changedBlocks: number[]
   return { blocks: buf.length, changedBlocks, blockSize: BLOCK_SIZE };
 }
 
-// DKS Cloud transfers files as hex text; accept base64 as a fallback.
+// DKS Cloud transfers files as hex text (two digits per byte). Anything else is a message, not a file (for example
+// "Session not found"), and is refused with its start.
 export function decodeFileText(text: unknown): Buffer {
   const s = String(text).trim();
   if (/^([0-9a-f]{2})*$/i.test(s)) return Buffer.from(s, 'hex');
-  return Buffer.from(s, 'base64');
+  throw new Error(`DKS Cloud sent something other than a file: ${s.slice(0, 80)}`);
 }
 
 // Hex text for SendResidentData (DoorKing32 writes two hex digits per byte).
@@ -494,8 +355,9 @@ export function residentRows(bufs: { names?: Buffer | null; phone?: Buffer | nul
   });
   if (phones) {
     for (const p of parsePhoneBin(phones.data, namesBin ? namesBin.areaCodeMode : 255)) {
+      if (p.directoryCode === null) continue; // not decimal: left out (its bytes are kept as they are)
       const areaCode = (namesBin && p.areaCodeIndex !== null && namesBin.areaCodes[p.areaCodeIndex]) || '';
-      Object.assign(row(p.directoryCode as string), {
+      Object.assign(row(p.directoryCode), {
         areaCode, areaCodeIndex: p.areaCodeIndex, phone: p.phone || '', entryCode: p.entryCode || '',
         securityLevel: p.securityLevel, elevatorRef: p.elevatorRef, floor: p.floor == null ? '' : p.floor,
         recordOffset: p.recordOffset,

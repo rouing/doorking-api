@@ -4,7 +4,7 @@
 // reverted; a revert is itself an event (revertOf = the id it undid).
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
-import { all, run, type Store } from './db.ts';
+import { all, run, type Store, phoneDigits } from './db.ts';
 import type { EntryChange, HistoryEvent } from './types.ts';
 
 export type Patch =
@@ -27,7 +27,6 @@ export interface StoredEvent {
 }
 
 const MAX_LIST = 500;
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 
 const pack = (buf: Buffer): string => zlib.deflateRawSync(buf).toString('base64');
 const unpack = (s: string): Buffer => zlib.inflateRawSync(Buffer.from(s, 'base64'));

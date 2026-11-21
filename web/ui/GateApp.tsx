@@ -61,6 +61,8 @@ export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: 
   const [error, setError] = useState('');
   const [dialog, confirm] = useConfirm();
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pollGen = useRef(0);
+  const jobRunning = useRef(false);
   const lastFinished = useRef<string | undefined>(undefined);
 
   useEffect(() => { document.title = `${gateLabel(gate)} · DoorKing Gate Data`; }, [gate]);
@@ -94,12 +96,28 @@ export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: 
     loadSnaps.current();
   }, [gapi]);
 
-  // Polls the gate connection every 3 s while it runs. When a pull or send finishes, reloads the data and shows
-  // its page (not for a connection that had already finished when the gate was opened).
+  // The next older page of transactions (GET /data returns the newest page), added at the end of the list.
+  const loadOlder = useCallback(async () => {
+    const next = data?.transactions?.next;
+    if (next == null) return;
+    const d = await gapi<DataReply>('GET', `/data?before=${next}`);
+    setData((cur) => (cur?.transactions && d.transactions
+      ? { ...cur, transactions: { ...cur.transactions, rows: [...cur.transactions.rows, ...d.transactions.rows], next: d.transactions.next } } : cur));
+  }, [gapi, data]);
+
+  // Polls the gate connection every 3 s while it runs (a failed check is tried again). When a pull or send finishes,
+  // reloads the data and shows its page (not for a connection that had already finished when the gate was opened).
+  // pollGen: bumped when the page closes, so a check still on its way doesn't start polling again.
   const refreshJob = useCallback(async () => {
     clearTimeout(timer.current);
+    const gen = pollGen.current;
     const j = await gapi<Job>('GET', '/job').catch(() => null);
-    if (!j) return;
+    if (gen !== pollGen.current) return;
+    if (!j) {
+      if (jobRunning.current) timer.current = setTimeout(refreshJob, 3000);
+      return;
+    }
+    jobRunning.current = j.state === 'running';
     setJob(j);
     if (j.state === 'running') {
       setDock((d) => (d === 'closed' ? 'open' : d));
@@ -117,10 +135,10 @@ export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: 
   useEffect(() => {
     loadData();
     refreshJob().then(() => { if (lastFinished.current === undefined) lastFinished.current = ''; });
-    return () => clearTimeout(timer.current);
+    return () => { pollGen.current++; clearTimeout(timer.current); };
   }, [loadData, refreshJob]);
 
-  const jobStarted = () => { setDock('open'); refreshJob(); };
+  const jobStarted = () => { jobRunning.current = true; setDock('open'); refreshJob(); };
 
   async function pull(what: 'residents' | 'transactions') {
     if (!await confirm({ title: `Pull ${what} from the gate?`, body: PULL_WARNING[what] || undefined, action: `Pull ${what}` })) return;
@@ -143,7 +161,7 @@ export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: 
       devices={prefs.deviceAssociation || DEFAULT_DEVICES} features={features} snaps={snaps} onOpenSnap={setViewing}
       gapi={gapi} onReload={loadData} onJobStarted={jobStarted} />;
   } else if (nav === 'transactions') {
-    page = <Transactions tx={data?.transactions ?? null} residents={residents?.rows ?? []} onOpenResident={openResident}
+    page = <Transactions tx={data?.transactions ?? null} onLoadOlder={loadOlder} residents={residents?.rows ?? []} onOpenResident={openResident}
       snaps={snaps} onOpenSnap={setViewing} />;
   } else if (nav === 'history') {
     page = <History gapi={gapi} onReverted={loadData} />;

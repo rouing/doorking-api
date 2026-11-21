@@ -22,4 +22,5 @@ export * from './src/email.ts';
 export * from './src/audit.ts';
 export * from './src/schedules.ts';
 export * from './src/cameras.ts';
+export * from './src/snapshot-files.ts';
 export * from './src/debug-log.ts';

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Badge, Button, Callout, Card, Checkbox, Flex, Grid, Heading, Link, Select, Table, Text, TextField } from '@radix-ui/themes';
-import type { ApiKeyInfo, CameraSettings, DebugLogInfo, GateConfig as Config, GateLogin, GatePrefs, GateRole, GateUser, ResidentsReply } from '../../../src/types.ts';
+import { Badge, Button, Callout, Card, Flex, Grid, Heading, Link, Select, Table, Text, TextField } from '@radix-ui/themes';
+import type { ApiKeyInfo, CameraSettings, GateConfig as Config, GateLogin, GatePrefs, GateRole, GateUser, ResidentsReply } from '../../../src/types.ts';
 import { api, ApiError, errorText, gateUrl, useReadOnly, type GateApi } from '../api.ts';
 import { fmtIntlPhone, fmtTime } from '../format.ts';
 import { Field } from '../panes/fields.tsx';
@@ -103,6 +103,7 @@ function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: { gapi: Gate
     } catch (e) {
       setCreateInfo(errorText(e));
       if (e instanceof ApiError && e.body.exists) setExists(create.username.trim().toLowerCase());
+      if (e instanceof ApiError && Array.isArray(e.body.users)) setUsers(e.body.users as GateUser[]); // created, but the email failed
     }
   };
   const resendInvite = (u: GateUser) => act(() => gapi('POST', `/users/${encodeURIComponent(u.username)}/invite`, {}), setInfo,
@@ -290,36 +291,6 @@ function DeleteGateData({ phone, gapi, onDeleted }: { phone: string; gapi: GateA
   );
 }
 
-function DebugLogs() {
-  const [log, setLog] = useState<DebugLogInfo | null>(null);
-  const [info, setInfo] = useState('');
-  useEffect(() => { api<DebugLogInfo>('GET', '/api/debug-log').then(setLog, (e) => setInfo(errorText(e))); }, []);
-  const toggle = async (on: boolean) => {
-    try { setLog(await api<DebugLogInfo>('PUT', '/api/debug-log', { enabled: on })); setInfo(''); } catch (e) { setInfo(`Not saved: ${errorText(e)}`); }
-  };
-  return (
-    <Card>
-      <Flex direction="column" gap="3">
-        <Heading size="3">Debug logs<HelpTip of="debugLogs" /></Heading>
-        <Text as="label" size="2"><Flex gap="2" align="center">
-          <Checkbox checked={Boolean(log && log.enabled)} onCheckedChange={(v) => toggle(v === true)} /> Debug logs
-        </Flex></Text>
-        <Text size="2" color="gray">
-          While on, errors and other issues (failed camera pictures after their retry, recorder connection failures, failed gate
-          connections and schedules, failed requests) are added to a log file on this computer. One setting for the whole server,{' '}
-          <strong>every gate and account</strong>.
-        </Text>
-        <Flex gap="3" align="center">
-          <Link href="/api/debug-log/file" target="_blank" rel="noopener">Open log</Link>
-          <Text size="2" color="gray">
-            {info || (log ? `${log.file} (${log.size < 1024 ? `${log.size} bytes` : `${Math.round(log.size / 1024)} KB`})` : '')}
-          </Text>
-        </Flex>
-      </Flex>
-    </Card>
-  );
-}
-
 // Downloads of the working copy's board files (names.map flags the 128-byte blocks of names.bin that changed).
 function WorkingCopyFiles({ phone, available }: { phone: string; available: boolean }) {
   return (
@@ -342,7 +313,7 @@ function WorkingCopyFiles({ phone, available }: { phone: string; available: bool
 }
 
 // System Settings: gate login and users (admins), gate configuration, gate settings (working copy), working copy
-// files, device association, cameras, debug logs and deleting the gate's stored data. Relay names are on the
+// files, device association, cameras and deleting the gate's stored data. Relay names are on the
 // Relays page; dark mode is in User Settings. Read-only users see the gate's configuration and settings, disabled.
 export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, user, emailEnabled, onReload, onSessionChange, onJobStarted }: {
   phone: string; gapi: GateApi; prefs: GatePrefs; defaults: Config; list: ResidentsReply | null; cameras: CameraSettings | null;
@@ -385,7 +356,6 @@ export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, us
       <WorkingCopyFiles phone={phone} available={Boolean(gs.reply)} />
       <DeviceAssociation key={JSON.stringify(prefs.deviceAssociation)} prefs={prefs} gapi={gapi} onSaved={onReload} />
       <CameraForm key={JSON.stringify(cameras)} settings={cameras} phone={phone} gapi={gapi} onSaved={onReload} />
-      <DebugLogs />
       <DeleteGateData phone={phone} gapi={gapi} onDeleted={onSessionChange} />
     </Flex>
   );

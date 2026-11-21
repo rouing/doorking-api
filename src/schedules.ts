@@ -3,7 +3,7 @@
 // gate's DKS login (gate-list.ts); `user` is who last saved the entry. A time missed while the server was stopped
 // runs once at the next check, like DoorKing32's past-due jobs.
 import crypto from 'node:crypto';
-import { all, one, run } from './db.ts';
+import { all, one, run, phoneDigits } from './db.ts';
 import type { Store } from './db.ts';
 import type { Schedule, ScheduleAction, ScheduleInput } from './types.ts';
 
@@ -19,7 +19,6 @@ interface ScheduleRow {
 type Timed = Pick<ScheduleInput, 'days' | 'time'>;
 type RunFields = Partial<Record<'lastDue' | 'lastRun' | 'lastResult' | 'lastError', unknown>>;
 
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 const fail = (msg: string, status: number) => Object.assign(new Error(msg), { status });
 
 // Returns { schedule: { days, time, actions, enabled } } or { error }. days: 0-6 = Sun-Sat.

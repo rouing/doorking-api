@@ -301,10 +301,16 @@
         ],
         "summary": "Transactions",
         "x-role": "readonly",
-        "description": "The transaction history, newest first, with names from the working copy.\n\n**Read-only or admin key.**",
+        "description": "The transaction history, newest first, with names from the working copy, one page at a time: the newest `limit` (default 2000, at most 10000); `transactions.next` is the `before` that asks for the older page (null when there is none).\n\n**Read-only or admin key.**",
         "parameters": [
           {
             "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/txLimit"
+          },
+          {
+            "$ref": "#/components/parameters/txBefore"
           }
         ],
         "responses": {
@@ -2470,6 +2476,27 @@
           "type": "string"
         },
         "example": "1"
+      },
+      "txLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 2000
+        },
+        "description": "Transactions in the page."
+      },
+      "txBefore": {
+        "name": "before",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer"
+        },
+        "description": "The previous reply's `transactions.next`."
       }
     },
     "responses": {
@@ -3071,6 +3098,13 @@
                     "items": {
                       "$ref": "#/components/schemas/Transaction"
                     }
+                  },
+                  "next": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "`before` for the older page; null when there is none."
                   }
                 }
               },

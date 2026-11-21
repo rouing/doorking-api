@@ -3,12 +3,11 @@
 // arrive. Like DoorKing32's TRANS files, the history keeps them: each pull is matched against the saved tail and
 // only the events after the overlap are added. Records keep the year inferred when they were first saved (the
 // board stores no year). The pulled rcv_out.bin itself isn't kept; tx_pulls records when the gate was last read.
-import { all, decryptBytes, one, run, transaction, type Store } from './db.ts';
+import { all, decryptBytes, one, run, transaction, type Store, phoneDigits } from './db.ts';
 import { orderRcvOut, parseRcvOut, type RcvRecord } from './board-files.ts';
 
 export interface TxMerge { added: number; kept: number; gap: boolean }
 
-const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 const valid = (t: RcvRecord) => t.month >= 1 && t.month <= 12 && t.day >= 1 && t.day <= 31;
 
 export async function txHistoryCount(store: Store, phone: unknown): Promise<number> {
@@ -73,8 +72,16 @@ export async function migrateRcvOut(store: Store): Promise<{ phone: string; adde
   return out;
 }
 
-// The gate's saved transactions, oldest first, as rcv_out.bin records with their year.
-export async function readTransactions(store: Store, phone: unknown): Promise<RcvRecord[]> {
-  return (await all<{ raw: string; year: number }>(store, 'SELECT raw, year FROM tx_history WHERE phone = $1 ORDER BY seq', [phoneDigits(phone)]))
-    .map((r) => ({ ...parseRcvOut(Buffer.from(r.raw, 'hex'))[0], year: r.year }));
+// A page of the saved transactions: the newest `limit` (all when not given) older than seq `before`, oldest first, and
+// next: the `before` that asks for the page older than this one (null when there is none).
+export async function readTransactionPage(store: Store, phone: unknown, { before, limit }: { before?: number; limit?: number } = {}):
+  Promise<{ records: RcvRecord[]; next: number | null }> {
+  const rows = await all<{ raw: string; year: number; seq: number }>(store,
+    'SELECT raw, year, seq FROM tx_history WHERE phone = $1 AND ($2::integer IS NULL OR seq < $2) ORDER BY seq DESC LIMIT $3',
+    [phoneDigits(phone), before ?? null, limit ? limit + 1 : null]);
+  const more = Boolean(limit) && rows.length > limit!;
+  if (more) rows.pop();
+  rows.reverse();
+  return { records: rows.map((r) => ({ ...parseRcvOut(Buffer.from(r.raw, 'hex'))[0], year: r.year })), next: more ? rows[0].seq : null };
 }
+

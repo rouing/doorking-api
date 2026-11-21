@@ -68,3 +68,6 @@ auggie.sh
 
 # Developer handoff notes (reverse-engineering history, pending work): local only
 docs/HANDOFF.md
+
+# Audit findings still open (security details): local only
+FIXME.MD

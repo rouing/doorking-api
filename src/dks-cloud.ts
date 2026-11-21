@@ -142,8 +142,7 @@ export class DksCloudClient {
   async getDataFile(sessionId: Param, fileType: string): Promise<Buffer> {
     if (!DATA_FILES.includes(fileType)) throw new Error(`fileType must be one of ${DATA_FILES.join(', ')}`);
     const text = await this.call('GetDataFile', { SessionID: sessionId, fileType });
-    if (/error/i.test(text) && !/^[0-9a-f]*$/i.test(text.trim())) throw new Error(`GetDataFile: ${text}`);
-    return decodeFileText(text);
+    try { return decodeFileText(text); } catch (e) { throw new Error(`GetDataFile ${fileType}: ${(e as Error).message}`); }
   }
 
   // Reads the current relay states straight from the gate (no session).
@@ -159,10 +158,6 @@ export class DksCloudClient {
 
   endSession(sessionId: Param): Promise<string> {
     return this.call('EndSession', { SessionID: sessionId });
-  }
-
-  cancelSession(sessionId: Param): Promise<string> {
-    return this.call('CancelSession', { SessionID: sessionId });
   }
 
   // Polls GetSessionStatus until it reports "Session Complete:" (as DoorKing32 does).

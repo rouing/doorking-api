@@ -22,6 +22,7 @@
   },
   "security": {
     "sessionIdleMinutes": 30,
+    "sessionMaxHours": 168,
     "maxFailedSignIns": 5,
     "signInWindowMinutes": 15,
     "stepUpMinutes": 180

@@ -1,4 +1,4 @@
-import { bcd } from './board-files.ts';
+import { allFF, bcd } from './board-files.ts';
 
 // Gate settings read directly from names.bin (positions from DoorKing32's send builder, FUN_004aad40).
 // Only fields whose position and encoding are confirmed are editable; the rest are shown read-only.
@@ -17,7 +17,6 @@ export interface GateSetting {
   editable: boolean; secret: boolean; note: string | null; maxLength: number | null;
 }
 
-const allFF = (b: Uint8Array): boolean => b.every((x) => x === 0xff);
 const toBcd = (n: number): number => ((Math.floor(n / 10) << 4) | (n % 10));
 const ft = (t: FieldType): FieldType => t;
 // The bytes of a "? (0x7)" or "? (005da0013491)" value (shown for bytes a type can't name), or null.
