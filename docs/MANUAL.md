@@ -444,7 +444,7 @@ same ones as in the DMSS or SmartPSS app), and the camera channels to use. Click
 | "This gate has no DKS login yet" | A gate admin needs to set it under **System Settings → Gate login**. |
 | "Too many failed sign-ins" | Wait 15 minutes, then try again. |
 | A pull fails with "… Mismatch" | A Gate configuration setting doesn't match the gate. Fix the one named. |
-| "A gate connection is already running" | Someone (or a schedule) is talking to a gate. Wait and try again. |
+| "A gate connection is already running" | Someone (or a schedule) is talking to this gate, or to another gate with the same DKS login (DKS Cloud allows one at a time per login). Wait and try again. |
 | Send to gate won't work | Read the red message: usually duplicates on the Residents page, or conflicts to decide (**Keep mine** or **Take the gate's**). |
 | Save is greyed out on the Relays page | Two tones use the same digit; change one of the red boxes. |
 | "This change can't be stored as gate values" | The app couldn't record that change safely, so nothing was saved. Tell the person who supports the app what you changed. |

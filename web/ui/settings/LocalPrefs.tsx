@@ -22,13 +22,13 @@ export function RelayNameBox({ relay, prefs, gapi, onSaved }: { relay: number; p
       await gapi('PUT', '/prefs', { relayLabels: { [k]: next } });
       setInfo('');
       await onSaved();
-    } catch (e) { setInfo(`Not saved: ${errorText(e)}`); }
+    } catch (err) { setInfo(`Not saved: ${errorText(err)}`); }
   };
   return (
     <TextField.Root size="1" maxLength={24} value={value} color={info.startsWith('Not') ? 'red' : undefined} style={{ width: '16ch' }}
       title={info || 'Relay name, saved when you leave the box. Shared by every account that manages this gate; not sent to the gate.'}
-      onChange={(e) => setValue(e.target.value)} onBlur={save}
-      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
+      onChange={(event) => setValue(event.target.value)} onBlur={save}
+      onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }} />
   );
 }
 
@@ -38,15 +38,15 @@ export function DeviceAssociation({ prefs, gapi, onSaved }: { prefs: GatePrefs; 
   const fill = (list: DeviceRange[]) => Array.from({ length: 10 }, (_, i) => ({ ...(list[i] || { name: '', from: '', to: '' }) }));
   const [rows, setRows] = useState(() => fill(prefs.deviceAssociation || DEFAULT_DEVICES));
   const [info, setInfo] = useState('');
-  const set = (i: number, k: keyof DeviceRange, v: string) => setRows(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const set = (i: number, k: keyof DeviceRange, v: string) => setRows(rows.map((row, j) => (j === i ? { ...row, [k]: v } : row)));
   const save = async () => {
     setInfo('Saving…');
     try {
-      const p = await gapi<GatePrefs>('PUT', '/prefs', { deviceAssociation: rows.map((r) => ({ name: r.name.trim(), from: r.from.trim(), to: r.to.trim() })) });
-      setRows(fill(p.deviceAssociation || []));
+      const reply = await gapi<GatePrefs>('PUT', '/prefs', { deviceAssociation: rows.map((row) => ({ name: row.name.trim(), from: row.from.trim(), to: row.to.trim() })) });
+      setRows(fill(reply.deviceAssociation || []));
       setInfo('Saved.');
       await onSaved(); // card transactions take their Event Type from these ranges
-    } catch (e) { setInfo(`Save failed: ${errorText(e)}`); }
+    } catch (err) { setInfo(`Save failed: ${errorText(err)}`); }
   };
   return (
     <Card>
@@ -61,12 +61,12 @@ export function DeviceAssociation({ prefs, gapi, onSaved }: { prefs: GatePrefs; 
             <Table.Row>{['#', 'Device Name', 'From', 'To'].map((h) => <Table.ColumnHeaderCell key={h}>{h}</Table.ColumnHeaderCell>)}</Table.Row>
           </Table.Header>
           <Table.Body>
-            {rows.map((r, i) => (
+            {rows.map((row, i) => (
               <Table.Row key={i}>
                 <Table.Cell>{i + 1}</Table.Cell>
-                <Table.Cell><TextField.Root size="1" maxLength={12} value={r.name} onChange={(e) => set(i, 'name', e.target.value)} /></Table.Cell>
-                <Table.Cell><TextField.Root size="1" maxLength={5} inputMode="numeric" value={r.from} onChange={(e) => set(i, 'from', e.target.value)} style={{ width: '8ch' }} /></Table.Cell>
-                <Table.Cell><TextField.Root size="1" maxLength={5} inputMode="numeric" value={r.to} onChange={(e) => set(i, 'to', e.target.value)} style={{ width: '8ch' }} /></Table.Cell>
+                <Table.Cell><TextField.Root size="1" maxLength={12} value={row.name} onChange={(event) => set(i, 'name', event.target.value)} /></Table.Cell>
+                <Table.Cell><TextField.Root size="1" maxLength={5} inputMode="numeric" value={row.from} onChange={(event) => set(i, 'from', event.target.value)} style={{ width: '8ch' }} /></Table.Cell>
+                <Table.Cell><TextField.Root size="1" maxLength={5} inputMode="numeric" value={row.to} onChange={(event) => set(i, 'to', event.target.value)} style={{ width: '8ch' }} /></Table.Cell>
               </Table.Row>
             ))}
           </Table.Body>

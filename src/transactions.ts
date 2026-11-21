@@ -53,13 +53,13 @@ export function parseTraFile(buffer: Buffer): TraFile {
 
 // "6/22/26" + "11:39PM" -> "2026-06-22 23:39"
 export function toIsoTimestamp(date: string, time: string): string {
-  const d = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(date);
+  const match = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(date);
   const t = /^(\d{1,2}):(\d{2})\s*([AP])M$/i.exec(time);
-  if (!d || !t) return '';
+  if (!match || !t) return '';
   let hour = Number(t[1]) % 12;
   if (t[3].toUpperCase() === 'P') hour += 12;
   const pad = (n: number | string) => String(n).padStart(2, '0');
-  return `20${d[3]}-${pad(d[1])}-${pad(d[2])} ${pad(hour)}:${t[2]}`;
+  return `20${match[3]}-${pad(match[1])}-${pad(match[2])} ${pad(hour)}:${t[2]}`;
 }
 
 export function readTraFile(path: string): TraFile {

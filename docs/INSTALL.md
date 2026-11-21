@@ -122,7 +122,7 @@ Relative paths are relative to the folder `config.json` is in. Unknown names and
 | `server.port` | `8080` | HTTP port (the server listens on `127.0.0.1` only) |
 | `server.publicHost` | `""` | public name served by an HTTPS reverse proxy (section 6a); the server also accepts that host and `https://` origins, and marks its cookie `Secure` there |
 | `paths.media` | `media` | camera pictures folder (one folder per gate) |
-| `paths.logs` | `logs` | folder for `debug.log` |
+| `paths.logs` | `logs` | folder for the server log (`server.jsonl`) |
 | `paths.keyFile` | `doorking.key` | the encryption key (created when missing; must be chmod 600) |
 | `database.host`, `.port`, `.name`, `.user`, `.password` | `127.0.0.1`, `5432`, `doorking`, `doorking`, none | the PostgreSQL login |
 | `database.url` | `""` | a full `postgres://` URL instead of the values above |
@@ -222,6 +222,7 @@ User=doorking
 WorkingDirectory=/opt/doorking
 ExecStart=/usr/bin/node web/server.ts
 Restart=on-failure
+TimeoutStopSec=330
 
 [Install]
 WantedBy=multi-user.target
@@ -229,6 +230,10 @@ WantedBy=multi-user.target
 Then `sudo systemctl daemon-reload && sudo systemctl enable --now doorking`. The service user must be able to
 read `config.json` and `doorking.key`, and write `logs/` and `media/`. Use the full path of `node` (with nvm, `readlink -f $(which node)`;
 update the service after a Node upgrade). Logs: `journalctl -u doorking`.
+`systemctl stop` or `restart` waits up to 5 minutes for a running gate connection (pull or send, usually 1.5-2
+minutes) to finish, so it isn't cut off halfway; requests meanwhile get "The server is restarting". Scheduled
+transfers start nothing new; the rest of a running schedule is recorded as not run. `TimeoutStopSec=330` keeps
+systemd from killing the server before that (its default is 90 s). Without a running connection it stops at once.
 
 ## 6a. Public access (HTTPS)
 
@@ -387,4 +392,4 @@ schemas in.
 | A pull fails with "… Mismatch" | Gate configuration doesn't match the gate (System Settings). Fix the named value. |
 | Pulls fail with a network error | The machine can't reach `dksdb.dksoftware.com` on port 443 (firewall or proxy). |
 | Cameras: "Could not reach the recorder after 3 tries" | Check the recorder serial, user and password, and that it is online in DMSS/SmartPSS. |
-| Something else | Repeat the action, then read the server log: `journalctl -u doorking` or `logs/debug.log`. |
+| Something else | Repeat the action, then read the server log: `journalctl -u doorking` or `logs/server.jsonl`. |

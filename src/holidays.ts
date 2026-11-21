@@ -20,7 +20,7 @@ export const FIXED_HOLIDAYS: Holiday[] = [
 export const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
 
-const byDate = new Map(FIXED_HOLIDAYS.map((h) => [`${h.month}-${h.day}`, h.name]));
+const byDate = new Map(FIXED_HOLIDAYS.map((holiday) => [`${holiday.month}-${holiday.day}`, holiday.name]));
 
 // Name for a stored month/day, or '' when it isn't a known fixed-date holiday (a custom date).
 export function holidayName(month: number | string, day: number | string): string {

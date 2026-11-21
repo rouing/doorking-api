@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { Button, Code, Flex, IconButton, Text, TextField } from '@radix-ui/themes';
+import { Button, Code, Flex, IconButton, Select, Text, TextField } from '@radix-ui/themes';
 import type { DeviceRange } from '../../../src/types.ts';
 import { deviceFor, formatPhoneDigits } from '../format.ts';
 import { HelpTip } from '../HelpTip.tsx';
@@ -14,6 +14,26 @@ export function Field({ label, help, children }: { label: string; help?: string;
   );
 }
 
+type ChoiceOption = string | readonly [value: string, label: string];
+interface ChoiceProps {
+  value: string; options: readonly ChoiceOption[]; onChange: (value: string) => void; disabled?: boolean; size?: '1' | '2'; title?: string;
+}
+
+// A drop-down list; each option is a value shown as itself, or a [value, label] pair.
+export function Choice({ value, options, onChange, disabled, size, title }: ChoiceProps) {
+  return (
+    <Select.Root size={size} value={value} onValueChange={onChange} disabled={disabled}>
+      <Select.Trigger title={title} />
+      <Select.Content>
+        {options.map((offset) => {
+          const [v, label] = typeof offset === 'string' ? [offset, offset] : offset;
+          return <Select.Item key={v} value={v}>{label}</Select.Item>;
+        })}
+      </Select.Content>
+    </Select.Root>
+  );
+}
+
 // Phone input that formats as you type ((918) 555-0142, 1 (918) 555-0142 or 555-0142) and keeps the caret after
 // the same digit.
 // Backspace over a separator removes the digit before it.
@@ -25,11 +45,11 @@ export function PhoneField({ value, onChange }: { value: string; onChange: (v: s
     caret.current = null;
   });
   return (
-    <TextField.Root ref={ref} inputMode="tel" placeholder="(918) 555-0142" value={value} onChange={(e) => {
-      const input = e.target;
+    <TextField.Root ref={ref} inputMode="tel" placeholder="(918) 555-0142" value={value} onChange={(event) => {
+      const input = event.target;
       let before = input.value.slice(0, input.selectionStart ?? input.value.length).replace(/\D/g, '').length;
       let d = input.value.replace(/\D/g, '');
-      if ((e.nativeEvent as InputEvent).inputType === 'deleteContentBackward' && d === value.replace(/\D/g, '') && before > 0) {
+      if ((event.nativeEvent as InputEvent).inputType === 'deleteContentBackward' && d === value.replace(/\D/g, '') && before > 0) {
         d = d.slice(0, before - 1) + d.slice(before);
         before -= 1;
       }
@@ -57,7 +77,7 @@ export function CardNumber({ num, devices, dup = false }: { num: string; devices
 export function CardList({ cards, devices, dups }: { cards: string[]; devices: DeviceRange[]; dups?: Set<string> }) {
   return (
     <Flex gap="1" wrap="wrap" style={{ maxWidth: '24rem' }}>
-      {cards.map((c) => <CardNumber key={c} num={c} devices={devices} dup={Boolean(dups && dups.has(c))} />)}
+      {cards.map((card) => <CardNumber key={card} num={card} devices={devices} dup={Boolean(dups && dups.has(card))} />)}
     </Flex>
   );
 }
@@ -98,7 +118,7 @@ export function CardsEditor({ cards, devices, onChange }: { cards: string[]; dev
       </Flex>
       <Flex gap="2" align="center">
         <TextField.Root inputMode="numeric" placeholder="Card number" maxLength={5} value={add}
-          onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addNow(); } }} />
+          onChange={(event) => setAdd(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addNow(); } }} />
         <Button variant="soft" color="gray" onClick={addNow} disabled={cards.length >= MAX_CARDS}>Add device</Button>
         <Text size="1" color="gray">{cards.length} of {MAX_CARDS}</Text>
         {error && <Text size="2" color="red">{error}</Text>}

@@ -9,16 +9,16 @@ import { gsShow, type GateSettings } from './useGateSettings.ts';
 const HINTS: [string, string][] = [['holiday', 'MM/DD'], ['Tone', '1-9'], ['EntryCodeRange', '0000'], ['outsideLineDigit', '0-9']];
 
 // Background of a setting: blue = unsaved edit, green = saved in the working copy but not sent to the gate.
-export function settingTone(gs: GateSettings, s: GateSettingRow) {
-  return s.key in gs.edits ? 'var(--blue-a4)' : s.value !== s.gate ? 'var(--green-a4)' : undefined;
+export function settingTone(settings: GateSettings, setting: GateSettingRow) {
+  return setting.key in settings.edits ? 'var(--blue-a4)' : setting.value !== setting.gate ? 'var(--green-a4)' : undefined;
 }
 
-export function settingTitle(gs: GateSettings, s: GateSettingRow) {
-  const edited = s.key in gs.edits;
-  const pending = s.value !== s.gate;
-  return `${s.name}\nGate (pulled): ${gsShow(s.gate)}${pending ? `\nWorking copy (saved, not sent): ${gsShow(s.value)}` : ''}`
-    + `${edited ? `\nYour change (unsaved): ${gsShow(gs.edits[s.key])}` : ''}`
-    + `\nnames.bin offset 0x${s.offset.toString(16)}${s.editable ? '' : ' (read-only)'}`;
+export function settingTitle(settings: GateSettings, setting: GateSettingRow) {
+  const edited = setting.key in settings.edits;
+  const pending = setting.value !== setting.gate;
+  return `${setting.name}\nGate (pulled): ${gsShow(setting.gate)}${pending ? `\nWorking copy (saved, not sent): ${gsShow(setting.value)}` : ''}`
+    + `${edited ? `\nYour change (unsaved): ${gsShow(settings.edits[setting.key])}` : ''}`
+    + `\nnames.bin offset 0x${setting.offset.toString(16)}${setting.editable ? '' : ' (read-only)'}`;
 }
 
 // Width in px that fits `max` of the widest character in the input's font as the browser draws it (its fonts, zoom and
@@ -49,40 +49,40 @@ function useFitWidth(input: RefObject<HTMLInputElement | null>, max: number | nu
 // One input for a gate setting, coloured and with hover text as above. Text settings (display messages) are wide
 // enough for the most characters the gate accepts (in a fixed-width font, like the gate's LCD) and stop at it.
 // invalid: a reason the value can't be saved (red, and shown first in the hover text).
-export function SettingInput({ gs, s, invalid }: { gs: GateSettings; s: GateSettingRow; invalid?: string }) {
-  const max = s.maxLength;
+export function SettingInput({ gs: settings, s: setting, invalid }: { gs: GateSettings; s: GateSettingRow; invalid?: string }) {
+  const max = setting.maxLength;
   const ref = useRef<HTMLInputElement>(null);
   const fit = useFitWidth(ref, max);
   const width = fit ? `${fit}px` : max ? `calc(${max}ch + var(--space-4))`
-    : s.editable ? '9ch' : `calc(${Math.max(9, gs.current(s).length)}ch + var(--space-4))`;
+    : setting.editable ? '9ch' : `calc(${Math.max(9, settings.current(setting).length)}ch + var(--space-4))`;
   return (
-    <TextField.Root ref={ref} size="1" value={gs.current(s)} readOnly={!s.editable}
-      title={invalid ? `${invalid}\n${settingTitle(gs, s)}` : settingTitle(gs, s)} color={invalid ? 'red' : undefined}
-      placeholder={HINTS.find(([k]) => s.key.includes(k))?.[1] || ''} className={max ? 'lcd-input' : undefined}
+    <TextField.Root ref={ref} size="1" value={settings.current(setting)} readOnly={!setting.editable}
+      title={invalid ? `${invalid}\n${settingTitle(settings, setting)}` : settingTitle(settings, setting)} color={invalid ? 'red' : undefined}
+      placeholder={HINTS.find(([k]) => setting.key.includes(k))?.[1] || ''} className={max ? 'lcd-input' : undefined}
       maxLength={max ?? undefined}
-      style={{ width, minWidth: width, flexShrink: 0, background: invalid ? 'var(--red-a5)' : settingTone(gs, s),
-        opacity: s.editable ? undefined : 0.7 }}
-      onChange={(e) => gs.edit(s, e.target.value)} />
+      style={{ width, minWidth: width, flexShrink: 0, background: invalid ? 'var(--red-a5)' : settingTone(settings, setting),
+        opacity: setting.editable ? undefined : 0.7 }}
+      onChange={(event) => settings.edit(setting, event.target.value)} />
   );
 }
 
 // Save / Discard / Reset to gate / Send to gate for the gate settings, the working-copy file links and the
 // result of the last action. blocked: why the edits can't be saved yet (Save is disabled).
-export function SettingsBar({ gs, gapi, onReload, onJobStarted, blocked }: {
+export function SettingsBar({ gs: settings, gapi, onReload, onJobStarted, blocked }: {
   gs: GateSettings; gapi: GateApi; onReload: () => Promise<void> | void; onJobStarted: () => void; blocked?: string;
 }) {
   const [result, setResult] = useState<{ title: string; lines: string[] } | null>(null);
   const [dialog, confirm] = useConfirm();
-  const n = Object.keys(gs.edits).length;
-  const loaded = Boolean(gs.reply);
+  const n = Object.keys(settings.edits).length;
+  const loaded = Boolean(settings.reply);
 
   const save = async () => {
     try {
-      const r = await gs.save();
+      const r = await settings.save();
       setResult({ title: `Saved to the working copy. Block(s) differing from the gate: ${r.changedBlocks.join(', ') || 'none'}`,
         lines: r.changed.map((c) => `${c.name}: "${c.from}" → "${c.to}"`) });
       await onReload();
-    } catch (e) { setResult({ title: 'Save failed', lines: [errorText(e)] }); }
+    } catch (err) { setResult({ title: 'Save failed', lines: [errorText(err)] }); }
   };
 
   const reset = async () => {
@@ -90,33 +90,33 @@ export function SettingsBar({ gs, gapi, onReload, onJobStarted, blocked }: {
       body: 'Throw away every change not sent to the gate (on every page), so the working copy matches what the gate holds?' })) return;
     try {
       await gapi('DELETE', '/working-copy');
-      gs.discard();
+      settings.discard();
       setResult({ title: 'Working copy reset to the gate', lines: [] });
-      await gs.load();
+      await settings.load();
       await onReload();
-    } catch (e) { setResult({ title: 'Reset failed', lines: [errorText(e)] }); }
+    } catch (err) { setResult({ title: 'Reset failed', lines: [errorText(err)] }); }
   };
 
   const send = async () => {
     let preview: SendPreview;
-    try { preview = await gapi<SendPreview>('GET', '/send'); } catch (e) { setResult({ title: 'Send not possible', lines: [errorText(e)] }); return; }
+    try { preview = await gapi<SendPreview>('GET', '/send'); } catch (err) { setResult({ title: 'Send not possible', lines: [errorText(err)] }); return; }
     const blocks = Object.entries(preview.changedBlocks).filter(([, b]) => b.length);
-    const lines: ReactNode[] = ['This changes the gate.', ...gs.changes, ...blocks.map(([f, b]) => `${f}: block(s) ${b.join(', ')}`),
+    const lines: ReactNode[] = ['This changes the gate.', ...settings.changes, ...blocks.map(([f, b]) => `${f}: block(s) ${b.join(', ')}`),
       `Resident / vendor counts (from names.bin): ${preview.residentCounts.join(', ')}`, 'A residents pull runs afterwards to check the gate.'];
     if (!await confirm({ title: 'Send the working copy to the gate?', action: 'Send to gate',
-      body: <Flex direction="column" gap="1">{lines.map((l, i) => <Text key={i}>{l}</Text>)}</Flex> })) return;
+      body: <Flex direction="column" gap="1">{lines.map((line, i) => <Text key={i}>{line}</Text>)}</Flex> })) return;
     try {
       await gapi('POST', '/send', { confirm: true });
       setResult({ title: 'Sending to the gate; progress is shown in the gate connection window', lines: [] });
       onJobStarted();
-    } catch (e) { setResult({ title: 'Send failed', lines: [errorText(e)] }); }
+    } catch (err) { setResult({ title: 'Send failed', lines: [errorText(err)] }); }
   };
 
-  const status = !loaded ? gs.error : [
+  const status = !loaded ? settings.error : [
     n ? `${n} unsaved change(s)` : 'No unsaved changes',
-    gs.pending.length ? `${gs.pending.length} setting(s) saved, not sent (block(s) ${gs.blocks.join(', ')})` : '',
-    `gate pulled ${new Date(gs.reply!.pulled).toLocaleString()}`,
-    gs.pending.length ? `working copy saved ${new Date(gs.reply!.saved).toLocaleString()}` : '',
+    settings.pending.length ? `${settings.pending.length} setting(s) saved, not sent (block(s) ${settings.blocks.join(', ')})` : '',
+    `gate pulled ${new Date(settings.reply!.pulled).toLocaleString()}`,
+    settings.pending.length ? `working copy saved ${new Date(settings.reply!.saved).toLocaleString()}` : '',
   ].filter(Boolean).join(' · ');
 
   return (
@@ -127,19 +127,19 @@ export function SettingsBar({ gs, gapi, onReload, onJobStarted, blocked }: {
       </Text>
       <Flex gap="2" wrap="wrap" align="center">
         <Button onClick={save} disabled={!loaded || !n || Boolean(blocked)} title={blocked}>Save to working copy</Button>
-        <Button variant="soft" color="gray" onClick={() => { gs.discard(); setResult(null); }} disabled={!loaded || !n}>Discard unsaved</Button>
-        <Button variant="soft" color="gray" onClick={reset} disabled={!loaded || (!gs.pending.length && !gs.blocks.length)}>Reset to gate</Button>
-        <Button variant="soft" onClick={send} disabled={!loaded || n > 0 || !gs.blocks.length || gs.conflicts.length > 0}
-          title={n ? 'Save or discard unsaved changes first' : gs.conflicts.length ? 'Decide the conflicts first' : 'Send the working copy to the gate'}>
+        <Button variant="soft" color="gray" onClick={() => { settings.discard(); setResult(null); }} disabled={!loaded || !n}>Discard unsaved</Button>
+        <Button variant="soft" color="gray" onClick={reset} disabled={!loaded || (!settings.pending.length && !settings.blocks.length)}>Reset to gate</Button>
+        <Button variant="soft" onClick={send} disabled={!loaded || n > 0 || !settings.blocks.length || settings.conflicts.length > 0}
+          title={n ? 'Save or discard unsaved changes first' : settings.conflicts.length ? 'Decide the conflicts first' : 'Send the working copy to the gate'}>
           Send to gate
         </Button>
       </Flex>
       <Text size="2" color="gray">{status}</Text>
-      <ConflictList conflicts={gs.conflicts} gapi={gapi} onDecided={async () => { await gs.load(); await onReload(); }} />
+      <ConflictList conflicts={settings.conflicts} gapi={gapi} onDecided={async () => { await settings.load(); await onReload(); }} />
       {result && (
         <Callout.Root color={result.title.includes('failed') || result.title.includes('not possible') ? 'red' : 'blue'}>
           <Callout.Text><strong>{result.title}</strong></Callout.Text>
-          {result.lines.length > 0 && <Box asChild><ul style={{ margin: 0 }}>{result.lines.map((l, i) => <li key={i}>{l}</li>)}</ul></Box>}
+          {result.lines.length > 0 && <Box asChild><ul style={{ margin: 0 }}>{result.lines.map((line, i) => <li key={i}>{line}</li>)}</ul></Box>}
         </Callout.Root>
       )}
     </Flex>

@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { Button, Flex, Grid, Heading, Select, Text, TextArea, TextField } from '@radix-ui/themes';
+import { Button, Flex, Grid, Heading, Text, TextArea, TextField } from '@radix-ui/themes';
 import type { DeviceRange, GateFeatures, ResidentRow } from '../../../src/types.ts';
 import { errorText, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { phoneFull, securityText } from '../format.ts';
-import { CardsEditor, Field, PhoneField } from './fields.tsx';
+import { CardsEditor, Choice, Field, PhoneField } from './fields.tsx';
 import { HelpTip } from '../HelpTip.tsx';
 
 const NOTE_MAX = 500; // src/notes.ts
@@ -27,7 +27,7 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
   onDone: () => Promise<void>;
   onCancel?: () => void;
 }) {
-  const [code, setCode] = useState(r ? r.directoryCode : emptyCodes.find((c) => !reservedCode(c)) || '');
+  const [code, setCode] = useState(r ? r.directoryCode : emptyCodes.find((emptyCode) => !reservedCode(emptyCode)) || '');
   const [name, setName] = useState(r ? r.name : '');
   const [phone, setPhone] = useState(r ? phoneFull(r) : '');
   const [entryCode, setEntryCode] = useState(r ? r.entryCode : '');
@@ -44,7 +44,7 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
   const run = async (busyText: string, fn: () => Promise<unknown>) => {
     setBusy(true);
     setInfo(busyText);
-    try { await fn(); await onDone(); } catch (e) { setInfo(errorText(e)); setBusy(false); }
+    try { await fn(); await onDone(); } catch (err) { setInfo(errorText(err)); setBusy(false); }
   };
 
   // The edit payload; the combined phone is split into area code (3 digits, or 1 + area code for long distance)
@@ -97,50 +97,40 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
   }
 
   return (
-    <Flex direction="column" gap="3" onClick={(e) => e.stopPropagation()}>
+    <Flex direction="column" gap="3" onClick={(event) => event.stopPropagation()}>
       {dialog}
       {!r && <Heading size="3">Add {noun}</Heading>}
       <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
         {!r && (
           <Field label="Directory code (vacant or new)" help="directoryCode">
             <TextField.Root inputMode="numeric" maxLength={dirDigits} placeholder={`e.g. ${'5'.repeat(dirDigits)}`} list="dk-empty-codes"
-              value={code} onChange={(e) => setCode(e.target.value)} />
+              value={code} onChange={(event) => setCode(event.target.value)} />
             <datalist id="dk-empty-codes">
-              {[...emptyCodes.filter((c) => !reservedCode(c)), ...emptyCodes.filter(reservedCode)].map((c) => <option key={c} value={c} />)}
+              {[...emptyCodes.filter((emptyCode) => !reservedCode(emptyCode)), ...emptyCodes.filter(reservedCode)].map((c) => <option key={c} value={c} />)}
             </datalist>
             {reservedCode(code) && (
               <Text size="1" color="amber">Codes {'0'.padStart(dirDigits, '0')} and {'1'.padStart(dirDigits, '0')} always get the maximum talk time; best kept for the office or an emergency number.</Text>
             )}
           </Field>
         )}
-        <Field label="Name"><TextField.Root maxLength={15} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Field label="Name"><TextField.Root maxLength={15} value={name} onChange={(event) => setName(event.target.value)} /></Field>
         {!vendor && <Field label="Phone (area + number)"><PhoneField value={phone} onChange={setPhone} /></Field>}
         <Field label="Entry code" help="entryCode">
-          <TextField.Root inputMode="numeric" maxLength={4} value={entryCode} onChange={(e) => setEntryCode(e.target.value)} />
+          <TextField.Root inputMode="numeric" maxLength={4} value={entryCode} onChange={(event) => setEntryCode(event.target.value)} />
         </Field>
         <Field label="Security level" help="securityLevel">
-          <Select.Root value={securityLevel} onValueChange={setSecurity}>
-            <Select.Trigger />
-            <Select.Content>
-              {Array.from({ length: 31 }, (_, i) => <Select.Item key={i} value={String(i)}>{securityText(i)}</Select.Item>)}
-            </Select.Content>
-          </Select.Root>
+          <Choice value={securityLevel} onChange={setSecurity} options={Array.from({ length: 31 }, (_, i) => [String(i), securityText(i)] as const)} />
         </Field>
         {!vendor && (
           <>
             {features.floors && (
               <Field label="Floor (blank = none)" help="floor">
-                <TextField.Root type="number" min={1} max={64} value={floor} onChange={(e) => setFloor(e.target.value)} />
+                <TextField.Root type="number" min={1} max={64} value={floor} onChange={(event) => setFloor(event.target.value)} />
               </Field>
             )}
             {features.elevators && (
               <Field label="Elevator reference" help="elevatorRef">
-                <Select.Root value={elevatorRef} onValueChange={setElevator}>
-                  <Select.Trigger />
-                  <Select.Content>
-                    {Array.from({ length: 8 }, (_, i) => <Select.Item key={i} value={String(i + 1)}>{i + 1}</Select.Item>)}
-                  </Select.Content>
-                </Select.Root>
+                <Choice value={elevatorRef} onChange={setElevator} options={Array.from({ length: 8 }, (_, i) => String(i + 1))} />
               </Field>
             )}
             <Text size="2" color="gray">
@@ -154,7 +144,7 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
       </Grid>
       <CardsEditor cards={cards} devices={devices} onChange={setCards} />
       <Field label="Notes" help="notes">
-        <TextArea maxLength={NOTE_MAX} rows={2} value={note} onChange={(e) => setNote(e.target.value)} style={{ maxWidth: 640 }} />
+        <TextArea maxLength={NOTE_MAX} rows={2} value={note} onChange={(event) => setNote(event.target.value)} style={{ maxWidth: 640 }} />
       </Field>
       <Flex gap="3" align="center" wrap="wrap">
         <Button onClick={save} disabled={busy}>{r ? 'Save to working copy' : `Create ${noun}`}</Button>

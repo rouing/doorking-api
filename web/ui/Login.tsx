@@ -3,7 +3,9 @@ import { Button, Callout, Card, Checkbox, Container, Flex, Heading, Link, Text, 
 import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser';
 import type { SsoProviderInfo } from '../../src/types.ts';
 import { api, errorText, lsGet, lsSet } from './api.ts';
-import { ForgotPassword, passkeyError, startSso } from './Account.tsx';
+import { passkeyError } from './account/Passkeys.tsx';
+import { ForgotPassword } from './account/SignInPages.tsx';
+import { startSso } from './account/SingleSignOn.tsx';
 
 // Sign in with a local account (gate admins create them), a passkey, or a single sign-on provider. "Remember user"
 // keeps only the username in this browser.
@@ -28,8 +30,8 @@ export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => voi
     setBusy(false);
   }
 
-  async function submit(e: FormEvent) {
-    e.preventDefault();
+  async function submit(event: FormEvent) {
+    event.preventDefault();
     setBusy(true);
     setError('');
     try {
@@ -55,7 +57,7 @@ export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => voi
             <Text color="gray">Sign in with the account a gate admin created for you. New here? Read the <Link href="/help" target="_blank" rel="noopener">user guide</Link>.</Text>
             <label>
               <Text size="2" weight="medium">Username</Text>
-              <TextField.Root value={user} onChange={(e) => setUser(e.target.value)} required autoComplete="username" />
+              <TextField.Root value={user} onChange={(event) => setUser(event.target.value)} required autoComplete="username" />
             </label>
             <Text as="label" size="2">
               <Flex gap="2" align="center">
@@ -64,18 +66,18 @@ export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => voi
             </Text>
             <label>
               <Text size="2" weight="medium">Password</Text>
-              <TextField.Root type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+              <TextField.Root type="password" value={password} onChange={(event) => setPassword(event.target.value)} required
                 autoComplete="current-password" />
             </label>
             <Button type="submit" loading={busy}>Sign in</Button>
             {browserSupportsWebAuthn() && <Button type="button" variant="soft" disabled={busy} onClick={withPasskey}>Sign in with a passkey</Button>}
-            {sso.map((p) => (
-              <Button key={p.id} type="button" variant="soft" disabled={busy}
-                onClick={() => { setError(''); startSso('/api/sso/start', { provider: p.id }).catch((e) => setError(errorText(e))); }}>
-                Sign in with {p.name}
+            {sso.map((provider) => (
+              <Button key={provider.id} type="button" variant="soft" disabled={busy}
+                onClick={() => { setError(''); startSso('/api/sso/start', { provider: provider.id }).catch((err) => setError(errorText(err))); }}>
+                Sign in with {provider.name}
               </Button>
             ))}
-            {emailEnabled && <Link href="#" size="2" onClick={(e) => { e.preventDefault(); setForgot(true); }}>Forgot your password?</Link>}
+            {emailEnabled && <Link href="#" size="2" onClick={(event) => { event.preventDefault(); setForgot(true); }}>Forgot your password?</Link>}
             {error && <Callout.Root color="red"><Callout.Text>{error}</Callout.Text></Callout.Root>}
           </Flex>
         </form>

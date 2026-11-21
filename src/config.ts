@@ -75,11 +75,10 @@ function section(name: Section, given: unknown, where: string): Record<string, u
     const key = `${name}.${k}`;
     if (!(k in def)) fail(`${where}: unknown setting "${key}"`);
     const range = RANGES[key];
-    if (range) {
-      if (!Number.isInteger(v) || (v as number) < range[0] || (v as number) > range[1]) {
-        fail(`${where}: "${key}" must be a whole number from ${range[0]} to ${range[1]}`);
-      }
-    } else if (typeof v !== 'string') fail(`${where}: "${key}" must be text (in quotes)`);
+    if (range && (!Number.isInteger(v) || (v as number) < range[0] || (v as number) > range[1])) {
+      fail(`${where}: "${key}" must be a whole number from ${range[0]} to ${range[1]}`);
+    }
+    if (!range && typeof v !== 'string') fail(`${where}: "${key}" must be text (in quotes)`);
     out[k] = v;
   }
   return out;
@@ -126,7 +125,7 @@ function ssoSection(given: unknown, where: string): { providers: SsoProvider[] }
       fail(`${where}: "${at}.issuer" must name your Entra tenant (https://login.microsoftonline.com/<tenant ID>/v2.0), not common, organizations or consumers`);
     }
     const domains = p.allowedDomains ?? [];
-    if (!Array.isArray(domains) || domains.some((d) => typeof d !== 'string' || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(d))) {
+    if (!Array.isArray(domains) || domains.some((domain) => typeof domain !== 'string' || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(domain))) {
       fail(`${where}: "${at}.allowedDomains" must be a list of domains such as ["example.com"]`);
     }
     const autoCreate = flag('autoCreate', false);
@@ -158,13 +157,14 @@ export function loadConfig({ file, env = process.env, args = process.argv.slice(
   const chosen = file || flag('--config') || env.DOORKING_CONFIG;
   const f = path.resolve(chosen || CONFIG_FILE);
   let raw: Record<string, unknown> = {};
+  if (!fs.existsSync(f) && chosen) fail(`Config file ${f} not found`);
   if (fs.existsSync(f)) {
-    try { raw = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { fail(`${f} is not valid JSON: ${(e as Error).message}`); }
+    try { raw = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (err) { fail(`${f} is not valid JSON: ${(err as Error).message}`); }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`${f} must hold a JSON object`);
     checkPrivate(f);
-  } else if (chosen) fail(`Config file ${f} not found`);
+  }
   for (const k of Object.keys(raw)) if (!(k in DEFAULTS)) fail(`${f}: unknown section "${k}"`);
-  const s = Object.fromEntries((Object.keys(DEFAULTS) as Section[]).map((k) => [k, k === 'sso' ? ssoSection(raw[k], f) : section(k, raw[k], f)])) as any;
+  const s = Object.fromEntries((Object.keys(DEFAULTS) as Section[]).map((k) => [k, k === 'sso' ? ssoSection(raw[k], f) : section(k, raw[k], f)])) as unknown as Omit<ServerConfig, 'file'>; // each section checked against DEFAULTS
   const dir = path.dirname(f);
   const number = (v: string, key: string) => { const n = Number(v); return Number.isInteger(n) ? n : fail(`${key} must be a whole number`); };
   if (env.PORT) s.server.port = number(env.PORT, 'PORT');
@@ -172,12 +172,13 @@ export function loadConfig({ file, env = process.env, args = process.argv.slice(
   if (env.DATABASE_URL) s.database.url = env.DATABASE_URL;
   if (env.DKS_URL) s.dks.url = env.DKS_URL;
   if (flag('--port')) s.server.port = number(flag('--port')!, '--port');
-  if (flag('--public-host') !== undefined) s.server.publicHost = flag('--public-host');
-  if (flag('--media')) s.paths.media = flag('--media');
-  if (flag('--logs')) s.paths.logs = flag('--logs');
-  for (const [name, key] of [['--site-name', 'siteName'], ['--memory', 'memorySize'], ['--area-codes', 'areaCodes'],
-    ['--anti-passback', 'antiPassBack'], ['--interface-1816', 'interface1816'], ['--model', 'modelNumber']]) {
-    if (flag(name)) s.gateDefaults[key] = flag(name);
+  if (flag('--public-host') !== undefined) s.server.publicHost = flag('--public-host')!;
+  if (flag('--media')) s.paths.media = flag('--media')!;
+  if (flag('--logs')) s.paths.logs = flag('--logs')!;
+  const gateFlags: [string, keyof ServerConfig['gateDefaults']][] = [['--site-name', 'siteName'], ['--memory', 'memorySize'],
+    ['--area-codes', 'areaCodes'], ['--anti-passback', 'antiPassBack'], ['--interface-1816', 'interface1816'], ['--model', 'modelNumber']];
+  for (const [name, key] of gateFlags) {
+    if (flag(name)) s.gateDefaults[key] = flag(name)!;
   }
   s.server.publicHost = String(s.server.publicHost).trim().toLowerCase();
   for (const k of ['media', 'logs', 'keyFile'] as const) s.paths[k] = path.resolve(dir, s.paths[k]);
@@ -211,12 +212,12 @@ export function databaseLogin(db: DatabaseConfig): { user: string; password: str
   return { user: decodeURIComponent(u.username), password: decodeURIComponent(u.password), name: decodeURIComponent(u.pathname.slice(1)) };
 }
 
-// The settings with passwords and URLs hidden, for --check-config and the debug log.
+// The settings with passwords and URLs hidden, for --check-config and the server log.
 export function maskedConfig(c: ServerConfig): ServerConfig {
   return {
     ...c,
     database: { ...c.database, password: c.database.password ? '***' : '', url: c.database.url ? c.database.url.replace(/:[^:@/]*@/, ':***@') : '' },
     email: { ...c.email, password: c.email.password ? '***' : '' },
-    sso: { providers: c.sso.providers.map((p) => ({ ...p, clientSecret: p.clientSecret ? '***' : '' })) },
+    sso: { providers: c.sso.providers.map((provider) => ({ ...provider, clientSecret: provider.clientSecret ? '***' : '' })) },
   };
 }

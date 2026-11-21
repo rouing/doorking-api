@@ -12,8 +12,8 @@ export function ConflictList({ conflicts, gapi, onDecided }: { conflicts: Confli
   const [error, setError] = useState('');
   if (!conflicts.length) return null;
   const decide = async (c: ConflictView, choice: 'mine' | 'gate') => {
-    try { await gapi('POST', '/working-copy/conflicts', { kind: c.kind, key: c.key, choice }); setError(''); await onDecided(); } catch (e) {
-      setError(errorText(e));
+    try { await gapi('POST', '/working-copy/conflicts', { kind: c.kind, key: c.key, choice }); setError(''); await onDecided(); } catch (err) {
+      setError(errorText(err));
     }
   };
   return (
@@ -23,11 +23,11 @@ export function ConflictList({ conflicts, gapi, onDecided }: { conflicts: Confli
         these were changed at the gate and differently here. Your change is kept until you choose.
       </Callout.Text>
       <Flex direction="column" gap="2" mt="2">
-        {conflicts.map((c) => (
-          <Flex key={`${c.kind}-${c.key}`} gap="3" align="center" wrap="wrap">
-            <Text size="2"><strong>{c.label}</strong>: at the gate {c.gate}; yours {c.mine}</Text>
-            {!readOnly && <Button size="1" variant="soft" onClick={() => decide(c, 'mine')}>Keep mine</Button>}
-            {!readOnly && <Button size="1" variant="soft" color="gray" onClick={() => decide(c, 'gate')}>Take the gate's</Button>}
+        {conflicts.map((conflict) => (
+          <Flex key={`${conflict.kind}-${conflict.key}`} gap="3" align="center" wrap="wrap">
+            <Text size="2"><strong>{conflict.label}</strong>: at the gate {conflict.gate}; yours {conflict.mine}</Text>
+            {!readOnly && <Button size="1" variant="soft" onClick={() => decide(conflict, 'mine')}>Keep mine</Button>}
+            {!readOnly && <Button size="1" variant="soft" color="gray" onClick={() => decide(conflict, 'gate')}>Take the gate's</Button>}
           </Flex>
         ))}
         {error && <Text size="2" color="red">{error}</Text>}
@@ -61,12 +61,12 @@ export function WorkingCopyBar({ cache, gapi, onReload, onJobStarted }: {
       await gapi('DELETE', '/working-copy');
       await onReload();
       setInfo('Working copy reset to the gate.');
-    } catch (e) { setInfo(errorText(e)); }
+    } catch (err) { setInfo(errorText(err)); }
   }
 
   async function send() {
     let preview: SendPreview;
-    try { preview = await gapi<SendPreview>('GET', '/send'); } catch (e) { setInfo(errorText(e)); return; }
+    try { preview = await gapi<SendPreview>('GET', '/send'); } catch (err) { setInfo(errorText(err)); return; }
     const blocks = Object.entries(preview.changedBlocks).filter(([, b]) => b.length);
     const ok = await confirm({ title: 'Send the working copy to the gate?', action: 'Send to gate',
       body: (
@@ -82,7 +82,7 @@ export function WorkingCopyBar({ cache, gapi, onReload, onJobStarted }: {
       await gapi('POST', '/send', { confirm: true });
       setInfo('Sending to the gate; see the progress window.');
       onJobStarted();
-    } catch (e) { setInfo(errorText(e)); }
+    } catch (err) { setInfo(errorText(err)); }
   }
 
   return (

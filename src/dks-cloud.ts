@@ -46,9 +46,9 @@ export class DksCloudClient {
       const result = await this.request(operation, params);
       if (!POLLED.has(operation)) this.log(`${operation}: ok after ${Date.now() - started} ms (${result.length} characters)`);
       return result;
-    } catch (e) {
-      this.log(`${operation}: failed after ${Date.now() - started} ms: ${(e as Error).message}`);
-      throw e;
+    } catch (err) {
+      this.log(`${operation}: failed after ${Date.now() - started} ms: ${(err as Error).message}`);
+      throw err;
     }
   }
 
@@ -74,12 +74,12 @@ export class DksCloudClient {
     const fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(xml);
     if (fault) throw new Error(`${operation} SOAP fault: ${unescapeXml(fault[1])}`);
     if (!res.ok) throw new Error(`${operation} HTTP ${res.status}`);
-    const m = new RegExp(`<${operation}Result>([\\s\\S]*?)</${operation}Result>`).exec(xml);
-    if (!m) {
+    const match = new RegExp(`<${operation}Result>([\\s\\S]*?)</${operation}Result>`).exec(xml);
+    if (!match) {
       if (new RegExp(`<${operation}Result\\s*/>`).test(xml)) return '';
       throw new Error(`${operation}: no result in response`);
     }
-    return unescapeXml(m[1]);
+    return unescapeXml(match[1]);
   }
 
   checkLogin(userId: Param, password: Param): Promise<string> {
@@ -142,7 +142,7 @@ export class DksCloudClient {
   async getDataFile(sessionId: Param, fileType: string): Promise<Buffer> {
     if (!DATA_FILES.includes(fileType)) throw new Error(`fileType must be one of ${DATA_FILES.join(', ')}`);
     const text = await this.call('GetDataFile', { SessionID: sessionId, fileType });
-    try { return decodeFileText(text); } catch (e) { throw new Error(`GetDataFile ${fileType}: ${(e as Error).message}`); }
+    try { return decodeFileText(text); } catch (err) { throw new Error(`GetDataFile ${fileType}: ${(err as Error).message}`); }
   }
 
   // Reads the current relay states straight from the gate (no session).

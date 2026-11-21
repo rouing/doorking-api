@@ -10,7 +10,7 @@ export function HelpTip({ of, text }: { of?: string; text?: string }) {
   return (
     <Tooltip content={<span style={{ display: 'block', maxWidth: 340, whiteSpace: 'normal' }}>{content}</span>}>
       <span className="help-tip" tabIndex={0} role="img" aria-label={content}
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+        onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
         <QuestionMarkCircledIcon />
       </span>
     </Tooltip>

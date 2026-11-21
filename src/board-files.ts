@@ -39,13 +39,13 @@ export const NAMES_DIR_DIGITS_OFFSET = 0x40;
 export const namesDirDigits = (buf: Buffer): number => ([1, 2, 3, 4].includes(buf[NAMES_DIR_DIGITS_OFFSET]) ? buf[NAMES_DIR_DIGITS_OFFSET] : 3);
 
 // Directory code of the entry at o, or null when o is not a directory entry.
-export function namesEntryCode(buf: Buffer, o: number): string | null {
-  if (o + NAMES_ENTRY_SIZE > buf.length) return null;
-  const m = /^ {0,3}(\d{1,4})$/.exec(buf.toString('latin1', o + 16, o + 20));
-  return m ? m[1] : null;
+export function namesEntryCode(buf: Buffer, offset: number): string | null {
+  if (offset + NAMES_ENTRY_SIZE > buf.length) return null;
+  const match = /^ {0,3}(\d{1,4})$/.exec(buf.toString('latin1', offset + 16, offset + 20));
+  return match ? match[1] : null;
 }
 
-export const isNamesEntryAt = (buf: Buffer, o: number): boolean => namesEntryCode(buf, o) !== null;
+export const isNamesEntryAt = (buf: Buffer, offset: number): boolean => namesEntryCode(buf, offset) !== null;
 
 // Layout of a names.bin: from where the directory starts, else (empty directory) from the file length.
 export function namesLayout(buf: Buffer): NamesLayout {
@@ -74,27 +74,30 @@ export function readPhoneFields(rec: Buffer, areaCodeMode = 255): PhoneFields {
 
 // Writes bytes 2-5 of the phone record at offset o. phone = up to 7 digits or null.
 export function writePhoneFields(
-  buf: Buffer, o: number,
+  buf: Buffer, offset: number,
   { areaCodeIndex, phone }: { areaCodeIndex?: number | null; phone?: string | number | null },
   areaCodeMode = 255,
 ): void {
   if (areaCodeMode === 10) {
     if (areaCodeIndex != null && !(areaCodeIndex >= 0 && areaCodeIndex <= 9)) throw new Error(`Area-code index ${areaCodeIndex} does not fit 10-area-code mode`);
     const hex = (areaCodeIndex == null ? 'f' : String(areaCodeIndex)) + (phone == null ? 'fffffff' : String(phone).padStart(7, '0'));
-    Buffer.from(hex, 'hex').copy(buf, o + 2);
+    Buffer.from(hex, 'hex').copy(buf, offset + 2);
     return;
   }
-  buf[o + 2] = areaCodeIndex == null ? 0xff : areaCodeIndex;
-  if (phone == null) buf.fill(0xff, o + 3, o + 6);
-  else buf.writeUIntBE(Number(phone), o + 3, 3);
+  buf[offset + 2] = areaCodeIndex == null ? 0xff : areaCodeIndex;
+  if (phone == null) {
+    buf.fill(0xff, offset + 3, offset + 6);
+    return;
+  }
+  buf.writeUIntBE(Number(phone), offset + 3, 3);
 }
 // Packed decimal digits; 0xF nibbles are padding.
 export function bcd(bytes: Iterable<number>): string | null {
   let s = '';
   for (const b of bytes) {
     for (const n of [b >> 4, b & 0x0f]) {
+      if (n > 9 && n !== 0x0f) return null;
       if (n <= 9) s += n;
-      else if (n !== 0x0f) return null;
     }
   }
   return s;
@@ -108,12 +111,12 @@ export const allFF = (bytes: Uint8Array): boolean => bytes.every((b) => b === 0x
 // isolated before/after gate pulls (hide lives in names.bin, not here).
 export function parsePhoneBin(buf: Buffer, areaCodeMode = 255): PhoneEntry[] {
   const entries: PhoneEntry[] = [];
-  for (let o = 0; o + 10 <= buf.length; o += 10) {
-    const rec = buf.subarray(o, o + 10);
+  for (let offset = 0; offset + 10 <= buf.length; offset += 10) {
+    const rec = buf.subarray(offset, offset + 10);
     if (allFF(rec.subarray(0, 2))) continue;
     const { areaCodeIndex, phone } = readPhoneFields(rec, areaCodeMode);
     entries.push({
-      recordOffset: o,
+      recordOffset: offset,
       directoryCode: bcd(rec.subarray(0, 2)),
       areaCodeIndex,
       phone: phone && `${phone.slice(0, 3)}-${phone.slice(3)}`,
@@ -129,8 +132,8 @@ export function parsePhoneBin(buf: Buffer, areaCodeMode = 255): PhoneEntry[] {
 // cards.bin: 4 bytes per card: card number (16-bit big-endian), directory code (BCD, F-padded).
 export function parseCardsBin(buf: Buffer): CardEntry[] {
   const cards: CardEntry[] = [];
-  for (let o = 0; o + 4 <= buf.length; o += 4) {
-    const rec = buf.subarray(o, o + 4);
+  for (let offset = 0; offset + 4 <= buf.length; offset += 4) {
+    const rec = buf.subarray(offset, offset + 4);
     if (allFF(rec)) continue;
     cards.push({
       cardNumber: String(rec.readUInt16BE(0)).padStart(5, '0'),
@@ -147,21 +150,21 @@ export function parseNamesBin(buf: Buffer) {
   const layout = namesLayout(buf);
   const areaCodes: (string | null)[] = [];
   for (let i = 0; i < layout.areaCodeSlots; i++) {
-    const o = layout.areaCodeOffset + i * 2;
-    if (o + 2 > buf.length) break;
-    const rec = buf.subarray(o, o + 2);
+    const offset = layout.areaCodeOffset + i * 2;
+    if (offset + 2 > buf.length) break;
+    const rec = buf.subarray(offset, offset + 2);
     areaCodes.push(allFF(rec) ? null : bcd(rec));
   }
   while (areaCodes.length && areaCodes[areaCodes.length - 1] === null) areaCodes.pop();
   const directory: DirectoryEntry[] = [];
-  for (let o = layout.directoryOffset; o + NAMES_ENTRY_SIZE <= buf.length; o += NAMES_ENTRY_SIZE) {
-    const code = namesEntryCode(buf, o);
+  for (let offset = layout.directoryOffset; offset + NAMES_ENTRY_SIZE <= buf.length; offset += NAMES_ENTRY_SIZE) {
+    const code = namesEntryCode(buf, offset);
     if (!code) break;
-    const flag = buf[o + 15];
+    const flag = buf[offset + 15];
     directory.push({
-      entryOffset: o,
+      entryOffset: offset,
       directoryCode: code,
-      name: buf.toString('latin1', o, o + 15).trimEnd(),
+      name: buf.toString('latin1', offset, offset + 15).trimEnd(),
       flag,
       // flag byte 15 bitfield: bit 0 = vendor, bit 5 = shown in directory (clear = hidden).
       vendor: Boolean(flag & 0x01),
@@ -176,8 +179,8 @@ export function parseNamesBin(buf: Buffer) {
 // Code type 0x01 = keypad code (BCD), 0x02 = card number (16-bit big-endian).
 export function parseRcvOut(buf: Buffer): RcvRecord[] {
   const records: RcvRecord[] = [];
-  for (let o = 0; o + 10 <= buf.length; o += 10) {
-    const rec = buf.subarray(o, o + 10);
+  for (let offset = 0; offset + 10 <= buf.length; offset += 10) {
+    const rec = buf.subarray(offset, offset + 10);
     const codeType = rec[4];
     const codeBytes = rec.subarray(5, 7);
     let code: string | null = null;
@@ -224,7 +227,6 @@ const DEFAULT_RELAY_NAMES = ['Relay 0', 'Entry', 'Exit'];
 export function decodeRcvEvent(t: { raw: string }, relayNames: string[] = DEFAULT_RELAY_NAMES): RcvEvent {
   const rec = Buffer.from(t.raw, 'hex');
   const type = rec[4];
-  const card = String(rec.readUInt16BE(5)).padStart(5, '0');
   const isApb = type >= 0x22 && type <= 0x25;
   const [r0, r1, r2] = relayNames;
   const ev: RcvEvent = { eventType: '', number: '', name: '', access: '', relay: '', apb: '', lookup: null };
@@ -238,40 +240,34 @@ export function decodeRcvEvent(t: { raw: string }, relayNames: string[] = DEFAUL
         : combos[b7]?.join(', ') || '';
   }
 
+  return Object.assign(ev, eventDetails(rec, ev.access));
+}
+
+// The columns that depend on the record type (byte 4); access: the column as decoded from byte 2.
+function eventDetails(rec: Buffer, access: string): Partial<RcvEvent> {
+  const type = rec[4];
+  const card = String(rec.readUInt16BE(5)).padStart(5, '0');
   if (type === 0 || type === 1) {
-    ev.eventType = type === 0 ? 'Directory' : 'Entry Code';
-    ev.number = bcd(rec.subarray(5, 7));
-    ev.lookup = type === 0 ? 'directory' : 'entryCode';
-    if (ev.access === 'Deny') ev.relay = '';
-  } else if (type === 2) {
-    const n = rec.readUInt16BE(5);
-    if (n >= 0xff80) {
-      Object.assign(ev, { number: card, access: '', name: n === 0xff80 ? 'Gate Close Edge Activated' : `Board status ${n - 0xff80}` });
-    } else {
-      Object.assign(ev, { eventType: 'Cards', number: card, lookup: 'card' });
-    }
-  } else if (type === 4) {
-    ev.eventType = 'Open Request';
-  } else if (SYSTEM_EVENTS[type]) {
-    Object.assign(ev, { eventType: 'System', access: SYSTEM_EVENTS[type] });
-  } else if (type === 0x0b || type === 0x0c) {
-    Object.assign(ev, { eventType: type === 0x0b ? 'Hold Begin' : 'Hold End', access: type === 0x0b ? 'Hold' : 'Rels' });
-  } else if (LINK_EVENTS[type]) {
-    Object.assign(ev, { eventType: LINK_EVENTS[type][0], name: LINK_EVENTS[type][1], access: '' });
-  } else if (type === 0x20) {
-    Object.assign(ev, { eventType: 'APB Re-Sync', name: APB_RESYNC[rec[7]] || '', access: '', relay: '' });
-    if (rec[7] === 2 || rec[7] === 3) ev.number = card;
-  } else if (type === 0x21) {
-    Object.assign(ev, { eventType: 'APB Counter', name: APB_COUNTER[rec[7]] || '', number: card, access: '', relay: '' });
-  } else if (isApb) {
-    Object.assign(ev, {
-      eventType: type <= 0x23 ? 'APB Okay' : 'APB Violation',
-      apb: type % 2 === 0 ? 'IN' : 'OUT', number: card, lookup: 'card',
-    });
-  } else {
-    Object.assign(ev, { eventType: `Type 0x${type.toString(16).padStart(2, '0')}`, access: '', relay: '' });
+    return { eventType: type === 0 ? 'Directory' : 'Entry Code', number: bcd(rec.subarray(5, 7)), lookup: type === 0 ? 'directory' : 'entryCode',
+      ...(access === 'Deny' && { relay: '' }) };
   }
-  return ev;
+  if (type === 2) {
+    const n = rec.readUInt16BE(5);
+    if (n >= 0xff80) return { number: card, access: '', name: n === 0xff80 ? 'Gate Close Edge Activated' : `Board status ${n - 0xff80}` };
+    return { eventType: 'Cards', number: card, lookup: 'card' };
+  }
+  if (type === 4) return { eventType: 'Open Request' };
+  if (SYSTEM_EVENTS[type]) return { eventType: 'System', access: SYSTEM_EVENTS[type] };
+  if (type === 0x0b || type === 0x0c) return { eventType: type === 0x0b ? 'Hold Begin' : 'Hold End', access: type === 0x0b ? 'Hold' : 'Rels' };
+  if (LINK_EVENTS[type]) return { eventType: LINK_EVENTS[type][0], name: LINK_EVENTS[type][1], access: '' };
+  if (type === 0x20) {
+    return { eventType: 'APB Re-Sync', name: APB_RESYNC[rec[7]] || '', access: '', relay: '', ...((rec[7] === 2 || rec[7] === 3) && { number: card }) };
+  }
+  if (type === 0x21) return { eventType: 'APB Counter', name: APB_COUNTER[rec[7]] || '', number: card, access: '', relay: '' };
+  if (type >= 0x22 && type <= 0x25) {
+    return { eventType: type <= 0x23 ? 'APB Okay' : 'APB Violation', apb: type % 2 === 0 ? 'IN' : 'OUT', number: card, lookup: 'card' };
+  }
+  return { eventType: `Type 0x${type.toString(16).padStart(2, '0')}`, access: '', relay: '' };
 }
 
 // rcv_out.bin is a 10,000-record ring buffer followed by a 6-byte trailer:
@@ -289,7 +285,7 @@ export function orderRcvOut(buf: Buffer, pulledAt: Date = new Date()): RcvRecord
         : records.slice(0, next);
     }
   }
-  const dayKey = (t: RcvRecord) => t.month * 100 + t.day;
+  const dayKey = (record: RcvRecord) => record.month * 100 + record.day;
   let year = pulledAt.getFullYear();
   let newer = (pulledAt.getMonth() + 1) * 100 + pulledAt.getDate();
   for (let i = ordered.length - 1; i >= 0; i--) {
@@ -366,10 +362,7 @@ export function residentRows(bufs: { names?: Buffer | null; phone?: Buffer | nul
   }
   const unassignedCards: string[] = [];
   if (cards) {
-    for (const c of parseCardsBin(cards.data)) {
-      if (c.directoryCode) row(c.directoryCode).cards.push(c.cardNumber);
-      else unassignedCards.push(c.cardNumber);
-    }
+    for (const c of parseCardsBin(cards.data)) (c.directoryCode ? row(c.directoryCode).cards : unassignedCards).push(c.cardNumber);
   }
   const list = [...rows.values()].sort((a, b) => a.directoryCode.localeCompare(b.directoryCode));
   return { rows: list, unassignedCards };

@@ -4,9 +4,12 @@ import assert from 'node:assert';
 import cp from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import * as dk from '../index.ts';
+import { Application } from '../web/app.ts';
+import { withContext } from '@logtape/logtape';
 import { helpPage, inline, markdownToHtml } from '../src/markdown.ts';
 import { loadData } from '../web/data.ts';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
@@ -1210,7 +1213,8 @@ test('step-up: passkey confirmation of the signed-in user only; sessions remembe
 
 test('docs/openapi.json matches the routes an API key can use (paths, methods, roles) and its references resolve', () => {
   const root = path.join(import.meta.dirname, '..');
-  const src = fs.readFileSync(path.join(root, 'web', 'server.ts'), 'utf8');
+  const routesDir = path.join(root, 'web', 'routes');
+  const src = fs.readdirSync(routesDir).map((f) => fs.readFileSync(path.join(routesDir, f), 'utf8')).join('\n');
   const spec = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'openapi.json'), 'utf8'));
   const fromRoutes = new Map();
   for (const m of src.matchAll(/(webOnly\()?route\('(GET|POST|PUT|DELETE)', (`[^`]*`|'[^']*'|G), '([a-z-]+)'/g)) {
@@ -1818,15 +1822,156 @@ test('cameras: finishClip turns a recorded fragmented MP4 into .mp4 (hvc1) and a
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('log: one line per entry in the file, moved aside when too big', withStore(async (store, dir) => {
-  const file = path.join(dir, 'logs', 'debug.log');
-  const log = dk.createDebugLog(file, { maxBytes: 200, toConsole: false });
-  log.write('camera', 'first\nsecond');
-  assert.match(fs.readFileSync(file, 'utf8'), /^\d{4}-\d\d-\d\dT[\d:.]+Z \[camera\] first \| second\n$/);
-  log.write('server', 'x'.repeat(250));
-  log.write('server', 'after');
-  assert.ok(fs.existsSync(`${file}.1`));
-  assert.match(fs.readFileSync(file, 'utf8'), /^\S+ \[server\] after\n$/);
+test('a lost idle database connection is logged, not thrown (it would end the server)', withStore(async (store, dir) => {
+  await dk.configureLogging({ logsDir: dir, toConsole: false });
+  try { store.pool.emit('error', new Error('terminating connection due to administrator command')); } finally { await dk.closeLogging(); }
+  const [line] = fs.readFileSync(path.join(dir, dk.LOG_FILE), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepStrictEqual([line.level, line.message], ['error', 'Database connection lost: terminating connection due to administrator command']);
+  assert.strictEqual((await dk.one(store, 'SELECT 1 AS x')).x, 1);
+}));
+
+test('log: JSON lines with the context, secrets replaced, rotated when too big', withDir(async (dir) => {
+  await dk.configureLogging({ logsDir: dir, toConsole: false, maxBytes: 600, maxFiles: 2 });
+  try {
+    await withContext({ requestId: 'r1', user: 'alice' }, async () => {
+      dk.logger('gate').error`Gate ${'5550100'}: failed for bob@example.com with dkg_0123456789ab_${'x'.repeat(30)} via rtsp://admin:pw@10.0.0.1/a`;
+      dk.logger('api').info('Key created', { password: 'hunter2', masterCode: '1234', name: 'script' });
+    });
+  } finally { await dk.closeLogging(); }
+  const lines = fs.readFileSync(path.join(dir, dk.LOG_FILE), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepStrictEqual(lines.map(({ time, ...rest }) => rest), [
+    { level: 'error', category: 'doorking.gate', requestId: 'r1', user: 'alice',
+      message: 'Gate 5550100: failed for REDACTED@EMAIL.ADDRESS with dkg_[API key] via rtsp://[login]@10.0.0.1/a' },
+    { level: 'info', category: 'doorking.api', requestId: 'r1', user: 'alice', message: 'Key created', name: 'script' },
+  ]);
+  await dk.configureLogging({ logsDir: dir, toConsole: false, maxBytes: 600, maxFiles: 2 });
+  try { for (let i = 0; i < 20; i++) dk.logger('server').info`${'x'.repeat(100)}`; } finally { await dk.closeLogging(); }
+  assert.ok(fs.existsSync(path.join(dir, `${dk.LOG_FILE}.1`)), 'rotated');
+  assert.ok(!fs.existsSync(path.join(dir, `${dk.LOG_FILE}.3`)), 'at most maxFiles old files');
+}));
+
+// --- The server (web/app.ts), started for real on a test schema and a spare port ---
+
+const freePort = () => new Promise((resolve) => {
+  const probe = http.createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+});
+
+// Runs fn({ app, store, call, dks }) with a started Application. dks.hold(ms): DKS Cloud requests (a local fake)
+// answer 500 after ms. call(method, path, { body, cookie, key }) -> { status, body, cookie }.
+function withServer(fn) {
+  return withDir(async (dir) => {
+    const dks = { holdMs: 0 };
+    const fake = http.createServer((req, res) => { setTimeout(() => { res.statusCode = 500; res.end('fake DKS Cloud: no'); }, dks.holdMs); });
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+    const port = await freePort();
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ server: { port }, paths: { media: path.join(dir, 'media'), logs: path.join(dir, 'logs') },
+      dks: { url: `http://127.0.0.1:${fake.address().port}/DkWebService.asmx` } }), { mode: 0o600 });
+    const config = dk.loadConfig({ file, env: {}, args: [] });
+    const storeOptions = { connection: TEST_DB, keyFile: path.join(dir, 'key'), schema: `t_${crypto.randomBytes(6).toString('hex')}` };
+    const app = new Application({ config, cameras: dk.createCameraRunner({}), mailer: null, storeOptions });
+    const logLines = console.log;
+    console.log = () => {}; // the start-up lines
+    try { await app.start(); } finally { console.log = logLines; }
+    const store = await dk.openStore(storeOptions); // the app's own store (stores are shared per options)
+    const call = async (method, route, { body, cookie, key } = {}) => {
+      const r = await fetch(`http://127.0.0.1:${port}${route}`, { method, headers: { ...(body !== undefined && { 'Content-Type': 'application/json' }),
+        ...(cookie && { Cookie: cookie }), ...(key && { Authorization: `Bearer ${key}` }) }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await r.text();
+      return { status: r.status, body: text.startsWith('{') ? JSON.parse(text) : text, cookie: (r.headers.get('set-cookie') || '').split(';')[0] };
+    };
+    try {
+      await fn({ app, store, call, dks: { hold: (ms) => { dks.holdMs = ms; } } });
+    } finally {
+      await app.stop('test');
+      const again = await dk.openStore(storeOptions);
+      await dropStore(again);
+      await new Promise((r) => fake.close(r));
+    }
+  });
+}
+
+async function signIn(call, username, password) {
+  const r = await call('POST', '/api/session', { body: { user: username, password } });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  return r.cookie;
+}
+
+test('server: sign-in, wrong passwords limited, and pages need a session', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  assert.strictEqual((await call('GET', '/api/me')).status, 401);
+  const cookie = await signIn(call, 'alice', PW);
+  assert.strictEqual((await call('GET', '/api/me', { cookie })).body.username, 'alice');
+  for (let i = 0; i < 5; i++) assert.strictEqual((await call('POST', '/api/session', { body: { user: 'alice', password: 'wrong password here' } })).status, 401);
+  const blocked = await call('POST', '/api/session', { body: { user: 'alice', password: PW } });
+  assert.strictEqual(blocked.status, 429);
+  assert.strictEqual((await call('GET', '/api/gates/%E0', { cookie })).status, 404);
+}));
+
+test('server: an API key reaches only its own gate, never the web-only routes; sends need a passkey confirmation', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  await dk.registerGate(store, { ...GATE_A, phoneNumber: '5550111' }, 'alice');
+  const { key } = await dk.createApiKey(store, GATE_A.phoneNumber, { name: 'script', role: 'admin' }, 'alice');
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/prefs`, { key })).status, 200);
+  assert.strictEqual((await call('GET', '/api/gates/5550111/prefs', { key })).status, 403);
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/users`, { key })).status, 403);
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/prefs`, { key: 'dkg_000000000000_nope' })).status, 401);
+  const cookie = await signIn(call, 'alice', PW);
+  const send = await call('POST', `/api/gates/${GATE_A.phoneNumber}/send`, { cookie, body: {} });
+  assert.strictEqual(send.status, 403);
+  assert.strictEqual(send.body.stepUp, true);
+}));
+
+test('server: stop() refuses new requests and waits for the running gate connection', withServer(async ({ app, store, call, dks }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  const cookie = await signIn(call, 'alice', PW);
+  dks.hold(800);
+  assert.strictEqual((await call('POST', `/api/gates/${GATE_A.phoneNumber}/pull`, { cookie, body: { what: 'transactions' } })).status, 202);
+  const started = Date.now();
+  const stopping = app.stop('test');
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/job`, { cookie }).catch(() => ({ status: 503 }))).status, 503);
+  await stopping;
+  assert.ok(Date.now() - started >= 500, 'stop() returned before the gate connection ended');
+}));
+
+test('server: one gate connection at a time per DKS account; gates on other accounts run at the same time', withServer(async ({ store, call, dks }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  await dk.registerGate(store, { ...GATE_A, phoneNumber: '5550111', dksUser: 'otheruser' }, 'alice');
+  await dk.registerGate(store, { ...GATE_A, phoneNumber: '5550122', dksUser: 'DKSUser' }, 'alice'); // the same login as GATE_A
+  const cookie = await signIn(call, 'alice', PW);
+  dks.hold(800);
+  const pull = (phone) => call('POST', `/api/gates/${phone}/pull`, { cookie, body: { what: 'transactions' } });
+  assert.strictEqual((await pull(GATE_A.phoneNumber)).status, 202);
+  assert.strictEqual((await pull('5550111')).status, 202, 'another DKS account is not blocked');
+  const same = await pull('5550122');
+  assert.strictEqual(same.status, 409);
+  assert.match(same.body.error, /same DKS login/);
+  assert.strictEqual((await call('GET', '/api/gates/5550122/job', { cookie })).body.busyElsewhere, true);
+  assert.strictEqual((await call('GET', '/api/gates/5550122/relays', { cookie })).status, 409, 'relay calls wait for the account too');
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/job`, { cookie })).body.state, 'running');
+  assert.strictEqual((await call('GET', '/api/gates/5550111/job', { cookie })).body.state, 'running');
+}));
+
+test('server: scheduled transfers queue per DKS account', withServer(async ({ store, call, dks }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  const gates = [GATE_A.phoneNumber, '5550111', '5550122'];
+  await dk.registerGate(store, GATE_A, 'alice');
+  await dk.registerGate(store, { ...GATE_A, phoneNumber: gates[1], dksUser: 'otheruser' }, 'alice');
+  await dk.registerGate(store, { ...GATE_A, phoneNumber: gates[2] }, 'alice'); // the same login as GATE_A
+  const keys = [];
+  for (const phone of gates) keys.push((await dk.createApiKey(store, phone, { name: 'script', role: 'admin' }, 'alice')).key);
+  dks.hold(800);
+  for (const [i, phone] of gates.entries()) {
+    const sch = await dk.saveSchedule(store, phone, 'alice', { days: [0], time: '03:00', actions: ['transactions'], enabled: false });
+    assert.strictEqual((await call('POST', `/api/gates/${phone}/schedules/${sch.id}/run`, { key: keys[i], body: {} })).status, 202);
+  }
+  await new Promise((r) => setTimeout(r, 200));
+  const states = [];
+  for (const [i, phone] of gates.entries()) states.push((await call('GET', `/api/gates/${phone}/job`, { key: keys[i] })).body.state);
+  assert.deepStrictEqual(states, ['running', 'running', 'idle'], 'the third waits for the first (same DKS login)');
 }));
 
 // --- Single sign-on (OpenID Connect) ---

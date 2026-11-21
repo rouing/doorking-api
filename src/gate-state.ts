@@ -15,7 +15,7 @@
 // first overwritten, and the copy must come out byte for byte the same as the pull. That shows the files can be
 // built from these values. Rebuild check: the files are built from blank ones with the values alone (and the master
 // code from managed_gates) and must match the pull too, so no byte is known only from a stored file.
-import { namesDirDigits, namesLayout, parseNamesBin, residentRows } from './board-files.ts';
+import { bcd, namesDirDigits, namesLayout, parseNamesBin, residentRows } from './board-files.ts';
 import { all, one, run, transaction, type Store, phoneDigits } from './db.ts';
 import { GATE_SETTING_FIELDS, WRITTEN_FIELDS, decodeGateSettings } from './gate-settings.ts';
 import {
@@ -23,6 +23,7 @@ import {
   type BoardBuffers, type EditOptions,
 } from './residents-edit.ts';
 import type { ResidentRow } from './types.ts';
+import { httpError } from './errors.ts';
 
 const CARD_SIZE = 4;
 const SCRAMBLE = 0xaa;
@@ -34,7 +35,6 @@ const PHONE_RECORD = 10;
 const DIR_DIGITS = 0x40;
 // names.bin ranges DoorKing32 fills with spaces on every send ([from, to)); the other undecoded bytes it fills with 0xFF.
 const BLANK_SPACES: [number, number][] = [[0x100, 0x114], [0x144, 0x145], [0x179, 0x18d]];
-const fail = (msg: string, status: number) => Object.assign(new Error(msg), { status });
 
 // rawCode: the record's bytes 2-3 as hex when they aren't a directory code (e.g. a mass-enabled AB record).
 export interface GateCard { slot: number; cardNumber: string; directoryCode: string | null; rawCode?: string }
@@ -70,25 +70,25 @@ function coveredHeader(names: Buffer): Uint8Array {
   const { areaCodeOffset, areaCodeSlots, directoryOffset } = namesLayout(names);
   const covered = new Uint8Array(Math.min(directoryOffset, names.length));
   const mark = (from: number, to: number) => covered.fill(1, from, Math.min(to, covered.length));
-  for (const f of GATE_SETTING_FIELDS) mark(f.offset, f.offset + f.type.size);
+  for (const field of GATE_SETTING_FIELDS) mark(field.offset, field.offset + field.type.size);
   mark(DIR_DIGITS, DIR_DIGITS + 1);
   mark(MIDDLE_POINTER, MIDDLE_POINTER + 3);
   mark(areaCodeOffset, areaCodeOffset + areaCodeSlots * 2);
   return covered;
 }
-const blankByte = (o: number): number => (BLANK_SPACES.some(([a, b]) => o >= a && o < b) ? 0x20 : 0xff);
+const blankByte = (offset: number): number => (BLANK_SPACES.some(([a, b]) => offset >= a && offset < b) ? 0x20 : 0xff);
 
 // The undecoded, non-blank names.bin bytes before the directory, as runs: { "037": "01" }.
 export function extraBytes(names: Buffer): Record<string, string> {
   const covered = coveredHeader(names);
-  const odd = (o: number) => !covered[o] && names[o] !== blankByte(o);
+  const odd = (offset: number) => !covered[offset] && names[offset] !== blankByte(offset);
   const out: Record<string, string> = {};
-  for (let o = 0; o < covered.length; o++) {
-    if (!odd(o)) continue;
-    let end = o + 1;
+  for (let offset = 0; offset < covered.length; offset++) {
+    if (!odd(offset)) continue;
+    let end = offset + 1;
     while (end < covered.length && odd(end)) end++;
-    out[o.toString(16).padStart(3, '0')] = names.toString('hex', o, end);
-    o = end;
+    out[offset.toString(16).padStart(3, '0')] = names.toString('hex', offset, end);
+    offset = end;
   }
   return out;
 }
@@ -105,19 +105,11 @@ function writeExtra(names: Buffer, extra: Record<string, string> = {}): void {
 // Every used card slot: card number (5 digits) and directory code ('' = none, null = not a directory code).
 export function cardSlots(cards: Buffer): GateCard[] {
   const out: GateCard[] = [];
-  for (let o = 0; o + CARD_SIZE <= cards.length; o += CARD_SIZE) {
-    const rec = cards.subarray(o, o + CARD_SIZE);
+  for (let offset = 0; offset + CARD_SIZE <= cards.length; offset += CARD_SIZE) {
+    const rec = cards.subarray(offset, offset + CARD_SIZE);
     if (rec.every((b) => b === 0xff)) continue;
-    let code: string | null = '';
-    for (const b of rec.subarray(2, 4)) {
-      for (const n of [b >> 4, b & 0x0f]) {
-        if (n <= 9) code += n;
-        else if (n !== 0x0f) code = null;
-        if (code === null) break;
-      }
-      if (code === null) break;
-    }
-    out.push({ slot: o / CARD_SIZE, cardNumber: String(rec.readUInt16BE(0)).padStart(5, '0'), directoryCode: code,
+    const code = bcd(rec.subarray(2, 4));
+    out.push({ slot: offset / CARD_SIZE, cardNumber: String(rec.readUInt16BE(0)).padStart(5, '0'), directoryCode: code,
       ...(code === null && { rawCode: rec.toString('hex', 2, 4) }) });
   }
   return out;
@@ -126,10 +118,10 @@ export function cardSlots(cards: Buffer): GateCard[] {
 // cards.bin built from its slots (all other slots free).
 export function buildCards(size: number, slots: GateCard[]): Buffer {
   const out = Buffer.alloc(size, 0xff);
-  for (const c of slots) {
-    out.writeUInt16BE(Number(c.cardNumber), c.slot * CARD_SIZE);
-    if (c.directoryCode !== null) encodeBcd(c.directoryCode, 2).copy(out, c.slot * CARD_SIZE + 2);
-    else if (c.rawCode) Buffer.from(c.rawCode, 'hex').copy(out, c.slot * CARD_SIZE + 2);
+  for (const card of slots) {
+    out.writeUInt16BE(Number(card.cardNumber), card.slot * CARD_SIZE);
+    const code = card.directoryCode !== null ? encodeBcd(card.directoryCode, 2) : card.rawCode ? Buffer.from(card.rawCode, 'hex') : null;
+    if (code) code.copy(out, card.slot * CARD_SIZE + 2);
   }
   return out;
 }
@@ -141,21 +133,21 @@ export function decodeWorking(bufs: BoardBuffers): WorkingState {
     areaCodeMode: namesLayout(bufs.names).areaCodeMode,
     areaCodes: parseNamesBin(bufs.names).areaCodes,
     middlePointer: bufs.names.toString('hex', MIDDLE_POINTER, MIDDLE_POINTER + 3),
-    residents: residentRows(bufs).rows.map((r) => ({
-      ...Object.fromEntries(VALUE_FIELDS.map((k) => [k, r[k]])), directoryCode: r.directoryCode,
-      entryOffset: r.entryOffset, recordOffset: r.recordOffset,
+    residents: residentRows(bufs).rows.map((resident) => ({
+      ...Object.fromEntries(VALUE_FIELDS.map((k) => [k, resident[k]])), directoryCode: resident.directoryCode,
+      entryOffset: resident.entryOffset, recordOffset: resident.recordOffset,
     }) as ResidentValues),
     cards: cardSlots(bufs.cards),
-    settings: Object.fromEntries(decodeGateSettings(bufs.names).filter((s) => !s.secret).map((s) => [s.key, s.value])),
+    settings: Object.fromEntries(decodeGateSettings(bufs.names).filter((setting) => !setting.secret).map((setting) => [setting.key, setting.value])),
     extra: extraBytes(bufs.names),
     sizes: { names: bufs.names.length, phone: bufs.phone.length, cards: bufs.cards.length },
   };
 }
 
 const differs = (a: ResidentValues, b: ResidentValues): boolean => VALUE_FIELDS.some((k) => String(a[k]) !== String(b[k]));
-const editOf = (r: ResidentValues) => ({
-  directoryCode: r.directoryCode, name: r.name, vendor: r.type === 'Vendor', hidden: r.hidden, areaCode: r.areaCode,
-  phone: r.phone, entryCode: r.entryCode, securityLevel: r.securityLevel, elevatorRef: r.elevatorRef, floor: r.floor,
+const editOf = (resident: ResidentValues) => ({
+  directoryCode: resident.directoryCode, name: resident.name, vendor: resident.type === 'Vendor', hidden: resident.hidden, areaCode: resident.areaCode,
+  phone: resident.phone, entryCode: resident.entryCode, securityLevel: resident.securityLevel, elevatorRef: resident.elevatorRef, floor: resident.floor,
 });
 
 // The area-code table written in names.bin's current layout.
@@ -171,25 +163,25 @@ function writeAreaCodes(names: Buffer, codes: (string | null)[]): void {
 function orderDirectory(names: Buffer, residents: ResidentValues[]): void {
   const dir = parseNamesBin(names).directory;
   const byCode = new Map(dir.map((e) => [e.directoryCode, names.subarray(e.entryOffset, e.entryOffset + DIR_ENTRY_SIZE)]));
-  const order = residents.filter((r) => r.entryOffset != null).sort((a, b) => a.entryOffset! - b.entryOffset!).map((r) => r.directoryCode);
+  const order = residents.filter((resident) => resident.entryOffset != null).sort((a, b) => a.entryOffset! - b.entryOffset!).map((resident) => resident.directoryCode);
   if (byCode.size !== dir.length || order.length !== dir.length || order.some((c) => !byCode.has(c))) return;
   const entries = order.map((c) => Buffer.from(byCode.get(c)!));
   const start = namesLayout(names).directoryOffset;
-  entries.forEach((e, i) => e.copy(names, start + i * DIR_ENTRY_SIZE));
+  entries.forEach((entry, i) => entry.copy(names, start + i * DIR_ENTRY_SIZE));
 }
 
 // Puts the phone records in the working copy's order (by each row's recordOffset), in the record slots the edits
 // left in use, as orderDirectory does for the directory. They stay as they are unless every record has a distinct
 // stored position.
 function orderPhone(bufs: BoardBuffers, residents: ResidentValues[]): Buffer {
-  const want = new Map(residents.filter((r) => r.recordOffset != null).map((r) => [r.directoryCode, r.recordOffset!]));
-  const rows = residentRows(bufs).rows.filter((r) => r.recordOffset !== null);
-  if (rows.length !== want.size || rows.some((r) => !want.has(r.directoryCode)) || new Set(want.values()).size !== want.size) return bufs.phone;
-  const slots = rows.map((r) => r.recordOffset!).sort((a, b) => a - b);
+  const want = new Map(residents.filter((resident) => resident.recordOffset != null).map((resident) => [resident.directoryCode, resident.recordOffset!]));
+  const rows = residentRows(bufs).rows.filter((resident) => resident.recordOffset !== null);
+  if (rows.length !== want.size || rows.some((resident) => !want.has(resident.directoryCode)) || new Set(want.values()).size !== want.size) return bufs.phone;
+  const slots = rows.map((resident) => resident.recordOffset!).sort((a, b) => a - b);
   const order = [...rows].sort((a, b) => want.get(a.directoryCode)! - want.get(b.directoryCode)!);
-  if (order.every((r, i) => r.recordOffset === slots[i])) return bufs.phone;
+  if (order.every((resident, i) => resident.recordOffset === slots[i])) return bufs.phone;
   const out = Buffer.from(bufs.phone);
-  order.forEach((r, i) => bufs.phone.copy(out, slots[i], r.recordOffset!, r.recordOffset! + PHONE_RECORD));
+  order.forEach((resident, i) => bufs.phone.copy(out, slots[i], resident.recordOffset!, resident.recordOffset! + PHONE_RECORD));
   return out;
 }
 
@@ -200,63 +192,63 @@ function orderPhone(bufs: BoardBuffers, residents: ResidentValues[]): Buffer {
 // (when the layout changed, with every resident's area code pointed at the new table); settings that differ (read-only ones too, from their stored values); the extra bytes;
 // the directory order and middle-entry pointer; the master code, when given (from managed_gates; it isn't in the
 // values tables; else the base's bytes stay); the phone records' positions; cards.bin from its slots.
-export function buildFiles(base: BoardBuffers, w: WorkingState, { masterCode, ...opts }: BuildOptions = {}): BoardBuffers {
+export function buildFiles(base: BoardBuffers, working: WorkingState, { masterCode, ...opts }: BuildOptions = {}): BoardBuffers {
   let bufs: BoardBuffers = { names: Buffer.from(base.names), phone: Buffer.from(base.phone), cards: Buffer.from(base.cards) };
-  if (w.dirDigits !== namesDirDigits(bufs.names)) bufs = convertDirDigits(bufs, w.dirDigits);
-  const sameLayout = w.areaCodeMode === namesLayout(bufs.names).areaCodeMode;
-  if (sameLayout) writeAreaCodes(bufs.names, w.areaCodes);
-  const want = new Set(w.residents.map((r) => r.directoryCode));
-  const have = new Map(residentRows(bufs).rows.map((r) => [r.directoryCode, r as ResidentValues]));
+  if (working.dirDigits !== namesDirDigits(bufs.names)) bufs = convertDirDigits(bufs, working.dirDigits);
+  const sameLayout = working.areaCodeMode === namesLayout(bufs.names).areaCodeMode;
+  if (sameLayout) writeAreaCodes(bufs.names, working.areaCodes);
+  const want = new Set(working.residents.map((resident) => resident.directoryCode));
+  const have = new Map(residentRows(bufs).rows.map((resident) => [resident.directoryCode, resident as ResidentValues]));
   for (const code of have.keys()) if (!want.has(code)) bufs = removeDirectoryCode(bufs, code);
-  for (const r of w.residents) {
-    const was = have.get(r.directoryCode);
-    const o = was && (was.entryCode || '') !== (r.entryCode || '') ? findPhoneRecord(bufs.phone, r.directoryCode) : -1;
-    if (o >= 0) bufs.phone.fill(0xff, o + 6, o + 8);
+  for (const resident of working.residents) {
+    const was = have.get(resident.directoryCode);
+    const offset = was && (was.entryCode || '') !== (resident.entryCode || '') ? findPhoneRecord(bufs.phone, resident.directoryCode) : -1;
+    if (offset >= 0) bufs.phone.fill(0xff, offset + 6, offset + 8);
   }
-  for (const r of w.residents) {
-    if (have.has(r.directoryCode) && differs(have.get(r.directoryCode)!, r)) bufs = applyResidentEdit(bufs, editOf(r), opts);
+  for (const resident of working.residents) {
+    if (have.has(resident.directoryCode) && differs(have.get(resident.directoryCode)!, resident)) bufs = applyResidentEdit(bufs, editOf(resident), opts);
   }
-  for (const r of w.residents) {
-    if (!have.has(r.directoryCode)) bufs = String(r.name ?? '').trim() ? addEntry(bufs, editOf(r), opts) : addStoredEntry(bufs, editOf(r), opts);
+  for (const resident of working.residents) {
+    if (!have.has(resident.directoryCode)) bufs = String(resident.name ?? '').trim() ? addEntry(bufs, editOf(resident), opts) : addStoredEntry(bufs, editOf(resident), opts);
   }
   if (!sameLayout) {
-    bufs = convertAreaCodeMode(bufs, w.areaCodeMode);
-    writeAreaCodes(bufs.names, w.areaCodes);
+    bufs = convertAreaCodeMode(bufs, working.areaCodeMode);
+    writeAreaCodes(bufs.names, working.areaCodes);
     // The residents' area codes were written against the old table; point each at its place in the new one.
-    for (const r of w.residents) if (r.areaCode) bufs = applyResidentEdit(bufs, { directoryCode: r.directoryCode, areaCode: r.areaCode }, opts);
+    for (const r of working.residents) if (r.areaCode) bufs = applyResidentEdit(bufs, { directoryCode: r.directoryCode, areaCode: r.areaCode }, opts);
   }
   const names = Buffer.from(bufs.names);
-  for (const f of written) {
-    const v = w.settings[f.key];
-    if (v === undefined || v === f.type.decode(names.subarray(f.offset, f.offset + f.type.size))) continue;
-    try { f.type.encode!(v).copy(names, f.offset); } catch (e) { throw fail(`${f.name}: ${(e as Error).message}`, 400); }
+  for (const field of written) {
+    const v = working.settings[field.key];
+    if (v === undefined || v === field.type.decode(names.subarray(field.offset, field.offset + field.type.size))) continue;
+    try { field.type.encode!(v).copy(names, field.offset); } catch (err) { throw httpError(`${field.name}: ${(err as Error).message}`, 400); }
   }
-  writeExtra(names, w.extra);
-  orderDirectory(names, w.residents);
-  Buffer.from(w.middlePointer, 'hex').copy(names, MIDDLE_POINTER);
+  writeExtra(names, working.extra);
+  orderDirectory(names, working.residents);
+  Buffer.from(working.middlePointer, 'hex').copy(names, MIDDLE_POINTER);
   if (masterCode) writeMasterCode(names, masterCode);
-  return { names, phone: orderPhone({ names, phone: bufs.phone, cards: bufs.cards }, w.residents), cards: buildCards(base.cards.length, w.cards) };
+  return { names, phone: orderPhone({ names, phone: bufs.phone, cards: bufs.cards }, working.residents), cards: buildCards(base.cards.length, working.cards) };
 }
 
 // The master code at 0x00-0x03, one digit per byte (0 = 0x00, as DoorKing32's send builders write it and its receive
 // check expects).
 function writeMasterCode(names: Buffer, code: string): void {
-  if (!/^\d{4}$/.test(code)) throw fail('The master code must be 4 digits', 400);
+  if (!/^\d{4}$/.test(code)) throw httpError('The master code must be 4 digits', 400);
   Buffer.from([...code].map(Number)).copy(names, 0);
 }
 
 // The board files from the values alone, with no stored file: blank files of the recorded sizes (0xFF, spaces where
 // DoorKing32 writes them, the directory code digits), then buildFiles (with the master code, when given) and every
 // written setting. Throws without sizes.
-export function buildFromValues(w: WorkingState, opts: BuildOptions = {}): BoardBuffers {
-  if (!w.sizes) throw new Error('The file sizes are not recorded for this working copy');
-  const names = Buffer.alloc(w.sizes.names, 0xff);
+export function buildFromValues(working: WorkingState, opts: BuildOptions = {}): BoardBuffers {
+  if (!working.sizes) throw new Error('The file sizes are not recorded for this working copy');
+  const names = Buffer.alloc(working.sizes.names, 0xff);
   for (const [a, b] of BLANK_SPACES) names.fill(0x20, a, b);
-  names[DIR_DIGITS] = w.dirDigits;
-  const out = buildFiles({ names, phone: Buffer.alloc(w.sizes.phone, 0xff), cards: Buffer.alloc(w.sizes.cards, 0xff) }, w, opts);
-  for (const f of written) {
-    if (w.settings[f.key] === undefined) continue;
-    try { f.type.encode!(w.settings[f.key]).copy(out.names, f.offset); } catch (e) { throw new Error(`${f.name}: ${(e as Error).message}`); }
+  names[DIR_DIGITS] = working.dirDigits;
+  const out = buildFiles({ names, phone: Buffer.alloc(working.sizes.phone, 0xff), cards: Buffer.alloc(working.sizes.cards, 0xff) }, working, opts);
+  for (const field of written) {
+    if (working.settings[field.key] === undefined) continue;
+    try { field.type.encode!(working.settings[field.key]).copy(out.names, field.offset); } catch (err) { throw new Error(`${field.name}: ${(err as Error).message}`); }
   }
   return out;
 }
@@ -265,8 +257,8 @@ export function buildFromValues(w: WorkingState, opts: BuildOptions = {}): Board
 // known only from the stored files. masterCode: the gate's (else bytes 0-3 differ).
 export function checkRebuild(files: BoardBuffers, opts: BuildOptions = {}): RebuildCheck {
   let out: BoardBuffers;
-  try { out = buildFromValues(decodeWorking(files), opts); } catch (e) {
-    return { ok: false, problems: [{ file: 'all', bytes: 0, offsets: [], error: (e as Error).message }] };
+  try { out = buildFromValues(decodeWorking(files), opts); } catch (err) {
+    return { ok: false, problems: [{ file: 'all', bytes: 0, offsets: [], error: (err as Error).message }] };
   }
   const problems = labelled(files, out);
   return { ok: !problems.length, problems };
@@ -277,7 +269,7 @@ function labelled(a: BoardBuffers, b: BoardBuffers): RoundTripProblem[] {
   return fileDifferences(a, b).map((p) => {
     const covering = p.file === 'names.bin'
       ? [...new Set(differences(a.names, b.names).offsets
-        .flatMap((o) => GATE_SETTING_FIELDS.filter((f) => o >= f.offset && o < f.offset + f.type.size).map((f) => f.key)))]
+        .flatMap((offset) => GATE_SETTING_FIELDS.filter((field) => offset >= field.offset && offset < field.offset + field.type.size).map((field) => field.key)))]
       : [];
     return { ...p, ...(covering.length && { settings: covering.slice(0, MAX_OFFSETS) }) };
   });
@@ -308,12 +300,12 @@ function diffMap<T>(before: Map<string, T>, after: Map<string, T>, eq: (a: unkno
   }
   return Object.keys(out).length ? out : undefined;
 }
-const residentMap = (w: WorkingState) => new Map(w.residents.map((r) => [r.directoryCode, r]));
+const residentMap = (working: WorkingState) => new Map(working.residents.map((resident) => [resident.directoryCode, resident]));
 // Cards by card number (a repeated number: "<number>#<slot>"), not by slot: tidyBoard re-packs the slots after every
 // edit, so a slot holds different cards over time. Two cards are the same item whatever slot they sit in.
-function cardMap(w: WorkingState): Map<string, GateCard> {
+function cardMap(working: WorkingState): Map<string, GateCard> {
   const m = new Map<string, GateCard>();
-  for (const c of w.cards) m.set(m.has(c.cardNumber) ? `${c.cardNumber}#${c.slot}` : c.cardNumber, c);
+  for (const card of working.cards) m.set(m.has(card.cardNumber) ? `${card.cardNumber}#${card.slot}` : card.cardNumber, card);
   return m;
 }
 const sameCard = (a: unknown, b: unknown) => same(a && { ...(a as GateCard), slot: undefined }, b && { ...(b as GateCard), slot: undefined });
@@ -324,18 +316,20 @@ function placeCards(cards: GateCard[], sizeBytes: number): GateCard[] {
   const used = new Set<number>();
   const out: GateCard[] = [];
   const moved: GateCard[] = [];
-  for (const c of cards) {
-    if (c.slot >= 0 && c.slot < total && !used.has(c.slot)) { used.add(c.slot); out.push(c); } else moved.push(c);
+  for (const card of cards) {
+    const fits = card.slot >= 0 && card.slot < total && !used.has(card.slot);
+    if (fits) used.add(card.slot);
+    (fits ? out : moved).push(card);
   }
   let free = 0;
-  for (const c of moved) {
+  for (const card of moved) {
     while (used.has(free)) free++;
     used.add(free);
-    out.push({ ...c, slot: free });
+    out.push({ ...card, slot: free });
   }
   return out.sort((a, b) => a.slot - b.slot);
 }
-const settingMap = (w: WorkingState) => new Map(Object.entries(w.settings));
+const settingMap = (working: WorkingState) => new Map(Object.entries(working.settings));
 
 // What changed from one working copy to another, or null when nothing did.
 export function diffStates(before: WorkingState, after: WorkingState): ValuesPatch | null {
@@ -359,7 +353,11 @@ export function undoValues(current: WorkingState, patch: ValuesPatch): WorkingSt
     const out = new Map(now);
     for (const [k, [before, after]] of Object.entries(changes)) {
       if (!eq(now.get(k) ?? null, after)) return null;
-      if (before === null) out.delete(k); else out.set(k, before);
+      if (before === null) {
+        out.delete(k);
+        continue;
+      }
+      out.set(k, before);
     }
     return out;
   };
@@ -397,19 +395,19 @@ export function sameItem(kind: ConflictKind, a: unknown, b: unknown): boolean {
   if (kind === 'card') return sameCard(a, b);
   return kind === 'resident' ? same(residentKey(a as ResidentValues | null), residentKey(b as ResidentValues | null)) : same(a, b);
 }
-const EDITABLE = new Set(GATE_SETTING_FIELDS.filter((f) => f.editable && !f.secret).map((f) => f.key));
+const EDITABLE = new Set(GATE_SETTING_FIELDS.filter((field) => field.editable && !field.secret).map((field) => field.key));
 
 // The items of a working copy by kind and key (only editable settings: read-only ones always come from the gate).
-export function itemsOf(w: WorkingState): Record<ConflictKind, Map<string, ResidentValues | GateCard | string>> {
+export function itemsOf(working: WorkingState): Record<ConflictKind, Map<string, ResidentValues | GateCard | string>> {
   return {
-    resident: residentMap(w),
-    card: cardMap(w),
-    setting: new Map(Object.entries(w.settings).filter(([k]) => EDITABLE.has(k))),
+    resident: residentMap(working),
+    card: cardMap(working),
+    setting: new Map(Object.entries(working.settings).filter(([k]) => EDITABLE.has(k))),
   };
 }
 function itemLabel(kind: ConflictKind, key: string, ...values: unknown[]): string {
   if (kind === 'card') return `Card ${key.split('#')[0]}`;
-  if (kind === 'setting') return GATE_SETTING_FIELDS.find((f) => f.key === key)?.name || key;
+  if (kind === 'setting') return GATE_SETTING_FIELDS.find((field) => field.key === key)?.name || key;
   const name = values.map((v) => (v as ResidentValues | null)?.name).find((n) => n && n.trim());
   return `Directory code ${key}${name ? ` (${name})` : ''}`;
 }
@@ -435,7 +433,7 @@ export function rebasePlan(oldBase: WorkingState, mine: WorkingState, gate: Work
       if (sameItem(kind, vm, vg)) continue;
       const label = itemLabel(kind, key, vm, vg, vb);
       plan.changes.push({ kind, key, label, value: vm });
-      const conflicted = !sameItem(kind, vg, vb) || earlier.some((c) => c.kind === kind && c.key === key);
+      const conflicted = !sameItem(kind, vg, vb) || earlier.some((conflict) => conflict.kind === kind && conflict.key === key);
       if (conflicted) plan.conflicts.push({ kind, key, label });
     }
   }
@@ -444,18 +442,18 @@ export function rebasePlan(oldBase: WorkingState, mine: WorkingState, gate: Work
 
 // A working copy with one item set (null removes it). A resident keeps the gate's place in the files when it has one;
 // a card keeps its slot when free, else takes the first free one.
-export function withItem(w: WorkingState, kind: ConflictKind, key: string, value: ResidentValues | GateCard | string | null): WorkingState {
-  if (kind === 'setting') return { ...w, settings: { ...w.settings, [key]: value as string } };
+export function withItem(working: WorkingState, kind: ConflictKind, key: string, value: ResidentValues | GateCard | string | null): WorkingState {
+  if (kind === 'setting') return { ...working, settings: { ...working.settings, [key]: value as string } };
   if (kind === 'card') {
-    const cards = cardMap(w);
+    const cards = cardMap(working);
     cards.delete(key);
-    return { ...w, cards: placeCards(value ? [...cards.values(), value as GateCard] : [...cards.values()], w.sizes?.cards ?? Infinity) };
+    return { ...working, cards: placeCards(value ? [...cards.values(), value as GateCard] : [...cards.values()], working.sizes?.cards ?? Infinity) };
   }
-  const at = w.residents.find((r) => r.directoryCode === key);
-  const rest = w.residents.filter((r) => r.directoryCode !== key);
-  if (!value) return { ...w, residents: rest };
+  const at = working.residents.find((resident) => resident.directoryCode === key);
+  const rest = working.residents.filter((resident) => resident.directoryCode !== key);
+  if (!value) return { ...working, residents: rest };
   const r = { ...(value as ResidentValues), entryOffset: at?.entryOffset, recordOffset: at?.recordOffset };
-  return { ...w, residents: [...rest, r].sort((a, c) => a.directoryCode.localeCompare(c.directoryCode)) };
+  return { ...working, residents: [...rest, r].sort((a, resident) => a.directoryCode.localeCompare(resident.directoryCode)) };
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -498,11 +496,11 @@ export function checkRoundTrip(pulled: BoardBuffers, opts: EditOptions = {}): Ro
   const phone = Buffer.from(pulled.phone);
 
   // Settings the files are built from (read-only ones too), then the extra bytes.
-  const values = new Map(decodeGateSettings(pulled.names).map((s) => [s.key, s.value]));
-  for (const f of written) names.fill(SCRAMBLE, f.offset, f.offset + f.type.size);
-  for (const f of written) {
-    try { f.type.encode!(values.get(f.key)!).copy(names, f.offset); } catch (e) {
-      problems.push({ file: 'names.bin', bytes: f.type.size, offsets: [hex(f.offset)], settings: [f.key], error: (e as Error).message });
+  const values = new Map(decodeGateSettings(pulled.names).map((setting) => [setting.key, setting.value]));
+  for (const field of written) names.fill(SCRAMBLE, field.offset, field.offset + field.type.size);
+  for (const field of written) {
+    try { field.type.encode!(values.get(field.key)!).copy(names, field.offset); } catch (err) {
+      problems.push({ file: 'names.bin', bytes: field.type.size, offsets: [hex(field.offset)], settings: [field.key], error: (err as Error).message });
     }
   }
   const extra = extraBytes(pulled.names);
@@ -511,16 +509,16 @@ export function checkRoundTrip(pulled: BoardBuffers, opts: EditOptions = {}): Ro
 
   // Residents: name and flag bits (vendor, shown) in names.bin, bytes 2-9 of each phone record.
   const { rows } = residentRows(pulled);
-  const placed = rows.filter((r) => r.entryOffset !== null && r.recordOffset !== null);
-  for (const r of placed) {
-    names.fill(SCRAMBLE, r.entryOffset!, r.entryOffset! + 15);
-    names[r.entryOffset! + 15] ^= 0x21;
-    phone.fill(SCRAMBLE, r.recordOffset! + 2, r.recordOffset! + 10);
+  const placed = rows.filter((resident) => resident.entryOffset !== null && resident.recordOffset !== null);
+  for (const resident of placed) {
+    names.fill(SCRAMBLE, resident.entryOffset!, resident.entryOffset! + 15);
+    names[resident.entryOffset! + 15] ^= 0x21;
+    phone.fill(SCRAMBLE, resident.recordOffset! + 2, resident.recordOffset! + 10);
   }
   let bufs: BoardBuffers = { names, phone, cards: pulled.cards };
-  for (const r of placed) {
-    try { bufs = applyResidentEdit(bufs, editOf(r), opts); } catch (e) {
-      problems.push({ file: 'phone.bin', bytes: 0, offsets: [hex(r.recordOffset!)], error: `Directory code ${r.directoryCode}: ${(e as Error).message}` });
+  for (const resident of placed) {
+    try { bufs = applyResidentEdit(bufs, editOf(resident), opts); } catch (err) {
+      problems.push({ file: 'phone.bin', bytes: 0, offsets: [hex(resident.recordOffset!)], error: `Directory code ${resident.directoryCode}: ${(err as Error).message}` });
     }
   }
 
@@ -534,7 +532,7 @@ export function checkRoundTrip(pulled: BoardBuffers, opts: EditOptions = {}): Ro
   // Cards: built from their slots.
   const out: BoardBuffers = { names: bufs.names, phone: bufs.phone, cards: buildCards(pulled.cards.length, cardSlots(pulled.cards)) };
   problems.push(...labelled(pulled, out));
-  const carried = GATE_SETTING_FIELDS.filter((f) => !written.includes(f)).map((f) => f.key);
+  const carried = GATE_SETTING_FIELDS.filter((field) => !written.includes(field)).map((field) => field.key);
   return { ok: !problems.length, problems, carried };
 }
 
@@ -555,7 +553,7 @@ export async function checkPull(store: Store, phone: unknown, pulled: BoardBuffe
   return { ...check, rebuild };
 }
 
-const FIELD_BY_KEY = new Map(GATE_SETTING_FIELDS.map((f) => [f.key, f]));
+const FIELD_BY_KEY = new Map(GATE_SETTING_FIELDS.map((field) => [field.key, field]));
 const settingRows = (settings: Record<string, string>): string => JSON.stringify(Object.entries(settings)
   .map(([key, value]) => ({ key, grp: FIELD_BY_KEY.get(key)!.group, name: FIELD_BY_KEY.get(key)!.name, value })));
 
@@ -567,37 +565,37 @@ export async function addSettingRows(store: Store, phone: unknown, settings: Rec
 }
 
 // Saves the working copy's values (replacing the gate's earlier rows). baseOk: the base passed the round-trip check.
-export async function saveWorkingState(store: Store, phone: unknown, w: WorkingState, { baseOk, savedAt = new Date() }:
+export async function saveWorkingState(store: Store, phone: unknown, working: WorkingState, { baseOk, savedAt = new Date() }:
   { baseOk: boolean; savedAt?: Date }): Promise<void> {
-  const p = phoneDigits(phone);
+  const phoneKey = phoneDigits(phone);
   await transaction(store, async (tx) => {
-    for (const t of ['gate_residents', 'gate_cards', 'gate_settings']) await run(tx, `DELETE FROM ${t} WHERE phone = $1`, [p]);
+    for (const t of ['gate_residents', 'gate_cards', 'gate_settings']) await run(tx, `DELETE FROM ${t} WHERE phone = $1`, [phoneKey]);
     await run(tx, `INSERT INTO gate_residents (phone, seq, directory_code, type, name, hidden, area_code, phone_number, entry_code,
       security_level, floor, elevator_ref, entry_offset, record_offset)
       SELECT $1, seq, directory_code, type, name, hidden, area_code, phone_number, entry_code, security_level, floor, elevator_ref,
         entry_offset, record_offset
       FROM jsonb_to_recordset($2) AS t(seq int, directory_code text, type text, name text, hidden boolean, area_code text,
         phone_number text, entry_code text, security_level int, floor int, elevator_ref int, entry_offset int, record_offset int)`,
-    [p, JSON.stringify(w.residents.map((r, i) => ({
-      seq: i + 1, directory_code: r.directoryCode, type: r.type, name: r.name, hidden: r.hidden, area_code: r.areaCode,
-      phone_number: r.phone, entry_code: r.entryCode, security_level: r.securityLevel === '' ? null : r.securityLevel,
-      floor: r.floor === '' ? null : r.floor, elevator_ref: r.elevatorRef === '' ? null : r.elevatorRef,
-      entry_offset: r.entryOffset ?? null, record_offset: r.recordOffset ?? null,
+    [phoneKey, JSON.stringify(working.residents.map((resident, i) => ({
+      seq: i + 1, directory_code: resident.directoryCode, type: resident.type, name: resident.name, hidden: resident.hidden, area_code: resident.areaCode,
+      phone_number: resident.phone, entry_code: resident.entryCode, security_level: resident.securityLevel === '' ? null : resident.securityLevel,
+      floor: resident.floor === '' ? null : resident.floor, elevator_ref: resident.elevatorRef === '' ? null : resident.elevatorRef,
+      entry_offset: resident.entryOffset ?? null, record_offset: resident.recordOffset ?? null,
     })))]);
     await run(tx, `INSERT INTO gate_cards (phone, slot, card_number, directory_code, raw_code)
       SELECT $1, slot, card_number, directory_code, raw_code
       FROM jsonb_to_recordset($2) AS t(slot int, card_number text, directory_code text, raw_code text)`,
-    [p, JSON.stringify(w.cards.map((c) => ({ slot: c.slot, card_number: c.cardNumber, directory_code: c.directoryCode, raw_code: c.rawCode ?? null })))]);
+    [phoneKey, JSON.stringify(working.cards.map((card) => ({ slot: card.slot, card_number: card.cardNumber, directory_code: card.directoryCode, raw_code: card.rawCode ?? null })))]);
     await run(tx, `INSERT INTO gate_settings (phone, key, grp, name, value)
       SELECT $1, key, grp, name, value FROM jsonb_to_recordset($2) AS t(key text, grp text, name text, value text)`,
-    [p, settingRows(w.settings)]);
+    [phoneKey, settingRows(working.settings)]);
     await run(tx, `INSERT INTO gate_working (phone, dir_digits, area_code_mode, area_codes, middle_pointer, base_ok, saved_at, extra, sizes)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       ON CONFLICT (phone) DO UPDATE SET dir_digits = excluded.dir_digits, area_code_mode = excluded.area_code_mode,
       area_codes = excluded.area_codes, middle_pointer = excluded.middle_pointer, base_ok = excluded.base_ok, saved_at = excluded.saved_at,
       extra = excluded.extra, sizes = excluded.sizes`,
-    [p, w.dirDigits, w.areaCodeMode, JSON.stringify(w.areaCodes), w.middlePointer, baseOk, savedAt.toISOString(),
-      w.extra ? JSON.stringify(w.extra) : null, w.sizes ? JSON.stringify(w.sizes) : null]);
+    [phoneKey, working.dirDigits, working.areaCodeMode, JSON.stringify(working.areaCodes), working.middlePointer, baseOk, savedAt.toISOString(),
+      working.extra ? JSON.stringify(working.extra) : null, working.sizes ? JSON.stringify(working.sizes) : null]);
   });
 }
 
@@ -610,16 +608,16 @@ interface ResidentDbRow {
 // The working copy's values, { baseOk, savedAt, conflicts }, or null when there is none.
 export async function loadWorkingState(store: Store, phone: unknown):
   Promise<{ state: WorkingState; baseOk: boolean; savedAt: Date; conflicts: Conflict[] } | null> {
-  const p = phoneDigits(phone);
+  const phoneKey = phoneDigits(phone);
   const head = await one<{ dir_digits: number; area_code_mode: number; area_codes: (string | null)[]; middle_pointer: string;
     base_ok: boolean; saved_at: string; extra: Record<string, string> | null; sizes: WorkingState['sizes'] | null; conflicts: Conflict[] }>(store,
-    'SELECT dir_digits, area_code_mode, area_codes, middle_pointer, base_ok, saved_at, extra, sizes, conflicts FROM gate_working WHERE phone = $1', [p]);
+    'SELECT dir_digits, area_code_mode, area_codes, middle_pointer, base_ok, saved_at, extra, sizes, conflicts FROM gate_working WHERE phone = $1', [phoneKey]);
   if (!head) return null;
   const [res, cards, settings] = await Promise.all([
-    all<ResidentDbRow>(store, 'SELECT * FROM gate_residents WHERE phone = $1 ORDER BY seq', [p]),
+    all<ResidentDbRow>(store, 'SELECT * FROM gate_residents WHERE phone = $1 ORDER BY seq', [phoneKey]),
     all<{ slot: number; card_number: string; directory_code: string | null; raw_code: string | null }>(store,
-      'SELECT slot, card_number, directory_code, raw_code FROM gate_cards WHERE phone = $1 ORDER BY slot', [p]),
-    all<{ key: string; value: string }>(store, 'SELECT key, value FROM gate_settings WHERE phone = $1', [p]),
+      'SELECT slot, card_number, directory_code, raw_code FROM gate_cards WHERE phone = $1 ORDER BY slot', [phoneKey]),
+    all<{ key: string; value: string }>(store, 'SELECT key, value FROM gate_settings WHERE phone = $1', [phoneKey]),
   ]);
   return {
     baseOk: head.base_ok,
@@ -635,9 +633,9 @@ export async function loadWorkingState(store: Store, phone: unknown):
         entryCode: r.entry_code, securityLevel: r.security_level ?? '', floor: r.floor ?? '', elevatorRef: r.elevator_ref ?? '',
         entryOffset: r.entry_offset, recordOffset: r.record_offset,
       })),
-      cards: cards.map((c) => ({ slot: c.slot, cardNumber: c.card_number, directoryCode: c.directory_code,
-        ...(c.raw_code && { rawCode: c.raw_code }) })),
-      settings: Object.fromEntries(settings.map((s) => [s.key, s.value])),
+      cards: cards.map((card) => ({ slot: card.slot, cardNumber: card.card_number, directoryCode: card.directory_code,
+        ...(card.raw_code && { rawCode: card.raw_code }) })),
+      settings: Object.fromEntries(settings.map((setting) => [setting.key, setting.value])),
       ...(head.extra && { extra: head.extra }),
       ...(head.sizes && { sizes: head.sizes }),
     },
@@ -651,9 +649,9 @@ export async function setConflicts(store: Store, phone: unknown, conflicts: Conf
 
 // Removes the working copy's values.
 export async function deleteWorkingState(store: Store, phone: unknown): Promise<void> {
-  const p = phoneDigits(phone);
+  const phoneKey = phoneDigits(phone);
   await transaction(store, async (tx) => {
-    for (const t of ['gate_residents', 'gate_cards', 'gate_settings', 'gate_working']) await run(tx, `DELETE FROM ${t} WHERE phone = $1`, [p]);
+    for (const t of ['gate_residents', 'gate_cards', 'gate_settings', 'gate_working']) await run(tx, `DELETE FROM ${t} WHERE phone = $1`, [phoneKey]);
   });
 }
 
@@ -674,10 +672,10 @@ export async function getGateState(store: Store, phone: unknown): Promise<GateSt
 
 // Counts of the gate's working-copy rows (residents, cards, settings).
 export async function gateStateCounts(store: Store, phone: unknown): Promise<Record<string, number>> {
-  const p = phoneDigits(phone);
+  const phoneKey = phoneDigits(phone);
   const out: Record<string, number> = {};
   for (const t of ['gate_residents', 'gate_cards', 'gate_settings']) {
-    out[t] = (await all<{ n: number }>(store, `SELECT COUNT(*) AS n FROM ${t} WHERE phone = $1`, [p]))[0].n;
+    out[t] = (await all<{ n: number }>(store, `SELECT COUNT(*) AS n FROM ${t} WHERE phone = $1`, [phoneKey]))[0].n;
   }
   return out;
 }

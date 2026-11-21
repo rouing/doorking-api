@@ -30,9 +30,9 @@ export function shiftedTime(minute: string, f: string, shift: number) {
 
 // Every frame of a minute: the camera settings' frames (or videos) plus any other saved file. A minute saved only
 // in the other mode shows just its saved files; in video mode a minute with a saved video shows only its videos.
-export function snapFiles(c: CameraSettings | null, s: SnapshotMinute): string[] {
+export function snapFiles(c: CameraSettings | null, snapshot: SnapshotMinute): string[] {
   const video = Boolean(c && c.mode === 'video');
-  let saved = s.files;
+  let saved = snapshot.files;
   if (video && saved.some(isVideo)) saved = saved.filter(isVideo);
   let want = !c ? [] : video ? c.channels.map(({ channel }) => `ch${channel}.mp4`)
     : c.channels.flatMap(({ channel }) => [...frameSecs(c.frames).map((x) => `ch${channel}-${x}.jpg`),
@@ -100,7 +100,7 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
   useEffect(() => { load(); return () => { pollGen.current++; clearTimeout(timer.current); }; }, [load]);
 
   const act = async (fn: () => Promise<unknown>, prefix = '') => {
-    try { setNote(''); await fn(); await load(); } catch (e) { setNote(`${prefix}${errorText(e)}`); }
+    try { setNote(''); await fn(); await load(); } catch (err) { setNote(`${prefix}${errorText(err)}`); }
   };
 
   const refresh = async (minute: string, f: string) => {
@@ -111,9 +111,9 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
       const out = await gapi<{ snapshot: SnapshotMinute }>('POST', `/snapshots/${minute}/${encodeURIComponent(f)}/refresh`, {});
       setSnapshots((s) => ({ ...s, [minute]: out.snapshot }));
       setVersions((v) => ({ ...v, [key]: Date.now() }));
-    } catch (e) {
-      setErrors((x) => ({ ...x, [key]: errorText(e) }));
-      setNote(`${fmtMinute(minute)} ${frameCaption(f)}: not refreshed (${errorText(e)})`);
+    } catch (err) {
+      setErrors((x) => ({ ...x, [key]: errorText(err) }));
+      setNote(`${fmtMinute(minute)} ${frameCaption(f)}: not refreshed (${errorText(err)})`);
     }
     setRefreshing(({ [key]: _, ...rest }) => rest);
   };
@@ -128,7 +128,7 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
     info: note || runText(run, noun),
     byMinute: running && run!.progress ? run!.progress.byMinute : {},
     current: running && run!.progress ? run!.progress.current : null,
-    channelName: (n: number) => (settings && settings.channels.find((c) => c.channel === n)?.name) || `Channel ${n}`,
+    channelName: (n: number) => (settings && settings.channels.find((channel) => channel.channel === n)?.name) || `Channel ${n}`,
     runAll: () => act(() => gapi('POST', '/snapshots/run', {})),
     runMinute: (minute: string) => act(() => gapi('POST', '/snapshots/run', { minute }), `${fmtMinute(minute)}: `),
     stop: () => act(() => gapi('POST', '/snapshots/stop', {})),

@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { checkPrivate } from './config.ts';
+import { logger } from './logging.ts';
 
 // Gates are keyed by the digits of their phone number.
 export const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
@@ -51,12 +52,15 @@ export interface StoreOptions {
 async function connect(id: string, { connection, keyFile, schema = 'public', poolSize = 5 }: StoreOptions): Promise<Store> {
   const key = readKey(keyFile);
   const pool = new pg.Pool({ ...connection, max: poolSize, ...(schema !== 'public' && { options: `-c search_path=${schema}` }) });
+  // An idle connection that fails (PostgreSQL restarted, network lost) is reported here; unhandled, it ends the process.
+  // The pool drops that connection and opens a new one when next needed.
+  pool.on('error', (error) => logger('server').error`Database connection lost: ${error.message}`);
   try {
     if (schema !== 'public') await pool.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
     await pool.query(SCHEMA);
-  } catch (e) {
+  } catch (err) {
     await pool.end().catch(() => {});
-    throw e;
+    throw err;
   }
   return { id, pool, db: pool, key, schema };
 }
@@ -103,9 +107,9 @@ export async function transaction<T>(store: Store, fn: (tx: Store) => Promise<T>
     const out = await fn({ ...store, db: client });
     await client.query('COMMIT');
     return out;
-  } catch (e) {
+  } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    throw e;
+    throw err;
   } finally {
     client.release();
   }
@@ -114,31 +118,31 @@ export async function transaction<T>(store: Store, fn: (tx: Store) => Promise<T>
 // "v1:<iv>:<tag>:<ciphertext>", base64 parts.
 export function encrypt(store: Store, text: unknown): string {
   const iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', store.key, iv);
-  const data = Buffer.concat([c.update(String(text), 'utf8'), c.final()]);
-  return ['v1', iv, c.getAuthTag(), data].map((p) => (Buffer.isBuffer(p) ? p.toString('base64') : p)).join(':');
+  const cipher = crypto.createCipheriv('aes-256-gcm', store.key, iv);
+  const data = Buffer.concat([cipher.update(String(text), 'utf8'), cipher.final()]);
+  return ['v1', iv, cipher.getAuthTag(), data].map((p) => (Buffer.isBuffer(p) ? p.toString('base64') : p)).join(':');
 }
 
 // Bytes: 12-byte IV, 16-byte tag, then the ciphertext.
 export function encryptBytes(store: Store, data: Buffer): Buffer {
   const iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', store.key, iv);
-  const out = Buffer.concat([c.update(data), c.final()]);
-  return Buffer.concat([iv, c.getAuthTag(), out]);
+  const cipher = crypto.createCipheriv('aes-256-gcm', store.key, iv);
+  const out = Buffer.concat([cipher.update(data), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), out]);
 }
 
 export function decryptBytes(store: Store, data: Buffer): Buffer {
-  const d = crypto.createDecipheriv('aes-256-gcm', store.key, data.subarray(0, 12));
-  d.setAuthTag(data.subarray(12, 28));
-  return Buffer.concat([d.update(data.subarray(28)), d.final()]);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', store.key, data.subarray(0, 12));
+  decipher.setAuthTag(data.subarray(12, 28));
+  return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]);
 }
 
 export function decrypt(store: Store, value: unknown): string {
   const [v, iv, tag, data] = String(value).split(':');
   if (v !== 'v1' || data === undefined) throw new Error('Not an encrypted value');
-  const d = crypto.createDecipheriv('aes-256-gcm', store.key, Buffer.from(iv, 'base64'));
-  d.setAuthTag(Buffer.from(tag, 'base64'));
-  return Buffer.concat([d.update(Buffer.from(data, 'base64')), d.final()]).toString('utf8');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', store.key, Buffer.from(iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(tag, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(data, 'base64')), decipher.final()]).toString('utf8');
 }
 
 export async function getMeta(store: Store, key: string): Promise<string | null> {
@@ -149,6 +153,37 @@ export async function getMeta(store: Store, key: string): Promise<string | null>
 export async function setMeta(store: Store, key: string, value: unknown): Promise<void> {
   await run(store, 'INSERT INTO meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
     [key, String(value)]);
+}
+
+// The app's login role: created with its password when missing (an existing role keeps its password).
+async function ensureRole(client: pg.Client, user: string, password: string): Promise<string> {
+  if ((await client.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [user])).rowCount) return `Login role ${user}: already exists (password left unchanged)`;
+  if (!password) throw new Error(`No password for the new login role ${user}: set database.password in config.json`);
+  await client.query(`CREATE ROLE ${client.escapeIdentifier(user)} LOGIN PASSWORD ${client.escapeLiteral(password)}`);
+  return `Login role ${user}: created`;
+}
+
+// A database owned by user: created when missing and closed to other logins (an existing one is left alone).
+async function ensureDatabase(client: pg.Client, admin: pg.ClientConfig, database: string, user: string): Promise<string> {
+  const id = (n: string) => client.escapeIdentifier(n);
+  const existing = await client.query<{ owner: string }>('SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = $1', [database]);
+  if (existing.rowCount) {
+    const owner = existing.rows[0].owner;
+    return `Database ${database}: already exists, owned by ${owner}${owner === user ? '' : ` (not ${user}: it may not be allowed to create tables there)`}`;
+  }
+  await client.query(`CREATE DATABASE ${id(database)} OWNER ${id(user)}`);
+  await client.query(`REVOKE ALL ON DATABASE ${id(database)} FROM PUBLIC`);
+  // In the new database: only the app's login may use its public schema.
+  const inDb = new pg.Client(admin.connectionString
+    ? { ...admin, connectionString: Object.assign(new URL(admin.connectionString), { pathname: `/${database}` }).toString() }
+    : { ...admin, database: database });
+  await inDb.connect();
+  try {
+    await inDb.query(`REVOKE ALL ON SCHEMA public FROM PUBLIC; ALTER SCHEMA public OWNER TO ${id(user)}`);
+  } finally {
+    await inDb.end().catch(() => {});
+  }
+  return `Database ${database}: created, owned by ${user}, closed to other logins`;
 }
 
 // Creates the app's login role (LOGIN, with its password) and databases, each owned by that role, through an admin
@@ -165,13 +200,7 @@ export async function setupDatabase(admin: pg.ClientConfig, { user, password, da
   const steps: string[] = [];
   try {
     const id = (n: string) => client.escapeIdentifier(n);
-    if ((await client.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [user])).rowCount) {
-      steps.push(`Login role ${user}: already exists (password left unchanged)`);
-    } else {
-      if (!password) throw new Error(`No password for the new login role ${user}: set database.password in config.json`);
-      await client.query(`CREATE ROLE ${id(user)} LOGIN PASSWORD ${client.escapeLiteral(password)}`);
-      steps.push(`Login role ${user}: created`);
-    }
+    steps.push(await ensureRole(client, user, password));
     // A non-superuser admin (CREATEROLE) holds only ADMIN over roles it creates (PostgreSQL 16+); giving a database
     // to a role needs the right to SET ROLE to it, which ADMIN lets it grant itself.
     const canSet = async () => (await client.query<{ ok: boolean }>(`SELECT rolsuper OR pg_has_role(current_user, $1, 'SET') AS ok
@@ -181,26 +210,7 @@ export async function setupDatabase(admin: pg.ClientConfig, { user, password, da
       await client.query(`GRANT ${id(user)} TO CURRENT_USER`);
       steps.push(`Admin connection: made a member of ${user} (needed to make it the owner of new databases)`);
     }
-    for (const d of databases) {
-      const r = await client.query<{ owner: string }>('SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = $1', [d]);
-      if (!r.rowCount) {
-        await client.query(`CREATE DATABASE ${id(d)} OWNER ${id(user)}`);
-        await client.query(`REVOKE ALL ON DATABASE ${id(d)} FROM PUBLIC`);
-        // In the new database: only the app's login may use its public schema.
-        const inDb = new pg.Client(admin.connectionString
-          ? { ...admin, connectionString: Object.assign(new URL(admin.connectionString), { pathname: `/${d}` }).toString() }
-          : { ...admin, database: d });
-        await inDb.connect();
-        try {
-          await inDb.query(`REVOKE ALL ON SCHEMA public FROM PUBLIC; ALTER SCHEMA public OWNER TO ${id(user)}`);
-        } finally {
-          await inDb.end().catch(() => {});
-        }
-        steps.push(`Database ${d}: created, owned by ${user}, closed to other logins`);
-      } else {
-        steps.push(`Database ${d}: already exists, owned by ${r.rows[0].owner}${r.rows[0].owner === user ? '' : ` (not ${user}: it may not be allowed to create tables there)`}`);
-      }
-    }
+    for (const database of databases) steps.push(await ensureDatabase(client, admin, database, user));
   } finally {
     await client.end().catch(() => {});
   }

@@ -5,11 +5,12 @@
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { all, getMeta, one, run, setMeta, transaction, type Store } from './db.ts';
+import { httpError } from './errors.ts';
 
 export const PASSWORD_MIN = 12;
 const PASSWORD_MAX = 200;
 const SCRYPT = { N: 32768, r: 8, p: 1, keylen: 64 };
-const scrypt = promisify(crypto.scrypt) as (pw: string, salt: Buffer, len: number, o: crypto.ScryptOptions) => Promise<Buffer>;
+const scrypt = promisify(crypto.scrypt) as (password: string, salt: Buffer, len: number, offset: crypto.ScryptOptions) => Promise<Buffer>;
 
 // email: the verified address ('' none); pendingEmail: an address waiting for its confirmation link. phone: E.164
 // ('' none; not verified). invited: the
@@ -31,27 +32,26 @@ const SSO_ONLY = '!sso';
 const hasPasswordHash = (h: string): boolean => h !== NO_PASSWORD && h !== SSO_ONLY;
 const NO_PASSWORD = '!';
 
-const bad = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 export const userKey = (u: unknown): string => String(u || '').trim().toLowerCase();
-const fromRow = (r: UserRow): User => ({
-  username: r.username, email: r.email || '', pendingEmail: r.pending_email || '', phone: r.phone || '', dark: r.dark, mustChangePassword: r.must_change,
-  notifyAccess: r.notify_access, notifyAlerts: r.notify_alerts, invited: r.password_hash === NO_PASSWORD, hasPassword: hasPasswordHash(r.password_hash), createdAt: r.created_at, createdBy: r.created_by, lastSignIn: r.last_sign_in, signIns: r.sign_ins,
-  resetAt: r.reset_at ? new Date(r.reset_at).toISOString() : null,
+const fromRow = (row: UserRow): User => ({
+  username: row.username, email: row.email || '', pendingEmail: row.pending_email || '', phone: row.phone || '', dark: row.dark, mustChangePassword: row.must_change,
+  notifyAccess: row.notify_access, notifyAlerts: row.notify_alerts, invited: row.password_hash === NO_PASSWORD, hasPassword: hasPasswordHash(row.password_hash), createdAt: row.created_at, createdBy: row.created_by, lastSignIn: row.last_sign_in, signIns: row.sign_ins,
+  resetAt: row.reset_at ? new Date(row.reset_at).toISOString() : null,
 });
 
 // 3-32 letters, digits, '.', '_' or '-', starting with a letter or digit; returned lower case.
 export function checkUsername(u: unknown): string {
   const name = userKey(u);
   if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(name)) {
-    throw bad('Username must be 3-32 letters, digits, dots, dashes or underscores, starting with a letter or digit');
+    throw httpError('Username must be 3-32 letters, digits, dots, dashes or underscores, starting with a letter or digit');
   }
   return name;
 }
 
-export function checkPassword(pw: unknown): string {
-  const s = String(pw ?? '');
-  if (s.length < PASSWORD_MIN) throw bad(`Password must be at least ${PASSWORD_MIN} characters`);
-  if (s.length > PASSWORD_MAX) throw bad(`Password must be at most ${PASSWORD_MAX} characters`);
+export function checkPassword(password: unknown): string {
+  const s = String(password ?? '');
+  if (s.length < PASSWORD_MIN) throw httpError(`Password must be at least ${PASSWORD_MIN} characters`);
+  if (s.length > PASSWORD_MAX) throw httpError(`Password must be at most ${PASSWORD_MAX} characters`);
   return s;
 }
 
@@ -62,32 +62,32 @@ export function checkUserPhone(p: unknown): string {
   if (!raw) return '';
   const plus = raw.startsWith('+');
   const digits = raw.replace(/[\s().\-]/g, '').replace(/^\+/, '');
-  if (!/^\d+$/.test(digits)) throw bad('A phone number may only have digits, spaces, dashes, brackets and a leading +');
+  if (!/^\d+$/.test(digits)) throw httpError('A phone number may only have digits, spaces, dashes, brackets and a leading +');
   const e164 = plus ? `+${digits}` : digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits.startsWith('1') ? `+${digits}` : '';
-  if (!/^\+[1-9]\d{7,14}$/.test(e164)) throw bad('Enter a 10-digit US/Canada number, or + and the country code (for example +44 20 7946 0958)');
+  if (!/^\+[1-9]\d{7,14}$/.test(e164)) throw httpError('Enter a 10-digit US/Canada number, or + and the country code (for example +44 20 7946 0958)');
   return e164;
 }
 
 // '' (no email) or a lower-case address.
-export function checkEmail(e: unknown): string {
-  const s = userKey(e);
-  if (s && (s.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s))) throw bad('That email address doesn\'t look right');
+export function checkEmail(err: unknown): string {
+  const s = userKey(err);
+  if (s && (s.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s))) throw httpError('That email address doesn\'t look right');
   return s;
 }
 
 // scrypt$N$r$p$salt$hash (base64).
-export async function hashPassword(pw: string): Promise<string> {
+export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
   const { N, r, p, keylen } = SCRYPT;
-  const hash = await scrypt(pw, salt, keylen, { N, r, p, maxmem: 128 * N * r * 2 });
+  const hash = await scrypt(password, salt, keylen, { N, r, p, maxmem: 128 * N * r * 2 });
   return ['scrypt', N, r, p, salt.toString('base64'), hash.toString('base64')].join('$');
 }
 
-export async function verifyPassword(pw: string, stored: string): Promise<boolean> {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [kind, n, r, p, salt, hash] = String(stored).split('$');
   if (kind !== 'scrypt' || !hash) return false;
   const want = Buffer.from(hash, 'base64');
-  const got = await scrypt(pw, Buffer.from(salt, 'base64'), want.length,
+  const got = await scrypt(password, Buffer.from(salt, 'base64'), want.length,
     { N: Number(n), r: Number(r), p: Number(p), maxmem: 128 * Number(n) * Number(r) * 2 });
   return crypto.timingSafeEqual(got, want);
 }
@@ -99,8 +99,8 @@ export async function userCount(store: Store): Promise<number> {
 }
 
 export async function getUser(store: Store, username: unknown): Promise<User | null> {
-  const r = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
-  return r ? fromRow(r) : null;
+  const row = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
+  return row ? fromRow(row) : null;
 }
 
 const emailTaken = async (store: Store, email: string, except = '') =>
@@ -113,10 +113,10 @@ export async function createUser(store: Store, { username, password, email = '',
   { username: unknown; password?: unknown; email?: unknown; createdBy: string; mustChangePassword?: boolean; invite?: boolean }): Promise<User> {
   const name = checkUsername(username);
   const mail = checkEmail(email);
-  if (invite && !mail) throw bad('An invitation needs an email address');
+  if (invite && !mail) throw httpError('An invitation needs an email address');
   const hash = invite ? NO_PASSWORD : await hashPassword(checkPassword(password));
-  if (await getUser(store, name)) throw bad(`The username "${name}" is already taken`, 409);
-  if (await emailTaken(store, mail)) throw bad('That email address is already used by another account', 409);
+  if (await getUser(store, name)) throw httpError(`The username "${name}" is already taken`, 409);
+  if (await emailTaken(store, mail)) throw httpError('That email address is already used by another account', 409);
   await run(store, `INSERT INTO users (username, password_hash, pending_email, dark, must_change, created_at, created_by, sign_ins)
     VALUES ($1, $2, $3, false, $4, $5, $6, 0) ON CONFLICT (username) DO NOTHING`,
   [name, hash, mail || null, invite ? false : mustChangePassword, new Date().toISOString(), userKey(createdBy)]);
@@ -134,7 +134,7 @@ export async function acceptInvite(store: Store, username: string, password: unk
 async function takeInvite(store: Store, name: string, hash: string): Promise<User> {
   const r = await one<{ pending_email: string | null }>(store,
     'UPDATE users SET password_hash = $2, must_change = false WHERE username = $1 AND password_hash = $3 RETURNING pending_email', [name, hash, NO_PASSWORD]);
-  if (!r) throw bad('This invitation was already used. Sign in instead.', 409);
+  if (!r) throw httpError('This invitation was already used. Sign in instead.', 409);
   if (r.pending_email) await confirmEmail(store, name, r.pending_email);
   return (await getUser(store, name))!;
 }
@@ -150,8 +150,8 @@ export async function acceptInviteWithSso(store: Store, username: string): Promi
 // belongs to another account.
 export async function createSsoUser(store: Store, { email, createdBy }: { email: unknown; createdBy: string }): Promise<User> {
   const mail = checkEmail(email);
-  if (!mail) throw bad('An email address is needed');
-  if (await emailTaken(store, mail)) throw bad('That email address is already used by another account', 409);
+  if (!mail) throw httpError('An email address is needed');
+  if (await emailTaken(store, mail)) throw httpError('That email address is already used by another account', 409);
   let base = mail.split('@')[0].replace(/[^a-z0-9._-]+/g, '.').replace(/^[^a-z0-9]+/, '').slice(0, 28).replace(/[._-]+$/, '');
   if (base.length < 3) base = `${base || 'user'}${'000'.slice(base.length)}`.slice(0, 28);
   for (let i = 1; ; i++) {
@@ -170,8 +170,8 @@ export async function confirmEmail(store: Store, username: string, address: stri
   const mail = userKey(address);
   await transaction(store, async (tx) => {
     const r = await one<{ pending_email: string | null }>(tx, 'SELECT pending_email FROM users WHERE username = $1 FOR UPDATE', [name]);
-    if (!r || r.pending_email !== mail) throw bad('This link is for an address that is no longer waiting to be confirmed');
-    if (await emailTaken(tx, mail, name)) throw bad('That email address is already used by another account', 409);
+    if (!r || r.pending_email !== mail) throw httpError('This link is for an address that is no longer waiting to be confirmed');
+    if (await emailTaken(tx, mail, name)) throw httpError('That email address is already used by another account', 409);
     await run(tx, 'UPDATE users SET email = $2, pending_email = NULL WHERE username = $1', [name, mail]);
     await run(tx, 'DELETE FROM email_tokens WHERE username = $1 AND kind = \'reset\'', [name]); // links sent to the old address
   });
@@ -182,8 +182,8 @@ export async function confirmEmail(store: Store, username: string, address: stri
 export async function userForReset(store: Store, identifier: unknown): Promise<User | null> {
   const id = userKey(identifier);
   if (!id) return null;
-  const r = await one<UserRow>(store, 'SELECT * FROM users WHERE (username = $1 OR email = $1) AND email IS NOT NULL', [id]);
-  return r && r.password_hash !== NO_PASSWORD ? fromRow(r) : null;
+  const row = await one<UserRow>(store, 'SELECT * FROM users WHERE (username = $1 OR email = $1) AND email IS NOT NULL', [id]);
+  return row && row.password_hash !== NO_PASSWORD ? fromRow(row) : null;
 }
 
 // The accounts that should get this gate's alerts: its admins with a confirmed email and alerts on.
@@ -195,24 +195,24 @@ export async function alertRecipients(store: Store, phone: string): Promise<{ us
 // Once (2026-11-13): emails saved before confirmation links existed become unconfirmed (pending).
 export async function unconfirmOldEmails(store: Store): Promise<number | null> {
   if (await getMeta(store, 'emailsUnconfirmed')) return null;
-  const n = await run(store, 'UPDATE users SET pending_email = email, email = NULL WHERE email IS NOT NULL AND pending_email IS NULL');
+  const changed = await run(store, 'UPDATE users SET pending_email = email, email = NULL WHERE email IS NOT NULL AND pending_email IS NULL');
   await setMeta(store, 'emailsUnconfirmed', new Date().toISOString());
-  return n;
+  return changed;
 }
 
 // The user when the password is right (and records the sign-in), else null. refuse: asked once the password is right, before
 // the sign-in is recorded; a message it returns refuses the sign-in (403 with that message).
 export async function authenticate(store: Store, username: unknown, password: unknown,
   refuse?: (username: string) => Promise<string | null>): Promise<User | null> {
-  const r = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
+  const row = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
   // An account whose password sign-in is refused is checked against the dummy hash too, so the answer is the same
   // whether or not the old password was right.
-  const why = r && refuse ? await refuse(r.username) : null;
-  const usable = r && !why && hasPasswordHash(r.password_hash);
-  const ok = await verifyPassword(String(password ?? ''), usable ? r.password_hash : await DUMMY_HASH) && usable;
-  if (!r || !ok) return null;
-  await recordSignIn(store, r.username);
-  return getUser(store, r.username);
+  const why = row && refuse ? await refuse(row.username) : null;
+  const usable = row && !why && hasPasswordHash(row.password_hash);
+  const ok = await verifyPassword(String(password ?? ''), usable ? row.password_hash : await DUMMY_HASH) && usable;
+  if (!row || !ok) return null;
+  await recordSignIn(store, row.username);
+  return getUser(store, row.username);
 }
 
 // Counts a sign-in (password or passkey).
@@ -222,8 +222,8 @@ export async function recordSignIn(store: Store, username: string): Promise<void
 
 // True when `password` is the user's current one (to confirm a sensitive change, such as adding a passkey).
 export async function checkOwnPassword(store: Store, username: unknown, password: unknown): Promise<boolean> {
-  const r = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
-  return Boolean(r) && verifyPassword(String(password ?? ''), r!.password_hash);
+  const row = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
+  return Boolean(row) && verifyPassword(String(password ?? ''), row!.password_hash);
 }
 
 // Sets a new password and ends the user's other sessions (keepSession: the token hash to keep, or none).
@@ -234,7 +234,7 @@ export async function setPassword(store: Store, username: unknown, password: unk
   const hash = await hashPassword(checkPassword(password));
   await transaction(store, async (tx) => {
     if (!await run(tx, `UPDATE users SET password_hash = $2, must_change = $3${byEmail ? ', reset_at = now()' : ''} WHERE username = $1`, [name, hash, mustChange])) {
-      throw bad(`No user "${name}"`, 404);
+      throw httpError(`No user "${name}"`, 404);
     }
     await run(tx, 'DELETE FROM sessions WHERE username = $1 AND token_hash <> $2', [name, keepSession]);
     await run(tx, 'DELETE FROM email_tokens WHERE username = $1 AND kind = \'reset\'', [name]); // older reset links stop working
@@ -243,10 +243,27 @@ export async function setPassword(store: Store, username: unknown, password: unk
 
 // The user's own password change: the current password must be right and the new one different.
 export async function changeOwnPassword(store: Store, username: unknown, current: unknown, next: unknown, keepSession: string): Promise<void> {
-  const r = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
-  if (!r || !await verifyPassword(String(current ?? ''), r.password_hash)) throw bad('Your current password is wrong', 403);
-  if (String(next ?? '') === String(current ?? '')) throw bad('The new password must be different from the current one');
-  await setPassword(store, r.username, next, { keepSession });
+  const row = await one<UserRow>(store, 'SELECT * FROM users WHERE username = $1', [userKey(username)]);
+  if (!row || !await verifyPassword(String(current ?? ''), row.password_hash)) throw httpError('Your current password is wrong', 403);
+  if (String(next ?? '') === String(current ?? '')) throw httpError('The new password must be different from the current one');
+  await setPassword(store, row.username, next, { keepSession });
+}
+
+// '' removes the email (confirmed and pending); the confirmed address clears a pending change; any other address
+// becomes pending until its link is opened.
+async function setOwnEmail(store: Store, name: string, mail: string): Promise<void> {
+  if (!mail) {
+    await run(store, 'UPDATE users SET email = NULL, pending_email = NULL WHERE username = $1', [name]);
+    await run(store, 'DELETE FROM email_tokens WHERE username = $1 AND kind IN (\'reset\', \'verify\')', [name]);
+    return;
+  }
+  const current = await getUser(store, name);
+  if (current && mail === current.email) {
+    await run(store, 'UPDATE users SET pending_email = NULL WHERE username = $1', [name]);
+    return;
+  }
+  if (await emailTaken(store, mail, name)) throw httpError('That email address is already used by another account', 409);
+  await run(store, 'UPDATE users SET pending_email = $2 WHERE username = $1', [name, mail]);
 }
 
 // The user's own settings: dark mode, phone ('' removes it), the two email notifications, and email: '' removes it (confirmed and pending);
@@ -255,25 +272,13 @@ export async function updateUserSettings(store: Store, username: unknown, { emai
   { email?: unknown; dark?: unknown; phone?: unknown; notifyAccess?: unknown; notifyAlerts?: unknown }): Promise<User> {
   const name = userKey(username);
   if (phone !== undefined) await run(store, 'UPDATE users SET phone = $2 WHERE username = $1', [name, checkUserPhone(phone) || null]);
-  if (email !== undefined) {
-    const mail = checkEmail(email);
-    const cur = await getUser(store, name);
-    if (!mail) {
-      await run(store, 'UPDATE users SET email = NULL, pending_email = NULL WHERE username = $1', [name]);
-      await run(store, 'DELETE FROM email_tokens WHERE username = $1 AND kind IN (\'reset\', \'verify\')', [name]);
-    }
-    else if (cur && mail === cur.email) await run(store, 'UPDATE users SET pending_email = NULL WHERE username = $1', [name]);
-    else {
-      if (await emailTaken(store, mail, name)) throw bad('That email address is already used by another account', 409);
-      await run(store, 'UPDATE users SET pending_email = $2 WHERE username = $1', [name, mail]);
-    }
-  }
+  if (email !== undefined) await setOwnEmail(store, name, checkEmail(email));
   if (dark !== undefined) await run(store, 'UPDATE users SET dark = $2 WHERE username = $1', [name, dark === true]);
   if (notifyAccess !== undefined) await run(store, 'UPDATE users SET notify_access = $2 WHERE username = $1', [name, notifyAccess !== false]);
   if (notifyAlerts !== undefined) await run(store, 'UPDATE users SET notify_alerts = $2 WHERE username = $1', [name, notifyAlerts !== false]);
-  const u = await getUser(store, name);
-  if (!u) throw bad(`No user "${name}"`, 404);
-  return u;
+  const user = await getUser(store, name);
+  if (!user) throw httpError(`No user "${name}"`, 404);
+  return user;
 }
 
 // strongAt: when the session was last confirmed with a passkey (sign-in or confirmation), ms; null never.

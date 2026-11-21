@@ -20,10 +20,10 @@ export function History({ gapi, onReverted }: { gapi: GateApi; onReverted: () =>
   const load = useCallback(async () => {
     setInfo('Loading…');
     try {
-      const h = await gapi<HistoryReply>('GET', '/history');
-      setHistory(h);
-      setInfo(`${h.events.length} events, most recent first`);
-    } catch (e) { setInfo(errorText(e)); }
+      const reply = await gapi<HistoryReply>('GET', '/history');
+      setHistory(reply);
+      setInfo(`${reply.events.length} events, most recent first`);
+    } catch (err) { setInfo(errorText(err)); }
   }, [gapi]);
   useEffect(() => { load(); }, [load]);
 
@@ -55,9 +55,9 @@ export function History({ gapi, onReverted }: { gapi: GateApi; onReverted: () =>
               <Table.ColumnHeaderCell>Last sign-in</Table.ColumnHeaderCell></Table.Row>
           </Table.Header>
           <Table.Body>
-            {(history?.users || []).map((u) => (
-              <Table.Row key={u.username}><Table.Cell>{u.username}</Table.Cell><Table.Cell>{u.role === 'admin' ? 'Admin' : 'Read only'}</Table.Cell>
-                <Table.Cell>{u.lastSignIn ? fmtTime(u.lastSignIn) : 'never'}</Table.Cell></Table.Row>
+            {(history?.users || []).map((user) => (
+              <Table.Row key={user.username}><Table.Cell>{user.username}</Table.Cell><Table.Cell>{user.role === 'admin' ? 'Admin' : 'Read only'}</Table.Cell>
+                <Table.Cell>{user.lastSignIn ? fmtTime(user.lastSignIn) : 'never'}</Table.Cell></Table.Row>
             ))}
           </Table.Body>
         </Table.Root>
@@ -91,25 +91,25 @@ export function History({ gapi, onReverted }: { gapi: GateApi; onReverted: () =>
                     <Table.Cell>
                       {e.revertedBy ? `Reverted by ${e.revertedBy.user} ${fmtTime(e.revertedBy.time)}`
                         : e.revertible && !readOnly ? <Button size="1" variant="soft" color="gray"
-                          onClick={(ev) => { ev.stopPropagation(); revert(e); }}>Revert</Button> : ''}
+                          onClick={(event) => { event.stopPropagation(); revert(e); }}>Revert</Button> : ''}
                     </Table.Cell>
                   </Table.Row>
                   {open === e.id && details.length > 0 && (
                     <Table.Row>
                       <Table.Cell colSpan={6} style={{ background: 'var(--gray-a2)' }}>
                         <Flex direction="column" gap="2">
-                          {details.map((d) => (
-                            <Flex key={d.key + d.label} direction="column" gap="1">
-                              <Text size="2" weight="bold">{d.label}{d.change && d.change !== 'changed' ? ` — ${d.change}` : ''}</Text>
-                              {d.fields.length > 0 && (
+                          {details.map((detail) => (
+                            <Flex key={detail.key + detail.label} direction="column" gap="1">
+                              <Text size="2" weight="bold">{detail.label}{detail.change && detail.change !== 'changed' ? ` — ${detail.change}` : ''}</Text>
+                              {detail.fields.length > 0 && (
                                 <Table.Root size="1">
                                   <Table.Header>
                                     <Table.Row><Table.ColumnHeaderCell>Field</Table.ColumnHeaderCell><Table.ColumnHeaderCell>From</Table.ColumnHeaderCell>
                                       <Table.ColumnHeaderCell>To</Table.ColumnHeaderCell></Table.Row>
                                   </Table.Header>
                                   <Table.Body>
-                                    {d.fields.map((f, i) => (
-                                      <Table.Row key={i}><Table.Cell>{f.field}</Table.Cell><Table.Cell>{f.from}</Table.Cell><Table.Cell>{f.to}</Table.Cell></Table.Row>
+                                    {detail.fields.map((field, i) => (
+                                      <Table.Row key={i}><Table.Cell>{field.field}</Table.Cell><Table.Cell>{field.from}</Table.Cell><Table.Cell>{field.to}</Table.Cell></Table.Row>
                                     ))}
                                   </Table.Body>
                                 </Table.Root>

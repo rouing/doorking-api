@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Callout, Flex, IconButton, Spinner, Theme } from '@radix-ui/themes';
 import type { SessionReply } from '../../src/types.ts';
 import { api, errorText, lsGet, lsSet, onSignedOut } from './api.ts';
-import { EmailLink, FirstSetup, ForcedPasswordChange, StepUpDialog } from './Account.tsx';
+import { StepUpDialog } from './account/Passkeys.tsx';
+import { EmailLink, FirstSetup, ForcedPasswordChange } from './account/SignInPages.tsx';
 import { Login } from './Login.tsx';
 import { Gates } from './Gates.tsx';
 import { GateApp } from './GateApp.tsx';
@@ -15,18 +16,18 @@ export type SignedIn = Extract<SessionReply, { loggedIn: true }>;
 // remembers the last one for the sign-in page.
 // An email link in the address (#verify=, #reset=, #invite=), read once when the page opens.
 function linkInAddress(): { kind: 'verify' | 'reset' | 'invite'; token: string } | null {
-  const m = /^#(verify|reset|invite)=([A-Za-z0-9_-]+)$/.exec(window.location.hash);
-  return m ? { kind: m[1] as 'verify' | 'reset' | 'invite', token: m[2] } : null;
+  const match = /^#(verify|reset|invite)=([A-Za-z0-9_-]+)$/.exec(window.location.hash);
+  return match ? { kind: match[1] as 'verify' | 'reset' | 'invite', token: match[2] } : null;
 }
 
 // The result of a single sign-on redirect in the address (#sso=linked, #sso-error=<message>), read once and removed.
 function ssoInAddress(): { ok: boolean; text: string } | null {
-  const m = /^#sso(-error)?=(.*)$/.exec(window.location.hash);
-  if (!m) return null;
+  const match = /^#sso(-error)?=(.*)$/.exec(window.location.hash);
+  if (!match) return null;
   window.history.replaceState(null, '', window.location.pathname);
-  let text = m[2];
-  try { text = decodeURIComponent(m[2]); } catch { /* shown as it is */ }
-  return m[1] ? { ok: false, text } : { ok: true, text: 'The sign-in was linked to your account.' };
+  let text = match[2];
+  try { text = decodeURIComponent(match[2]); } catch { /* shown as it is */ }
+  return match[1] ? { ok: false, text } : { ok: true, text: 'The sign-in was linked to your account.' };
 }
 
 export function App() {
@@ -37,11 +38,11 @@ export function App() {
 
   const reload = useCallback(async () => {
     try {
-      const s = await api<SessionReply>('GET', '/api/session');
-      if (s.loggedIn) lsSet('dk-theme', s.dark);
-      setSession(s);
+      const reply = await api<SessionReply>('GET', '/api/session');
+      if (reply.loggedIn) lsSet('dk-theme', reply.dark);
+      setSession(reply);
       setError('');
-    } catch (e) { setError(errorText(e)); }
+    } catch (err) { setError(errorText(err)); }
   }, []);
 
   useEffect(() => {
@@ -53,22 +54,17 @@ export function App() {
 
   const linkDone = () => { window.history.replaceState(null, '', window.location.pathname); setLink(null); reload(); };
 
-  let page;
-  if (link) {
-    page = <EmailLink kind={link.kind} sso={session ? session.sso : []} token={link.token} onDone={linkDone} />;
-  } else if (error && !session) {
-    page = <Callout.Root color="red" m="6"><Callout.Text>Server not reachable: {error}</Callout.Text></Callout.Root>;
-  } else if (!session) {
-    page = <Flex justify="center" p="9"><Spinner size="3" /></Flex>;
-  } else if (!session.loggedIn) {
-    page = session.setup ? <FirstSetup onDone={reload} /> : <Login onSignedIn={reload} emailEnabled={session.emailEnabled} sso={session.sso} />;
-  } else if (session.mustChangePassword) {
-    page = <ForcedPasswordChange user={session.user} onDone={reload} />;
-  } else if (!session.gate) {
-    page = <Gates session={session} onChange={reload} />;
-  } else {
-    page = <GateApp key={session.gate.phoneNumber} session={session} gate={session.gate} onChange={reload} />;
-  }
+  const renderPage = (): ReactNode => {
+    if (link) return <EmailLink kind={link.kind} sso={session ? session.sso : []} token={link.token} onDone={linkDone} />;
+    if (error && !session) return <Callout.Root color="red" m="6"><Callout.Text>Server not reachable: {error}</Callout.Text></Callout.Root>;
+    if (!session) return <Flex justify="center" p="9"><Spinner size="3" /></Flex>;
+    if (!session.loggedIn) {
+      return session.setup ? <FirstSetup onDone={reload} /> : <Login onSignedIn={reload} emailEnabled={session.emailEnabled} sso={session.sso} />;
+    }
+    if (session.mustChangePassword) return <ForcedPasswordChange user={session.user} onDone={reload} />;
+    if (!session.gate) return <Gates session={session} onChange={reload} />;
+    return <GateApp key={session.gate.phoneNumber} session={session} gate={session.gate} onChange={reload} />;
+  };
   return (
     <Theme appearance={dark ? 'dark' : 'light'} accentColor="blue" radius="medium">
       {ssoNotice && (
@@ -79,7 +75,7 @@ export function App() {
           </Flex>
         </Callout.Root>
       )}
-      {page}
+      {renderPage()}
       {session && session.loggedIn && <StepUpDialog />}
       <UpdateNotice />
     </Theme>

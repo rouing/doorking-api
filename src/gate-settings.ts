@@ -21,10 +21,10 @@ const toBcd = (n: number): number => ((Math.floor(n / 10) << 4) | (n % 10));
 const ft = (t: FieldType): FieldType => t;
 // The bytes of a "? (0x7)" or "? (005da0013491)" value (shown for bytes a type can't name), or null.
 function rawValue(v: string, size: number): Buffer | null {
-  const m = /^\? \((0x)?([0-9a-f]+)\)$/i.exec(v);
-  if (!m) return null;
-  if (m[1]) return size === 1 && m[2].length <= 2 ? Buffer.from([parseInt(m[2], 16)]) : null;
-  return m[2].length === size * 2 ? Buffer.from(m[2], 'hex') : null;
+  const match = /^\? \((0x)?([0-9a-f]+)\)$/i.exec(v);
+  if (!match) return null;
+  if (match[1]) return size === 1 && match[2].length <= 2 ? Buffer.from([parseInt(match[2], 16)]) : null;
+  return match[2].length === size * 2 ? Buffer.from(match[2], 'hex') : null;
 }
 
 // Field types: size in bytes, decode(bytes) -> string, encode(string) -> Buffer (throws when invalid).
@@ -75,9 +75,9 @@ const TYPES = {
     },
     encode: (v) => {
       if (v === '') return Buffer.from([0xff, 0xff]);
-      const m = /^(\d{1,2})\/(\d{1,2})$/.exec(v);
-      if (!m || +m[1] < 1 || +m[1] > 12 || +m[2] < 1 || +m[2] > 31) throw new Error('month/day such as 12/25, or blank');
-      return Buffer.from([toBcd(+m[1]), toBcd(+m[2])]);
+      const match = /^(\d{1,2})\/(\d{1,2})$/.exec(v);
+      if (!match || +match[1] < 1 || +match[1] > 12 || +match[2] < 1 || +match[2] > 31) throw new Error('month/day such as 12/25, or blank');
+      return Buffer.from([toBcd(+match[1]), toBcd(+match[2])]);
     },
   }),
   digits: (size: number): FieldType => ({ size, decode: (b) => [...b].map((x) => (x <= 9 ? String(x) : x === 0x0a ? '0' : '')).join('') }),
@@ -87,9 +87,9 @@ const TYPES = {
     decode: (b) => (b[0] === 0xff ? '' : `${Math.floor(b[0] / 60)}:${String(b[0] % 60).padStart(2, '0')}`),
     encode: (v) => {
       if (v.trim() === '') return Buffer.from([0xff]);
-      const m = /^(?:(\d{1,2}):)?(\d{1,3})$/.exec(v.trim());
-      const secs = m ? Number(m[1] || 0) * 60 + Number(m[2]) : NaN;
-      if (!m || (m[1] !== undefined && Number(m[2]) > 59) || !(secs >= 0 && secs <= 254)) {
+      const match = /^(?:(\d{1,2}):)?(\d{1,3})$/.exec(v.trim());
+      const secs = match ? Number(match[1] || 0) * 60 + Number(match[2]) : NaN;
+      if (!match || (match[1] !== undefined && Number(match[2]) > 59) || !(secs >= 0 && secs <= 254)) {
         throw new Error('m:ss (or seconds) from 0:00 to 4:14');
       }
       return Buffer.from([secs]);
@@ -142,11 +142,11 @@ const TYPES = {
     },
     encode: (v) => {
       if (v === '') return Buffer.from([0xff, 0xff]);
-      const m = /^(\d{1,2}):(\d{2})$/.exec(v);
-      if (!m || +m[1] > 23 || +m[2] > 59) throw new Error('time as HH:MM (24-hour), or blank');
-      const h24 = +m[1];
+      const match = /^(\d{1,2}):(\d{2})$/.exec(v);
+      if (!match || +match[1] > 23 || +match[2] > 59) throw new Error('time as HH:MM (24-hour), or blank');
+      const h24 = +match[1];
       const h12 = (h24 % 12) || 12;
-      return Buffer.from([0x80 | (h24 >= 12 ? 0x20 : 0) | toBcd(h12), toBcd(+m[2])]);
+      return Buffer.from([0x80 | (h24 >= 12 ? 0x20 : 0) | toBcd(h12), toBcd(+match[2])]);
     },
   }),
   // Day bitmap: day d (0=Sun..6=Sat) is bit (7-d). Value is a 7-char "0"/"1" string, Sun..Sat. 0xFF = none.
@@ -273,11 +273,11 @@ const TYPES = {
     },
     encode: (v) => {
       if (v === '') return Buffer.alloc(4, 0xff);
-      const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC$/.exec(v);
-      const t = m ? Date.parse(`${m[1]}T${m[2]}Z`) / 1000 : NaN;
+      const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC$/.exec(v);
+      const t = match ? Date.parse(`${match[1]}T${match[2]}Z`) / 1000 : NaN;
       const b = Number.isInteger(t) && t >= 946684800 && t < 4102444800 ? Buffer.alloc(4) : rawValue(v, 4);
       if (!b) throw new Error('a time as YYYY-MM-DD HH:MM:SS UTC, or blank');
-      if (m) b.writeUInt32LE(t, 0);
+      if (match) b.writeUInt32LE(t, 0);
       return b;
     },
   }),
@@ -334,9 +334,9 @@ const TYPES = {
       const slots = v.split(',').map((s) => s.trim());
       if (slots.length !== 5) throw new Error('5 comma-separated boxes (blank allowed), or blank for off');
       buf[0] = 0;
-      slots.forEach((s, i) => {
-        if (s !== '' && (!/^\d{1,5}$/.test(s) || +s < 1 || +s > 65535)) throw new Error('numbers 1-65535, or blank');
-        const n = s === '' ? 0 : +s;
+      slots.forEach((slot, i) => {
+        if (slot !== '' && (!/^\d{1,5}$/.test(slot) || +slot < 1 || +slot > 65535)) throw new Error('numbers 1-65535, or blank');
+        const n = slot === '' ? 0 : +slot;
         buf[1 + i * 2] = n >> 8;
         buf[2 + i * 2] = n & 0xff;
       });
@@ -447,13 +447,13 @@ const FIELDS: GateSettingField[] = [
   })),
   // Security levels: 116 records (levels 2-30, TZ1-4) of 16 bytes at 0x243 — begin (2), end (2), days (1), relays (3), floors (8).
   ...Array.from({ length: 116 }, (_, i) => {
-    const level = 2 + (i >> 2); const tz = (i & 3) + 1; const o = 0x243 + i * 16; const k = `sec${level}tz${tz}`;
+    const level = 2 + (i >> 2); const tz = (i & 3) + 1; const offset = 0x243 + i * 16; const k = `sec${level}tz${tz}`;
     return [
-      { key: `${k}Begin`, group: 'Security', name: `L${level} TZ${tz} begin`, offset: o, type: TYPES.holdTime, editable: true },
-      { key: `${k}End`, group: 'Security', name: `L${level} TZ${tz} end`, offset: o + 2, type: TYPES.holdTime, editable: true },
-      { key: `${k}Days`, group: 'Security', name: `L${level} TZ${tz} days`, offset: o + 4, type: TYPES.dayMask, editable: true },
-      { key: `${k}Relays`, group: 'Security', name: `L${level} TZ${tz} relays`, offset: o + 5, type: TYPES.relayMask, editable: true },
-      { key: `${k}Floors`, group: 'Security', name: `L${level} TZ${tz} floors`, offset: o + 8, type: TYPES.floorMask, editable: true },
+      { key: `${k}Begin`, group: 'Security', name: `L${level} TZ${tz} begin`, offset: offset, type: TYPES.holdTime, editable: true },
+      { key: `${k}End`, group: 'Security', name: `L${level} TZ${tz} end`, offset: offset + 2, type: TYPES.holdTime, editable: true },
+      { key: `${k}Days`, group: 'Security', name: `L${level} TZ${tz} days`, offset: offset + 4, type: TYPES.dayMask, editable: true },
+      { key: `${k}Relays`, group: 'Security', name: `L${level} TZ${tz} relays`, offset: offset + 5, type: TYPES.relayMask, editable: true },
+      { key: `${k}Floors`, group: 'Security', name: `L${level} TZ${tz} floors`, offset: offset + 8, type: TYPES.floorMask, editable: true },
     ];
   }).flat(),
   // Anti-Pass Back (block 20), confirmed by diffing DoorKing32's output one change at a time.
@@ -470,11 +470,11 @@ const FIELDS: GateSettingField[] = [
   { key: 'apbScheduleDays', group: 'Anti-Pass Back', name: 'Scheduled Re-Sync All days', offset: 0xa38, type: TYPES.dayList, editable: true },
   { key: 'apbScheduleTime', group: 'Anti-Pass Back', name: 'Scheduled Re-Sync All time', offset: 0xa3f, type: TYPES.holdTime, editable: true },
 ];
-const BY_KEY = new Map(FIELDS.map((f) => [f.key, f]));
+const BY_KEY = new Map(FIELDS.map((field) => [field.key, field]));
 // Fields the board files are built from: every setting with an encoder except the master code (kept out of the
 // values tables; see gate-state.ts). Users may change only the editable ones.
-export const WRITTEN_FIELDS = FIELDS.filter((f) => f.type.encode && !f.secret);
-const MIN_SIZE = Math.max(...FIELDS.map((f) => f.offset + f.type.size));
+export const WRITTEN_FIELDS = FIELDS.filter((field) => field.type.encode && !field.secret);
+const MIN_SIZE = Math.max(...FIELDS.map((field) => field.offset + field.type.size));
 
 function checkSize(buf: Buffer): void {
   if (buf.length < MIN_SIZE) throw new Error(`names.bin is too short (${buf.length} bytes) to contain the settings`);
@@ -483,16 +483,16 @@ function checkSize(buf: Buffer): void {
 // names.bin -> list of settings with their current values.
 export function decodeGateSettings(buf: Buffer): GateSetting[] {
   checkSize(buf);
-  return FIELDS.map((f) => ({
-    key: f.key, group: f.group, name: f.name, offset: f.offset, size: f.type.size,
-    value: f.type.decode(buf.subarray(f.offset, f.offset + f.type.size)),
-    editable: Boolean(f.editable), secret: Boolean(f.secret), note: f.note || null, maxLength: f.type.maxLength ?? null,
+  return FIELDS.map((field) => ({
+    key: field.key, group: field.group, name: field.name, offset: field.offset, size: field.type.size,
+    value: field.type.decode(buf.subarray(field.offset, field.offset + field.type.size)),
+    editable: Boolean(field.editable), secret: Boolean(field.secret), note: field.note || null, maxLength: field.type.maxLength ?? null,
   }));
 }
 
 // names.bin -> { key: value } (plain JSON form of the settings).
 export function gateSettingsJson(buf: Buffer): Record<string, string> {
-  return Object.fromEntries(decodeGateSettings(buf).map((s) => [s.key, s.value]));
+  return Object.fromEntries(decodeGateSettings(buf).map((setting) => [setting.key, setting.value]));
 }
 
 // Returns a copy of names.bin with the changed settings written in place, the list of changed bytes and a
@@ -507,7 +507,7 @@ export function applyGateSettings(buf: Buffer, changes: Record<string, unknown> 
     if (!f.editable) throw new Error(`${f.name} is read-only`);
     const value = String(raw ?? '');
     let bytes: Buffer;
-    try { bytes = f.type.encode!(value); } catch (e) { throw new Error(`${f.name}: ${(e as Error).message}`); }
+    try { bytes = f.type.encode!(value); } catch (err) { throw new Error(`${f.name}: ${(err as Error).message}`); }
     const from = f.type.decode(buf.subarray(f.offset, f.offset + f.type.size));
     bytes.copy(out, f.offset);
     if (!bytes.equals(buf.subarray(f.offset, f.offset + f.type.size))) changed.push({ key, name: f.name, from, to: value });

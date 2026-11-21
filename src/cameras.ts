@@ -8,676 +8,25 @@
 // The recorder password is encrypted in the database (see db.ts) and given only to ffmpeg (the tunnel needs just the serial).
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { openTunnel } from 'dahua-p2p';
-import type { AddressInfo } from 'node:net';
-import type { Writable } from 'node:stream';
-import { encrypt, decrypt, phoneDigits } from './db.ts';
-import { all, one, run, type Store } from './db.ts';
-import type { CameraChannel, CameraSettings, SnapshotMinute } from './types.ts';
-import { frameOffsets, posterFile } from './snapshot-files.ts';
+import { phoneDigits, run, type Store } from './db.ts';
+import type { CameraChannel, SnapshotMinute } from './types.ts';
+import { posterFile } from './snapshot-files.ts';
+import { afterMs, finished, frameJobs, frameOfFile, listSnapshots, minuteStart, NO_FOOTAGE_MSG, NO_RECORDING_MSG, noFootageMinute, pendingMinutes, playbackTime, recordSnapshot, shiftsOf } from './camera-log.ts';
+import { createCameraRunner, NO_CONNECTION, STOPPED_MSG } from './camera-runner.ts';
+import { type CameraConfig, CLIP_TRIES, type FrameJob, getCameraSettings, type Log, NO_VIDEO_MSG, type PendingMinute, type Recorder, SETTLE_MS, type Shifts, type TxRow, type WithPassword } from './camera-settings.ts';
+import { httpError } from './errors.ts';
 
-// Settings as validated by normalizeCameraSettings; with the recorder password for the runner.
-type CameraConfig = Omit<CameraSettings, 'savedBy' | 'savedAt'>;
-type WithPassword = { password: string };
-interface Recorder { serial: string; username: string; password: string }
-type RecorderConfig = CameraConfig & WithPassword;
-type CodedError = Error & { code?: string; status?: number };
-type Shifts = Record<string, number>;
-type Log = (message: string) => void;
-// Transaction rows as read by transactions.ts (only the fields used here).
-interface TxRow { ts: number; access?: string; eventType?: string }
-interface PendingMinute { minute: string; ts: number }
-interface FrameJob { channel: number; off: number; file: string; video?: boolean }
-
-const BIN_DIR = path.join(import.meta.dirname, '..', 'tools', 'bin');
-const CAMERA_EVENTS: CameraSettings['events'][] = ['access', 'all']; // access: admitted/denied entries only
-const CAMERA_MODES: CameraSettings['mode'][] = ['snapshots', 'video'];
-const VIDEO_SECS = 120;
-const CLIP_RESUMES = 2;
-const CLIP_SHORT_SECS = 5; // a video this much shorter than VIDEO_SECS counts as cut off
-const CLIP_GAP_STEP = 5; // seconds a video request moves on past a gap in the recording
-const CLIP_MAX_PARTS = 8; // most parts joined into one video
-const CLIP_TRIES = 2; // default whole-video tries before a cut-off video fails (setting clipTries)
-const MAX_CLIP_TRIES = 5;
-const NO_VIDEO_MSG = 'The recorder sent no video';
-const LIVE_MAX_MS = 15 * 60000; // longest live view stream
-const LIVE_WIDTH = 960;
-const LIVE_FPS = 8;
-const MAX_CHANNELS = 8;
-const MAX_MINUTES_PER_RUN = 60;
-const MAX_ATTEMPTS = 3;
-const SETTLE_MS = 90000; // a minute this recent may not be fully recorded yet
-const KEEP_DAYS = [15, 30, 60, 90, 0]; // how long saved snapshots are kept (setting keepDays); 0 = forever
-const DAY_MS = 86400000;
-// Pieces of a video being fetched (grabClipOnce parts, grabClip's best try, saveClip's new video) and their pictures,
-// and finishClip's list of parts.
-const LEFTOVER = /\.(rec\d+|best|new)\.(mp4|jpg)$|\.parts\.txt$/;
-
-const pad = (n: number): string => String(n).padStart(2, '0');
-const int = (v: unknown, def: number): number => (v === undefined || v === null || v === '' ? def : Number(v));
-const bad = (msg: string) => Object.assign(new Error(msg), { status: 400 });
-
-type CameraBody = Partial<Record<'enabled' | 'serial' | 'username' | 'clockOffset' | 'frames' | 'framesAfter' | 'events'
-  | 'mode' | 'backfillHours' | 'clipTries' | 'keepDays' | 'channels', unknown>>;
-
-// Returns { settings } or { error }. channels: [{ channel: 1-64, name }].
-export function normalizeCameraSettings(body: unknown): { settings: CameraConfig; error?: undefined } | { settings?: undefined; error: string } {
-  const b = (body || {}) as CameraBody;
-  const serial = String(b.serial || '').trim();
-  if (!/^[A-Za-z0-9]{6,32}$/.test(serial)) return { error: 'Recorder serial must be 6-32 letters and digits' };
-  const username = String(b.username || '').trim().slice(0, 64);
-  if (!username) return { error: 'Recorder username is required' };
-  const channels: CameraChannel[] = [];
-  for (const c of (Array.isArray(b.channels) ? b.channels : []) as ({ channel?: unknown; name?: unknown } | null)[]) {
-    if (!c || c.channel === '' || c.channel == null) continue;
-    const channel = Number(c.channel);
-    if (!Number.isInteger(channel) || channel < 1 || channel > 64) return { error: 'Channels must be 1-64' };
-    if (channels.some((x) => x.channel === channel)) return { error: `Channel ${channel} is listed twice` };
-    channels.push({ channel, name: String(c.name || '').trim().slice(0, 40) });
-  }
-  if (!channels.length || channels.length > MAX_CHANNELS) return { error: `List 1-${MAX_CHANNELS} channels` };
-  const clockOffset = int(b.clockOffset, 0);
-  if (!Number.isInteger(clockOffset) || Math.abs(clockOffset) > 86400) return { error: 'Clock offset must be whole seconds within a day' };
-  const frames = int(b.frames, 3);
-  if (!Number.isInteger(frames) || frames < 1 || frames > 6) return { error: 'Frames per transaction must be 1-6' };
-  const framesAfter = int(b.framesAfter, 0);
-  if (!Number.isInteger(framesAfter) || framesAfter < 0 || framesAfter > 6) return { error: 'Frames after the minute must be 0-6' };
-  const events = (b.events || 'access') as CameraSettings['events'];
-  if (!CAMERA_EVENTS.includes(events)) return { error: `Events must be ${CAMERA_EVENTS.join(' or ')}` };
-  const mode = (b.mode || 'snapshots') as CameraSettings['mode'];
-  if (!CAMERA_MODES.includes(mode)) return { error: `Save must be ${CAMERA_MODES.join(' or ')}` };
-  const backfillHours = int(b.backfillHours, 24);
-  if (!Number.isInteger(backfillHours) || backfillHours < 0 || backfillHours > 720) return { error: 'Look-back hours must be 0-720' };
-  const clipTries = int(b.clipTries, CLIP_TRIES);
-  if (!Number.isInteger(clipTries) || clipTries < 1 || clipTries > MAX_CLIP_TRIES) return { error: `Video tries must be 1-${MAX_CLIP_TRIES}` };
-  const keepDays = int(b.keepDays, 0);
-  if (!KEEP_DAYS.includes(keepDays)) return { error: 'Keep pictures must be 15, 30, 60 or 90 days, or forever' };
-  return { settings: { enabled: b.enabled !== false, serial, username, channels, clockOffset, mode, frames, framesAfter, clipTries, events,
-    backfillHours, keepDays } };
-}
-
-interface CameraRow { phone: string; data: CameraSettings; password: string; saved_by: string; saved_at: string }
-
-// The gate's camera settings (password only with withPassword), or null.
-export function getCameraSettings(store: Store, phone: unknown, opts: { withPassword: true }): Promise<(CameraSettings & WithPassword) | null>;
-export function getCameraSettings(store: Store, phone: unknown, opts?: { withPassword?: boolean }): Promise<CameraSettings | null>;
-export async function getCameraSettings(store: Store, phone: unknown, { withPassword = false }: { withPassword?: boolean } = {}): Promise<CameraSettings | null> {
-  const r = await one<CameraRow>(store, 'SELECT * FROM cameras WHERE phone = $1', [phoneDigits(phone)]);
-  if (!r) return null;
-  return { ...r.data, savedBy: r.saved_by, savedAt: r.saved_at, ...(withPassword && { password: decrypt(store, r.password) }) };
-}
-
-// Saves the settings; a blank password keeps the saved one. Throws 400 on bad input.
-export async function saveCameraSettings(store: Store, phone: unknown, user: unknown, body: unknown): Promise<CameraSettings | null> {
-  const { settings, error } = normalizeCameraSettings(body);
-  if (error) throw bad(error);
-  const password = String((body && (body as { password?: unknown }).password) || '');
-  const old = await one<{ password: string }>(store, 'SELECT password FROM cameras WHERE phone = $1', [phoneDigits(phone)]);
-  if (!password && !old) throw bad('Recorder password is required');
-  await run(store, `INSERT INTO cameras (phone, data, password, saved_by, saved_at) VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (phone) DO UPDATE SET data = excluded.data, password = excluded.password, saved_by = excluded.saved_by,
-    saved_at = excluded.saved_at`,
-  [phoneDigits(phone), JSON.stringify(settings), password ? encrypt(store, password) : old!.password, String(user), new Date().toISOString()]);
-  return getCameraSettings(store, phone);
-}
-
-export async function deleteCameraSettings(store: Store, phone: unknown): Promise<boolean> {
-  return (await run(store, 'DELETE FROM cameras WHERE phone = $1', [phoneDigits(phone)])) > 0;
-}
-
-// Snapshot folder name for a transaction time: YYYYMMDD-HHMM (local).
-export function minuteKey(ts: number | string | Date): string {
-  const d = new Date(ts);
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-}
-
-// Playback starttime: YYYY_MM_DD_HH_MM_SS (local).
-export function playbackTime(d: Date): string {
-  return [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()].map(pad).join('_');
-}
-
-// Seconds into the minute for each frame: 3 -> [0, 20, 40].
-
-// Each channel's frames for a minute: [{ channel, off, file, video }], off in seconds from the minute's start.
-// Frames after the minute (framesAfter) are at 60 + their offset, named ch<N>-a<SS>.jpg. Video mode: one
-// ch<N>.mp4 per channel from the minute's start.
-const frameJobs = (cfg: CameraConfig): FrameJob[] => (cfg.mode === 'video'
-  ? cfg.channels.map(({ channel }) => ({ channel, off: 0, file: `ch${channel}.mp4`, video: true }))
-  : cfg.channels.flatMap(({ channel }) => [
-    ...frameOffsets(cfg.frames).map((s) => ({ channel, off: s, file: `ch${channel}-${pad(s)}.jpg` })),
-    ...frameOffsets(cfg.framesAfter || 0).map((s) => ({ channel, off: 60 + s, file: `ch${channel}-a${pad(s)}.jpg` })),
-  ]));
-// Extra wait before a minute can be fetched when its recording reaches into the next minute.
-const afterMs = (cfg: CameraConfig): number => (cfg.mode === 'video' || cfg.framesAfter ? 60000 : 0);
-
-// Transactions that never get camera footage: the gate's data transfers (RS232, modem), its hold-open schedule
-// (Hold Begin / Hold End), anti-pass back maintenance (Re-Sync, Counter) and the System relay commands (hold, release,
-// 1 hour, H/U) except a momentary open (System Admit, someone let in). They aren't fetched, even with events 'all',
-// nor for one minute on request.
-const NO_FOOTAGE_EVENTS = new Set(['RS232', 'Modem-to-Modem', 'Modem', 'Hold Begin', 'Hold End', 'APB Re-Sync', 'APB Counter']);
-export const NO_FOOTAGE_MSG = 'Gate data transfers, hold-open events and other gate commands don\'t get camera footage';
-export const footageApplies = (t: { eventType?: string; access?: string }): boolean => !NO_FOOTAGE_EVENTS.has(t.eventType || '')
-  && !(t.eventType === 'System' && t.access !== 'Admit');
-// A minute whose transactions (rows) are all ones that never get footage (a minute with none isn't).
-export function noFootageMinute(rows: TxRow[], minute: string): boolean {
-  const at = rows.filter((t) => minuteKey(t.ts) === minute);
-  return at.length > 0 && !at.some(footageApplies);
-}
-
-const wantsSnapshot = (cfg: CameraConfig, t: TxRow): boolean => footageApplies(t)
-  && (cfg.events === 'all' || t.access === 'Admit' || t.access === 'Deny');
-
-interface SnapshotRow {
-  phone: string; minute: string; status: string; files: string[]; error: string | null; attempts: number;
-  video_attempts: number | null; at: string; shifts: Shifts | null; short: Shifts | null;
-}
-
-// { [minute]: { status, files, error, attempts, videoAttempts, at, shifts, short } } for the gate. shifts: { [file]: seconds } for
-// pictures taken that many seconds from the planned time (see NEARBY_SECS). short: { [file]: seconds } for partial
-// videos (kept, fetched again later). videoAttempts: the runs made in video mode.
-export async function listSnapshots(store: Store, phone: unknown): Promise<Record<string, SnapshotMinute>> {
-  const rows = await all<SnapshotRow>(store, 'SELECT * FROM snapshots WHERE phone = $1', [phoneDigits(phone)]);
-  return Object.fromEntries(rows.map((r) => [r.minute,
-    { status: r.status, files: r.files, error: r.error, attempts: r.attempts, videoAttempts: r.video_attempts || 0, at: r.at,
-      shifts: r.shifts || {}, short: r.short || {} }]));
-}
-
-const shiftsOf = (files: string[] | undefined, shifts: Shifts = {}): Shifts =>
-  Object.fromEntries((files || []).filter((f) => shifts[f]).map((f) => [f, shifts[f]]));
-
-interface SnapshotRecord { status: string; files?: string[]; error?: string | null; shifts?: Shifts; short?: Shifts; video?: boolean }
-
-// video: the run was in video mode (counted in video_attempts too).
-export async function recordSnapshot(store: Store, phone: unknown, minute: string,
-  { status, files, error, shifts, short, video = false }: SnapshotRecord): Promise<void> {
-  await run(store, `INSERT INTO snapshots (phone, minute, status, files, error, attempts, at, shifts, video_attempts, short)
-    VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)
-    ON CONFLICT (phone, minute) DO UPDATE SET status = excluded.status, files = excluded.files, error = excluded.error,
-    attempts = snapshots.attempts + 1, at = excluded.at, shifts = excluded.shifts,
-    video_attempts = snapshots.video_attempts + excluded.video_attempts, short = excluded.short`,
-  [phoneDigits(phone), minute, status, JSON.stringify(files || []), error || null, new Date().toISOString(),
-    JSON.stringify(shiftsOf(files, shifts)), video ? 1 : 0, JSON.stringify(shiftsOf(files, short))]);
-}
-
-// A minute folder's saved pictures and videos (a video's first-frame picture not counted) and their bytes.
-function mediaIn(folder: string): { files: number; bytes: number } {
-  const names = fs.readdirSync(folder);
-  let files = 0;
-  let bytes = 0;
-  for (const f of names) {
-    bytes += fs.statSync(path.join(folder, f)).size;
-    if (f.endsWith('.mp4') || (f.endsWith('.jpg') && !names.includes(f.replace(/\.jpg$/, '.mp4')))) files++;
-  }
-  return { files, bytes };
-}
-
-interface TidyResult { minutes: number; files: number; bytes: number; leftovers: number; leftoverBytes: number; missing: number }
-
-// Tidies a gate's saved snapshots (<dir>/snapshots): deletes leftover pieces of videos whose fetch was cut off
-// (LEFTOVER), deletes the minute folders older than keepDays (0 = keep forever), and marks the log entries whose
-// files are all gone as removed (status 'removed', no files, error = why) so they are not fetched again; an entry
-// missing only some files lists just the ones left. Call only while no snapshot run or refresh uses the folder.
-// Returns what was deleted: minutes/files/bytes (old minutes), leftovers/leftoverBytes, missing (entries marked).
-export async function tidySnapshots(store: Store, phone: unknown, dir: string, keepDays = 0, now = Date.now()): Promise<TidyResult> {
-  const out: TidyResult = { minutes: 0, files: 0, bytes: 0, leftovers: 0, leftoverBytes: 0, missing: 0 };
-  const cutoff = keepDays ? now - keepDays * DAY_MS : null;
-  const old = (minute: string) => { const t = minuteStart(minute); return cutoff !== null && t !== null && t < cutoff; };
-  const folder = path.join(dir, 'snapshots');
-  if (fs.existsSync(folder)) {
-    for (const d of fs.readdirSync(folder, { withFileTypes: true })) {
-      if (!d.isDirectory()) continue;
-      const sub = path.join(folder, d.name);
-      for (const f of fs.readdirSync(sub)) {
-        if (!LEFTOVER.test(f)) continue;
-        out.leftovers++;
-        out.leftoverBytes += fs.statSync(path.join(sub, f)).size;
-        fs.rmSync(path.join(sub, f), { force: true });
-      }
-      if (d.name !== 'live' && old(d.name)) {
-        const m = mediaIn(sub);
-        out.minutes++;
-        out.files += m.files;
-        out.bytes += m.bytes;
-        fs.rmSync(sub, { recursive: true, force: true });
-      } else if (!fs.readdirSync(sub).length) fs.rmdirSync(sub);
-    }
-  }
-  const p = phoneDigits(phone);
-  for (const r of await all<SnapshotRow>(store, "SELECT * FROM snapshots WHERE phone = $1 AND status <> 'removed'", [p])) {
-    if (!r.files.length) continue;
-    const left = old(r.minute) ? [] : r.files.filter((f) => fs.existsSync(path.join(folder, r.minute, f)));
-    if (left.length === r.files.length) continue;
-    if (!left.length) {
-      if (!old(r.minute)) out.missing++;
-      await run(store, `UPDATE snapshots SET status = 'removed', files = '[]', shifts = '{}', short = '{}', error = $3
-        WHERE phone = $1 AND minute = $2`, [p, r.minute, old(r.minute) ? `Deleted after ${keepDays} days` : 'The files are no longer on disk']);
-    } else {
-      await run(store, 'UPDATE snapshots SET files = $3, shifts = $4, short = $5 WHERE phone = $1 AND minute = $2',
-        [p, r.minute, JSON.stringify(left), JSON.stringify(shiftsOf(left, r.shifts || {})), JSON.stringify(shiftsOf(left, r.short || {}))]);
-    }
-  }
-  return out;
-}
-
-// Deletes the saved footage of minutes whose transactions (rows) all never get footage (noFootageMinute) and marks
-// them removed (error = why), so they are neither shown nor fetched again. Call only while no snapshot run or refresh
-// uses the folder. Returns { minutes, files, bytes }.
-export async function removeNoFootageSnapshots(store: Store, phone: unknown, dir: string, rows: TxRow[]):
-  Promise<{ minutes: number; files: number; bytes: number }> {
-  const p = phoneDigits(phone);
-  const out = { minutes: 0, files: 0, bytes: 0 };
-  for (const r of await all<SnapshotRow>(store, "SELECT * FROM snapshots WHERE phone = $1 AND status <> 'removed'", [p])) {
-    if (!noFootageMinute(rows, r.minute)) continue;
-    const sub = path.join(dir, 'snapshots', r.minute);
-    if (fs.existsSync(sub)) {
-      const m = mediaIn(sub);
-      out.files += m.files;
-      out.bytes += m.bytes;
-      fs.rmSync(sub, { recursive: true, force: true });
-    }
-    await run(store, `UPDATE snapshots SET status = 'removed', files = '[]', shifts = '{}', short = '{}', error = $3
-      WHERE phone = $1 AND minute = $2`, [p, r.minute, NO_FOOTAGE_MSG]);
-    out.minutes++;
-  }
-  return out;
-}
-
-// Deletes every saved picture (<dir>/snapshots, live pictures included) and the gate's snapshot log.
-// Returns { minutes, files }: log rows and picture files removed.
-export async function deleteSnapshots(store: Store, phone: unknown, dir: string): Promise<{ minutes: number; files: number }> {
-  const minutes = await run(store, 'DELETE FROM snapshots WHERE phone = $1', [phoneDigits(phone)]);
-  const folder = path.join(dir, 'snapshots');
-  let files = 0;
-  if (fs.existsSync(folder)) {
-    for (const d of fs.readdirSync(folder, { withFileTypes: true })) {
-      if (!d.isDirectory()) continue;
-      const names = fs.readdirSync(path.join(folder, d.name));
-      files += names.filter((f) => f.endsWith('.mp4') || (f.endsWith('.jpg') && !names.includes(f.replace(/\.jpg$/, '.mp4')))).length;
-    }
-    fs.rmSync(folder, { recursive: true, force: true });
-  }
-  return { minutes, files };
-}
-
-// The recorder answers 404 for a playback time it has no recording of; after one more try (see grabFrame) the
-// frame counts as not recorded and is not asked for on later runs.
-const NO_RECORDING = /404 Not Found|No recording at this time/i;
-const NO_RECORDING_MSG = 'No recording at this time';
-// A minute is finished when every frame was saved or has no recording.
-const finished = (s: { error?: string | null }): boolean => !s.error || String(s.error).split('; ').every((e) => NO_RECORDING.test(e));
+type CameraRunner = ReturnType<typeof createCameraRunner>;
 // When the recorder has no recording at a frame's time, these seconds around it are tried (once each) and the
 // first picture saved instead.
 const NEARBY_SECS = [-2, 2];
-
-// A logged minute still to fetch. Video mode: until every channel has its video, a minute with only pictures
-// is fetched again (its picture runs do not count); after a video run, finished and tries count as usual.
-function needsRun(cfg: CameraConfig, s: SnapshotMinute): boolean {
-  if (s.status === 'removed') return false;
-  if (cfg.mode !== 'video') return !finished(s) && s.attempts < MAX_ATTEMPTS;
-  if (frameJobs(cfg).every(({ file }) => s.files.includes(file) && !(s.short || {})[file])) return false;
-  return !s.videoAttempts || (!finished(s) && s.videoAttempts < MAX_ATTEMPTS);
-}
-
-// Minutes still to snapshot, newest first: wanted transactions within backfillHours (and keepDays), not finished,
-// not removed, and not tried MAX_ATTEMPTS times (see needsRun). rows: transaction rows ({ ts, access }).
-export function pendingMinutes(cfg: CameraConfig, rows: TxRow[], done: Record<string, SnapshotMinute>, now = Date.now()): PendingMinute[] {
-  const since = Math.max(now - cfg.backfillHours * 3600000, cfg.keepDays ? now - cfg.keepDays * DAY_MS : -Infinity);
-  const seen = new Map<string, PendingMinute>();
-  for (const t of rows) {
-    if (!wantsSnapshot(cfg, t) || t.ts < since || t.ts > now - SETTLE_MS - afterMs(cfg)) continue;
-    const minute = minuteKey(t.ts);
-    const s = done[minute];
-    if (seen.has(minute) || (s && !needsRun(cfg, s))) continue;
-    seen.set(minute, { minute, ts: new Date(t.ts).setSeconds(0, 0) });
-  }
-  return [...seen.values()].sort((a, b) => b.ts - a.ts).slice(0, MAX_MINUTES_PER_RUN);
-}
-
-// Hides secrets (and any user:pass@ in URLs) in tool output.
-export function maskSecrets(text: unknown, secrets: string[] = []): string {
-  let out = String(text || '').replace(/(rtsp:\/\/)[^@\s/]+@/gi, '$1***@');
-  for (const s of secrets.filter(Boolean)) {
-    for (const v of new Set([s, encodeURIComponent(s)])) out = out.split(v).join('***');
-  }
-  return out;
-}
-
-// ffmpeg's path by platform: Windows ffmpeg.exe (x64; runs emulated on arm64), Linux ffmpeg-linux-<x64|arm64>.
-const archName = (arch: string): string => (arch === 'arm64' ? 'arm64' : 'x64');
-export const ffmpegExe = (binDir = BIN_DIR, arch: string = process.arch, platform: string = process.platform): string => path.join(binDir,
-  platform === 'win32' ? 'ffmpeg.exe' : `ffmpeg-linux-${archName(arch)}`);
-// The bundled ffmpeg when tools/bin has it (it is not in the git repository: too large), else ffmpeg on the PATH.
-export const ffmpegCommand = (binDir = BIN_DIR): string => (fs.existsSync(ffmpegExe(binDir)) ? ffmpegExe(binDir) : 'ffmpeg');
-
-// Outside Windows, adds the execute bit when it is missing (lost when the files are copied from Windows).
-function executable(file: string): string {
-  if (process.platform === 'win32') return file;
-  try {
-    const { mode } = fs.statSync(file);
-    if ((mode & 0o111) !== 0o111) fs.chmodSync(file, mode | 0o755);
-  } catch { /* spawn reports a missing file */ }
-  return file;
-}
-
-// Saved snapshot or video path, or null when the names are not snapshot names or the file is missing.
-export function snapshotFile(dir: string, minute: string, file: string): string | null {
-  if (!/^(\d{8}-\d{4}|live)$/.test(minute) || !/^ch\d{1,2}((-a?\d{2})?\.jpg|\.mp4)$/.test(file)) return null;
-  const f = path.join(dir, 'snapshots', minute, file);
-  return fs.existsSync(f) ? f : null;
-}
-
-// Runs the bridges and ffmpeg. One bridge (relay tunnel) per recorder (serial + username), started on first use and
-// stopped after idleMs unused; it is replaced when its tunnel closes. A frame that fails is tried once more after
-// retryWaitMs (a recorder 404 is not always final): on a new bridge when the tunnel closed or the stream never
-// opened. A frame cut off in transfer (decoder errors; saved as
-// a part-green picture) is deleted and tried once more straight away.
-// A bridge that cannot connect (fails or times out before listening) is started again after connectWaitMs,
-// then twice that, up to connectTries times; after that the error has code NO_CONNECTION.
-// log(message) gets bridge starts, connections, unexpected closes and idle stops, each bridge connection
-// failure, and live views retried on a new bridge.
-// Videos (grabFrame's video option) are copied without re-encoding to a fragmented MP4 file of up to VIDEO_SECS,
-// within clipMs (ffmpeg's MPEG-TS writer refuses the recorder's H.265 stream, verified 2026-10-19); finishClip
-// turns that into the .mp4 and its first-frame picture. A bridge is not stopped as idle while a grab is using it.
-const STREAM_NOT_OPENED = /Invalid data found|End of file|Connection refused/i;
-const DAMAGED = /error while decoding|concealing|corrupt|Invalid NAL|Could not find ref|missing picture|PPS id|SPS id/i;
-const DAMAGED_MSG = 'Picture damaged in transfer';
-const STOPPED_MSG = 'Stopped';
-const NO_CONNECTION = 'NO_CONNECTION';
-
-// Waits ms; rejects with "Stopped" when signal aborts.
-function pause(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal && signal.aborted) return reject(new Error(STOPPED_MSG));
-    const onAbort = () => { clearTimeout(timer); reject(new Error(STOPPED_MSG)); };
-    const timer = setTimeout(() => { if (signal) signal.removeEventListener('abort', onAbort); resolve(); }, ms);
-    if (signal) signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-// kill: stops the bridge (its tunnel and local port).
-interface Bridge {
-  kill: () => void; port: Promise<number>; password: string; lines: string[];
-  timer?: ReturnType<typeof setTimeout>; busy?: number; dead?: boolean; connected?: boolean;
-}
-
-interface CameraRunnerOptions {
-  binDir?: string; ffmpegPath?: string; idleMs?: number; readyMs?: number; grabMs?: number; clipExtraMs?: number;
-  connectTries?: number; connectWaitMs?: number; retryWaitMs?: number; log?: Log;
-}
-interface GrabOptions { signal?: AbortSignal; onRetry?: (e: Error) => void; once?: boolean; video?: number }
-interface LiveOptions { sub?: boolean; signal?: AbortSignal; onStart?: () => void; maxMs?: number }
-
-// ffmpegPath: the ffmpeg program to run; empty = ffmpegCommand(binDir).
-export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs = 120000, readyMs = 45000, grabMs = 45000,
-  clipExtraMs = 60000, connectTries = 3, connectWaitMs = 10000, retryWaitMs = 2000, log = () => {} }: CameraRunnerOptions = {}) {
-  const bridges = new Map<string, Bridge>();
-
-  function stop(key: string): void {
-    const b = bridges.get(key);
-    if (!b) return;
-    bridges.delete(key);
-    clearTimeout(b.timer);
-    b.kill();
-  }
-
-  // The dahua-p2p package's relay tunnel (reliable PTCP layer), exposing the recorder's RTSP port on a local port. It
-  // carries one stream at a time (later ones wait) and retries while the recorder still holds an earlier session.
-  function start(key: string, cfg: Recorder): Bridge {
-    const b = { password: cfg.password, lines: [] } as unknown as Bridge;
-    let closeTunnel = () => {};
-    let server: { close: () => void } | null = null;
-    let killed = false;
-    b.kill = () => { killed = true; server?.close(); closeTunnel(); };
-    const note = (line: string) => { b.lines.push(line); if (b.lines.length > 20) b.lines.shift(); };
-    const tail = () => (b.lines.length ? `: ${maskSecrets(b.lines.slice(-3).join(' | '), [cfg.password])}` : '');
-    log(`Recorder ${cfg.serial}: starting bridge`);
-    const ended = (why: string) => {
-      b.dead = true;
-      if (bridges.get(key) === b) {
-        bridges.delete(key); clearTimeout(b.timer);
-        if (b.connected && !killed) log(`Recorder ${cfg.serial}: bridge closed (${why})${tail()}`);
-      }
-    };
-    b.port = (async () => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const opening = openTunnel({ serial: cfg.serial, log: note });
-      let opened = false;
-      try {
-        const tunnel = await Promise.race([
-          opening,
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Camera bridge did not connect within ${readyMs / 1000} s${tail()}`)), readyMs); }),
-        ]);
-        opened = true;
-        closeTunnel = () => tunnel.close('stopped');
-        if (killed) { tunnel.close('stopped'); throw new Error('Camera bridge stopped'); }
-        tunnel.on('closed', (reason) => { server?.close(); ended(String(reason || 'closed')); });
-        const srv = await tunnel.listen(0, 554, '127.0.0.1');
-        server = srv;
-        b.connected = true;
-        log(`Recorder ${cfg.serial}: bridge connected (${tunnel.stats.handshakeMs} ms)`);
-        return (srv.address() as AddressInfo).port;
-      } catch (e) {
-        // Close what is open: a tunnel that connects after the timeout, or one whose local port failed.
-        if (opened) { server?.close(); closeTunnel(); } else opening.then((t) => t.close('timed out'), () => {});
-        ended((e as Error).message);
-        throw new Error(`Camera bridge: ${maskSecrets((e as Error).message, [cfg.password])}`);
-      } finally { clearTimeout(timer); }
-    })();
-    b.port.catch(() => {});
-    return b;
-  }
-
-  // The bridge's local port, starting the bridge when needed.
-  function bridge(cfg: Recorder): { key: string; port: Promise<number>; b: Bridge } {
-    const key = `${cfg.serial}|${cfg.username}`;
-    let b = bridges.get(key);
-    if (b && (b.password !== cfg.password || b.dead)) { stop(key); b = undefined; }
-    if (!b) { b = start(key, cfg); bridges.set(key, b); }
-    idle(key, b);
-    return { key, port: b.port, b };
-  }
-
-  function idle(key: string, b: Bridge): void {
-    clearTimeout(b.timer);
-    if (!b.busy && bridges.get(key) === b) {
-      b.timer = setTimeout(() => { log(`Recorder ${key.split('|')[0]}: bridge stopped after ${idleMs / 1000} s idle`); stop(key); }, idleMs);
-    }
-  }
-
-  // video: seconds of video to save instead of one frame.
-  function ffmpeg(url: string, outFile: string, secrets: string[], signal?: AbortSignal, video = 0): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (signal && signal.aborted) return reject(new Error(STOPPED_MSG));
-      const input = ['-hide_banner', '-loglevel', 'error', '-rtsp_transport', 'tcp', '-timeout', String(grabMs * 1000)];
-      const args = video
-        ? [...input, '-i', url, '-t', String(video), '-map', '0:v:0', '-c', 'copy',
-          '-f', 'mp4', '-movflags', '+frag_keyframe+empty_moov', '-y', outFile]
-        : [...input, '-fflags', '+discardcorrupt', '-skip_frame', 'nokey', '-i', url, '-frames:v', '1', '-update', '1', '-q:v', '3', '-y', outFile];
-      const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-      let err = '';
-      proc.stderr.on('data', (c) => { err = (err + c).slice(-2000); });
-      const timer = setTimeout(() => proc.kill(), video ? video * 1000 + clipExtraMs : grabMs + 5000);
-      const onAbort = () => proc.kill();
-      if (signal) signal.addEventListener('abort', onAbort, { once: true });
-      proc.on('error', (e) => {
-        clearTimeout(timer);
-        if (signal) signal.removeEventListener('abort', onAbort);
-        reject(new Error(`ffmpeg: ${e.message}`));
-      });
-      proc.on('exit', (code) => {
-        clearTimeout(timer);
-        if (signal) signal.removeEventListener('abort', onAbort);
-        if (signal && signal.aborted) { fs.rmSync(outFile, { force: true }); return reject(new Error(STOPPED_MSG)); }
-        const saved = code === 0 && fs.existsSync(outFile) && fs.statSync(outFile).size > 0;
-        if (saved && (video || !DAMAGED.test(err))) return resolve();
-        fs.rmSync(outFile, { force: true });
-        if (saved) return reject(new Error(DAMAGED_MSG));
-        const last = maskSecrets(err.trim().split(/\r?\n/).pop(), secrets);
-        if (NO_RECORDING.test(last)) return reject(new Error(NO_RECORDING_MSG));
-        reject(new Error(last || (code === null ? `No ${video ? 'video' : 'picture'} before the time limit` : `ffmpeg exited (code ${code})`)));
-      });
-    });
-  }
-
-  // Runs ffmpeg on local files: { code, err } (err: the last 4000 characters of its output).
-  function localFfmpeg(args: string[], ms = 60000): Promise<{ code: number | null; err: string }> {
-    return new Promise((resolve) => {
-      const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), ['-hide_banner', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-      let err = '';
-      proc.stderr.on('data', (c) => { err = (err + c).slice(-4000); });
-      const timer = setTimeout(() => proc.kill(), ms);
-      proc.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, err: e.message }); });
-      proc.on('exit', (code) => { clearTimeout(timer); resolve({ code, err }); });
-    });
-  }
-
-  // A local video file's duration in seconds (0 when unreadable).
-  async function clipSeconds(file: string): Promise<number> {
-    const m = /Duration: (\d+):(\d+):(\d+(?:\.\d+)?)/.exec((await localFfmpeg(['-i', file], 30000)).err);
-    return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0;
-  }
-
-  // Joins the recorded parts (in order) into outFile (.mp4, playable while loading; H.265 tagged hvc1 so Safari
-  // plays it) and saves the first keyframe to poster. Returns the video's duration in seconds; throws when it has
-  // less than a second of video.
-  async function finishClip(parts: string[], outFile: string, poster: string): Promise<number> {
-    const list = `${outFile}.parts.txt`;
-    const input = parts.length > 1 ? ['-f', 'concat', '-safe', '0', '-i', list] : ['-i', parts[0]];
-    const drop = () => { fs.rmSync(outFile, { force: true }); fs.rmSync(poster, { force: true }); };
-    if (parts.length > 1) fs.writeFileSync(list, parts.map((p) => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'\n`).join(''));
-    try {
-      const tag = /Video: hevc/.test((await localFfmpeg(['-i', parts[0]], 30000)).err) ? ['-tag:v', 'hvc1'] : [];
-      const r = await localFfmpeg(['-loglevel', 'error', '-skip_frame', 'nokey', ...input,
-        '-map', '0:v:0', '-c', 'copy', ...tag, '-movflags', '+faststart', '-y', outFile,
-        '-map', '0:v:0', '-frames:v', '1', '-update', '1', '-q:v', '3', '-y', poster]);
-      if (r.code !== 0 || !fs.existsSync(outFile) || !fs.statSync(outFile).size) {
-        drop();
-        throw new Error(`Could not save the video: ${r.err.trim().split(/\r?\n/).pop() || `ffmpeg exited (code ${r.code})`}`);
-      }
-    } finally {
-      fs.rmSync(list, { force: true });
-    }
-    const secs = await clipSeconds(outFile);
-    if (secs < 1) { drop(); throw new Error(NO_VIDEO_MSG); }
-    return secs;
-  }
-
-  // Saves one frame from rtsp://<bridge><pathQuery> (e.g. /cam/playback?channel=1&starttime=...) to outFile.
-  // signal (AbortSignal) stops the grab: it rejects with "Stopped". onRetry(error) runs before the second try.
-  // once: no second try (bridge connection tries still apply). video: seconds of the stream to save instead (see
-  // above).
-  async function grabFrame(cfg: Recorder, pathQuery: string, outFile: string,
-    { signal, onRetry = () => {}, once = false, video = 0 }: GrabOptions = {}): Promise<void> {
-    let retried = once;
-    for (let fails = 0; ;) {
-      if (signal && signal.aborted) throw new Error(STOPPED_MSG);
-      const { key, port, b } = bridge(cfg);
-      let localPort: number;
-      try {
-        localPort = await port;
-      } catch (e) {
-        const { message } = e as Error;
-        if (signal && signal.aborted) throw new Error(STOPPED_MSG);
-        if (bridges.get(key) === b) stop(key);
-        log(`Recorder ${cfg.serial}: bridge did not connect (try ${fails + 1} of ${connectTries}): ${message}`);
-        if (++fails >= connectTries) throw Object.assign(new Error(`Could not reach the recorder after ${fails} tries (${message})`), { code: NO_CONNECTION });
-        await pause(connectWaitMs * fails, signal);
-        continue;
-      }
-      try {
-        const url = `rtsp://${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password)}@127.0.0.1:${localPort}${pathQuery}`;
-        b.busy = (b.busy || 0) + 1;
-        clearTimeout(b.timer);
-        try {
-          return await ffmpeg(url, outFile, [cfg.password], signal, video);
-        } finally {
-          b.busy--;
-          idle(key, b);
-        }
-      } catch (e) {
-        const err = e as Error;
-        if (retried || err.message === STOPPED_MSG || (signal && signal.aborted)) throw e;
-        retried = true;
-        onRetry(err);
-        if (err.message === DAMAGED_MSG) continue;
-        if (bridges.get(key) === b && (b.dead || STREAM_NOT_OPENED.test(err.message))) stop(key);
-        await pause(retryWaitMs, signal);
-      }
-    }
-  }
-
-  // Writes the live picture of one channel to out as MJPEG (multipart/x-mixed-replace; boundary=frame; up to
-  // LIVE_WIDTH wide, LIVE_FPS a second). sub: the recorder's lower-resolution sub stream. onStart() runs before
-  // the first write. Ends (resolves) when signal aborts, the stream stops, or after maxMs. Rejects when no
-  // picture came; the stream is tried once more on a new bridge when the first try got none.
-  async function liveStream(cfg: Recorder, channel: number | string, out: Writable,
-    { sub = true, signal, onStart = () => {}, maxMs = LIVE_MAX_MS }: LiveOptions = {}): Promise<void> {
-    const pathQuery = `/cam/realmonitor?channel=${channel}&subtype=${sub ? 1 : 0}`;
-    for (let attempt = 0; ; attempt++) {
-      if (signal && signal.aborted) return;
-      const { key, port, b } = bridge(cfg);
-      try {
-        const localPort = await port;
-        const url = `rtsp://${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password)}@127.0.0.1:${localPort}${pathQuery}`;
-        b.busy = (b.busy || 0) + 1;
-        clearTimeout(b.timer);
-        try {
-          return await mjpeg(url, out, [cfg.password], { signal, onStart, maxMs });
-        } finally {
-          b.busy--;
-          idle(key, b);
-        }
-      } catch (e) {
-        if (attempt || (signal && signal.aborted)) throw e;
-        log(`Recorder ${cfg.serial}: live view of channel ${channel} failed, trying a new bridge: ${(e as Error).message}`);
-        if (bridges.get(key) === b) stop(key);
-      }
-    }
-  }
-
-  function mjpeg(url: string, out: Writable, secrets: string[],
-    { signal, onStart, maxMs }: { signal?: AbortSignal; onStart: () => void; maxMs: number }): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (signal && signal.aborted) return resolve();
-      const args = ['-hide_banner', '-loglevel', 'error', '-rtsp_transport', 'tcp', '-timeout', String(grabMs * 1000),
-        '-fflags', 'nobuffer', '-flags', 'low_delay', '-i', url, '-map', '0:v:0', '-an',
-        '-vf', `fps=${LIVE_FPS},scale=w='min(${LIVE_WIDTH},iw)':h=-2`, '-c:v', 'mjpeg', '-q:v', '6',
-        '-f', 'mpjpeg', '-boundary_tag', 'frame', 'pipe:1'];
-      const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      let err = '';
-      let started = false;
-      const firstTimer = setTimeout(() => proc.kill(), grabMs + 5000);
-      const endTimer = setTimeout(() => proc.kill(), maxMs);
-      proc.stderr.on('data', (c) => { err = (err + c).slice(-2000); });
-      proc.stdout.on('data', (c) => {
-        if (!started) { started = true; clearTimeout(firstTimer); onStart(); }
-        if (!out.write(c)) { proc.stdout.pause(); out.once('drain', () => proc.stdout.resume()); }
-      });
-      const onAbort = () => proc.kill();
-      if (signal) signal.addEventListener('abort', onAbort, { once: true });
-      proc.on('error', (e) => {
-        clearTimeout(firstTimer);
-        clearTimeout(endTimer);
-        if (signal) signal.removeEventListener('abort', onAbort);
-        reject(new Error(`ffmpeg: ${e.message}`));
-      });
-      proc.on('exit', (code) => {
-        clearTimeout(firstTimer);
-        clearTimeout(endTimer);
-        if (signal) signal.removeEventListener('abort', onAbort);
-        if (started || (signal && signal.aborted)) return resolve();
-        const last = maskSecrets(err.trim().split(/\r?\n/).pop(), secrets);
-        reject(new Error(last || (code === null ? 'No picture before the time limit' : `ffmpeg exited (code ${code})`)));
-      });
-    });
-  }
-
-  const stopAll = () => { for (const key of [...bridges.keys()]) stop(key); };
-  return { grabFrame, clipSeconds, finishClip, liveStream, stopAll, running: () => bridges.size };
-}
-
-type CameraRunner = ReturnType<typeof createCameraRunner>;
+const CLIP_MAX_PARTS = 8; // most parts joined into one video
+const CLIP_GAP_STEP = 5; // seconds a video request moves on past a gap in the recording
+const CLIP_SHORT_SECS = 5; // a video this much shorter than VIDEO_SECS counts as cut off
+const CLIP_RESUMES = 2;
+const VIDEO_SECS = 120;
+type CodedError = Error & { code?: string; status?: number };
+type RecorderConfig = CameraConfig & WithPassword;
 
 type Settled<T> = { value: T; error?: undefined } | { value?: undefined; error: CodedError };
 
@@ -688,7 +37,7 @@ async function settleAll<T>(fns: (() => Promise<T>)[], limit: number): Promise<S
   const worker = async () => {
     while (next < fns.length) {
       const i = next++;
-      try { out[i] = { value: await fns[i]() }; } catch (e) { out[i] = { error: e as CodedError }; }
+      try { out[i] = { value: await fns[i]() }; } catch (err) { out[i] = { error: err as CodedError }; }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, fns.length) }, worker));
@@ -710,13 +59,21 @@ const clipQuery = (channel: number, at: number, secs = VIDEO_SECS): string =>
   `${playbackQuery(channel, at)}&endtime=${playbackTime(new Date(at + secs * 1000))}`;
 
 const isShort = (secs: number): boolean => secs < VIDEO_SECS - CLIP_SHORT_SECS;
+// short (file -> seconds) lists the videos that were cut off.
+const noteShort = (short: Shifts, file: string, secs: number): void => {
+  if (!isShort(secs)) {
+    delete short[file];
+    return;
+  }
+  short[file] = Math.round(secs);
+};
 const moveClip = (from: string, to: string): void => {
   fs.renameSync(from, to);
   if (fs.existsSync(posterFile(from))) fs.renameSync(posterFile(from), posterFile(to));
 };
 const dropClip = (file: string): void => { fs.rmSync(file, { force: true }); fs.rmSync(posterFile(file), { force: true }); };
 
-interface ClipOptions { signal?: AbortSignal; onRetry?: (e: Error) => void; log?: Log }
+interface ClipOptions { signal?: AbortSignal; onRetry?: (error: Error) => void; log?: Log }
 interface ClipResult { secs: number; error: CodedError | null }
 
 // Saves channel's VIDEO_SECS of video from time at (ms) to outFile (.mp4) and its first frame to
@@ -738,15 +95,20 @@ async function grabClip(runner: CameraRunner, cfg: RecorderConfig, channel: numb
     let secs: number;
     try {
       secs = await grabClipOnce(runner, cfg, channel, at, outFile, opts);
-    } catch (e) {
-      if (!bestSecs || (e as Error).message === STOPPED_MSG) { dropClip(best); throw e; }
-      error = e as CodedError;
+    } catch (err) {
+      if (!bestSecs || (err as Error).message === STOPPED_MSG) { dropClip(best); throw err; }
+      error = err as CodedError;
       break;
     }
     if (!isShort(secs)) { dropClip(best); return { secs, error: null }; }
     const longer = secs > bestSecs;
-    if (longer) { moveClip(outFile, best); bestSecs = secs; } else dropClip(outFile);
     log(`${name}: the recorder sent ${Math.round(secs)} s of ${VIDEO_SECS} s, ${longer ? 'kept it' : 'deleted it (not longer than the one kept)'}${i < tries ? ', trying again' : ''}`);
+    if (!longer) {
+      dropClip(outFile);
+      continue;
+    }
+    moveClip(outFile, best);
+    bestSecs = secs;
   }
   moveClip(best, outFile);
   return { secs: bestSecs, error: error || new Error(`The recorder sent only ${Math.round(bestSecs)} s of ${VIDEO_SECS} s of video`) };
@@ -762,11 +124,11 @@ async function saveClip(runner: CameraRunner, cfg: RecorderConfig, channel: numb
   const { log = () => {} } = opts;
   let r: ClipResult;
   try {
-    r = await grabClip(runner, cfg, channel, at, tmp, { ...opts, log: (m) => log(m.replace(path.basename(tmp), path.basename(file))) });
-  } catch (e) {
+    r = await grabClip(runner, cfg, channel, at, tmp, { ...opts, log: (message) => log(message.replace(path.basename(tmp), path.basename(file))) });
+  } catch (err) {
     dropClip(tmp);
-    if (!have || (e as Error).message === STOPPED_MSG) throw e;
-    return { secs: have, error: e as CodedError, saved: false };
+    if (!have || (err as Error).message === STOPPED_MSG) throw err;
+    return { secs: have, error: err as CodedError, saved: false };
   }
   if (have && r.error && r.secs <= have) { dropClip(tmp); return { secs: have, error: r.error, saved: false }; }
   moveClip(tmp, file);
@@ -801,9 +163,9 @@ async function grabClipOnce(runner: CameraRunner, cfg: RecorderConfig, channel: 
       if (n && !gap) log(`${name}: ${got ? `the recorder stopped after ${got} s, asking for the rest` : 'no video received, asking again'}`);
       try {
         await runner.grabFrame(cfg, clipQuery(channel, at + got * 1000, secs), part, { signal, onRetry, video: secs, once: gap > 0 });
-      } catch (e) {
-        const { message } = e as Error;
-        if (message === STOPPED_MSG) throw e;
+      } catch (err) {
+        const { message } = err as Error;
+        if (message === STOPPED_MSG) throw err;
         if (message === NO_RECORDING_MSG) {
           const step = Math.min(CLIP_GAP_STEP, secs);
           got += step;
@@ -811,7 +173,7 @@ async function grabClipOnce(runner: CameraRunner, cfg: RecorderConfig, channel: 
           gap += step;
           continue;
         }
-        if (!parts.length) throw e;
+        if (!parts.length) throw err;
         log(`${name}: the rest from +${got} s failed: ${message}`);
         break;
       }
@@ -825,7 +187,7 @@ async function grabClipOnce(runner: CameraRunner, cfg: RecorderConfig, channel: 
     if (!parts.length) throw new Error(skipped ? NO_RECORDING_MSG : NO_VIDEO_MSG);
     return (await runner.finishClip(parts, outFile, posterFile(outFile))) + skipped;
   } finally {
-    for (const f of files) fs.rmSync(f, { force: true });
+    for (const file of files) fs.rmSync(file, { force: true });
   }
 }
 
@@ -836,20 +198,20 @@ async function grabNearby(runner: CameraRunner, cfg: Recorder, channel: number, 
   try {
     await runner.grabFrame(cfg, playbackQuery(channel, at), outFile, { signal, onRetry });
     return 0;
-  } catch (e) {
-    if ((e as Error).message !== NO_RECORDING_MSG) throw e;
-    for (const s of NEARBY_SECS) {
-      const query = playbackQuery(channel, at + s * 1000);
+  } catch (err) {
+    if ((err as Error).message !== NO_RECORDING_MSG) throw err;
+    for (const second of NEARBY_SECS) {
+      const query = playbackQuery(channel, at + second * 1000);
       try {
         await runner.grabFrame(cfg, query, outFile, { signal, once: true });
-        log(`${path.basename(outFile)}: no recording at the planned time, took ${s > 0 ? '+' : ''}${s} s instead (${query})`);
-        return s;
+        log(`${path.basename(outFile)}: no recording at the planned time, took ${second > 0 ? '+' : ''}${second} s instead (${query})`);
+        return second;
       } catch (e2) {
         const err = e2 as CodedError;
         if (err.message === STOPPED_MSG || err.code === NO_CONNECTION) throw e2;
       }
     }
-    throw e;
+    throw err;
   }
 }
 
@@ -873,21 +235,20 @@ async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: st
     if (unreachable) throw unreachable;
     const at = ts + (cfg.clockOffset + off) * 1000;
     const query = video ? clipQuery(channel, at) : playbackQuery(channel, at);
-    const onRetry = (e: Error) => log(`${minute}/${file} failed, trying again (${query}): ${e.message}`);
+    const onRetry = (error: Error) => log(`${minute}/${file} failed, trying again (${query}): ${error.message}`);
     try {
-      if (video) {
-        const r = await saveClip(runner, cfg, channel, at, path.join(folder, file), clipHave(folder, file, have.includes(file), given),
-          { signal, onRetry, log: (m) => log(`${minute}/${m}`) });
-        if (isShort(r.secs)) short[file] = Math.round(r.secs);
-        else delete short[file];
-        if (r.error) {
-          if (r.error.code === NO_CONNECTION) unreachable = r.error;
-          partialErrors.push(r.error.message);
-          log(`${minute}/${file} partial video kept (${Math.round(r.secs)} s, ${query}): ${r.error.message}`);
-        }
-      } else {
-        const shift = await grabNearby(runner, cfg, channel, at, path.join(folder, file), { signal, onRetry, log: (m) => log(`${minute}/${m}`) });
+      if (!video) {
+        const shift = await grabNearby(runner, cfg, channel, at, path.join(folder, file), { signal, onRetry, log: (message) => log(`${minute}/${message}`) });
         if (shift) shifts[file] = shift;
+        return file;
+      }
+      const clip = await saveClip(runner, cfg, channel, at, path.join(folder, file), clipHave(folder, file, have.includes(file), given),
+        { signal, onRetry, log: (message) => log(`${minute}/${message}`) });
+      noteShort(short, file, clip.secs);
+      if (clip.error) {
+        if (clip.error.code === NO_CONNECTION) unreachable = clip.error;
+        partialErrors.push(clip.error.message);
+        log(`${minute}/${file} partial video kept (${Math.round(clip.secs)} s, ${query}): ${clip.error.message}`);
       }
     } catch (e) {
       const err = e as CodedError;
@@ -900,26 +261,10 @@ async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: st
     return file;
   }), 1);
   const stopped = Boolean(signal && signal.aborted);
-  const files = [...new Set([...kept, ...results.filter((r) => r.value).map((r) => r.value as string)])];
-  const errors = [...new Set([...results.filter((r) => r.error && r.error.message !== STOPPED_MSG).map((r) => (r.error as CodedError).message),
+  const files = [...new Set([...kept, ...results.filter((result) => result.value).map((result) => result.value as string)])];
+  const errors = [...new Set([...results.filter((result) => result.error && result.error.message !== STOPPED_MSG).map((result) => (result.error as CodedError).message),
     ...partialErrors])];
   return { files, errors, stopped, unreachable: unreachable ? unreachable.message : null, shifts, short };
-}
-
-// ch<N>-<SS>.jpg / ch<N>-a<SS>.jpg -> { channel, off } (off in seconds from the minute's start), ch<N>.mp4 ->
-// { channel, off: 0, video: true }, or null.
-export function frameOfFile(file: unknown): { channel: number; off: number; video?: boolean } | null {
-  const v = /^ch(\d{1,2})\.mp4$/.exec(String(file));
-  if (v) return Number(v[1]) >= 1 && Number(v[1]) <= 64 ? { channel: Number(v[1]), off: 0, video: true } : null;
-  const m = /^ch(\d{1,2})-(a?)(\d{2})\.jpg$/.exec(String(file));
-  if (!m || Number(m[1]) < 1 || Number(m[1]) > 64 || Number(m[3]) > 59) return null;
-  return { channel: Number(m[1]), off: (m[2] ? 60 : 0) + Number(m[3]) };
-}
-
-// YYYYMMDD-HHMM -> the minute's start (local, ms), or null.
-export function minuteStart(minute: unknown): number | null {
-  const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(String(minute));
-  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime() : null;
 }
 
 // Fetches one frame (or video) of a minute again (the picture's refresh button). The new picture replaces the
@@ -930,10 +275,10 @@ export function minuteStart(minute: unknown): number | null {
 export async function refreshSnapshot(store: Store, runner: CameraRunner, phone: unknown, dir: string, minute: string, file: string,
   { log: logTo = () => {} }: { log?: Log } = {}): Promise<SnapshotMinute | undefined> {
   const cfg = await getCameraSettings(store, phone, { withPassword: true });
-  if (!cfg) throw Object.assign(new Error('Save the camera settings first'), { status: 404 });
+  if (!cfg) throw httpError('Save the camera settings first', 404);
   const frame = frameOfFile(file);
   const start = minuteStart(minute);
-  if (!frame || start === null) throw bad('Not a snapshot picture');
+  if (!frame || start === null) throw httpError('Not a snapshot picture');
   const log = (m: string) => logTo(`Gate ${phone}: ${m}`);
   const folder = path.join(dir, 'snapshots', minute);
   fs.mkdirSync(folder, { recursive: true });
@@ -942,36 +287,38 @@ export async function refreshSnapshot(store: Store, runner: CameraRunner, phone:
   const query = frame.video ? clipQuery(frame.channel, at) : playbackQuery(frame.channel, at);
   const opts: ClipOptions = {
     onRetry: (e) => log(`${minute}/${file} refresh failed, trying again (${query}): ${e.message}`),
-    log: (m) => log(`${minute}/${m.replace(path.basename(tmp), file)}`),
+    log: (message) => log(`${minute}/${message.replace(path.basename(tmp), file)}`),
   };
-  const s = (await listSnapshots(store, phone))[minute];
-  const short: Shifts = { ...(s ? s.short : {}) };
+  const snapshot = (await listSnapshots(store, phone))[minute];
+  const short: Shifts = { ...(snapshot ? snapshot.short : {}) };
+  const refreshVideo = async (): Promise<{ shift: number; clipError: CodedError | null }> => {
+    const clip = await saveClip(runner, cfg, frame.channel, at, path.join(folder, file),
+      clipHave(folder, file, Boolean(snapshot && snapshot.files.includes(file)), short), { ...opts, log: (message) => log(`${minute}/${message}`) });
+    if (!clip.saved) throw clip.error;
+    noteShort(short, file, clip.secs);
+    if (clip.error) log(`${minute}/${file} refresh saved a partial video (${Math.round(clip.secs)} s, ${query}): ${clip.error.message}`);
+    return { shift: 0, clipError: clip.error };
+  };
+  const refreshPicture = async (): Promise<{ shift: number; clipError: CodedError | null }> => {
+    const shift = await grabNearby(runner, cfg, frame.channel, at, tmp, opts);
+    fs.renameSync(tmp, path.join(folder, file));
+    return { shift, clipError: null };
+  };
   let shift = 0;
   let clipError: CodedError | null = null;
   try {
-    if (frame.video) {
-      const r = await saveClip(runner, cfg, frame.channel, at, path.join(folder, file),
-        clipHave(folder, file, Boolean(s && s.files.includes(file)), short), { ...opts, log: (m) => log(`${minute}/${m}`) });
-      if (!r.saved) throw r.error;
-      if (isShort(r.secs)) short[file] = Math.round(r.secs);
-      else delete short[file];
-      clipError = r.error;
-      if (clipError) log(`${minute}/${file} refresh saved a partial video (${Math.round(r.secs)} s, ${query}): ${clipError.message}`);
-    } else {
-      shift = await grabNearby(runner, cfg, frame.channel, at, tmp, opts);
-      fs.renameSync(tmp, path.join(folder, file));
-    }
-  } catch (e) {
-    const { message } = e as Error;
+    ({ shift, clipError } = await (frame.video ? refreshVideo() : refreshPicture()));
+  } catch (err) {
+    const { message } = err as Error;
     if (!frame.video) fs.rmSync(tmp, { force: true });
     log(`${minute}/${file} refresh failed (${query}): ${message}`);
-    throw Object.assign(new Error(message), { status: 502 });
+    throw httpError(message, 502);
   }
-  const files = [...new Set([...(s ? s.files : []), file])].filter((f) => fs.existsSync(path.join(folder, f)));
+  const files = [...new Set([...(snapshot ? snapshot.files : []), file])].filter((f) => fs.existsSync(path.join(folder, f)));
   const complete = !missingFrames(cfg, dir, minute, files, short).jobs.length;
-  const status = complete ? 'done' : clipError ? 'partial' : s && s.status !== 'failed' ? s.status : 'partial';
-  const shifts = { ...(s ? s.shifts : {}), [file]: shift };
-  const error = complete ? null : clipError ? clipError.message : (s && s.error) || null;
+  const status = complete ? 'done' : clipError ? 'partial' : snapshot && snapshot.status !== 'failed' ? snapshot.status : 'partial';
+  const shifts = { ...(snapshot ? snapshot.shifts : {}), [file]: shift };
+  const error = complete ? null : clipError ? clipError.message : (snapshot && snapshot.error) || null;
   await run(store, `INSERT INTO snapshots (phone, minute, status, files, error, attempts, at, shifts, short)
     VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8)
     ON CONFLICT (phone, minute) DO UPDATE SET status = excluded.status, files = excluded.files, error = excluded.error, at = excluded.at,
@@ -988,7 +335,7 @@ export async function liveSnapshots(runner: CameraRunner, cfg: RecorderConfig, d
   fs.mkdirSync(folder, { recursive: true });
   const results = await settleAll(cfg.channels.map(({ channel }) => () => runner.grabFrame(cfg,
     `/cam/realmonitor?channel=${channel}&subtype=0`, path.join(folder, `ch${channel}.jpg`))), 3);
-  return cfg.channels.map((c, i) => ({ ...c, ...(results[i].error ? { error: results[i].error.message } : { file: `ch${c.channel}.jpg` }) }));
+  return cfg.channels.map((channel, i) => ({ ...channel, ...(results[i].error ? { error: results[i].error.message } : { file: `ch${channel.channel}.jpg` }) }));
 }
 
 export interface SnapshotProgress {
@@ -1018,15 +365,11 @@ export async function runSnapshots(store: Store, runner: CameraRunner, phone: un
   const cfg = await getCameraSettings(store, phone, { withPassword: true });
   if (!cfg || !cfg.enabled) return null;
   const known = await listSnapshots(store, phone);
-  let pending: PendingMinute[];
-  let tooRecent = false;
-  if (minute) {
-    const start = minuteStart(minute);
-    if (start === null) throw bad('Not a transaction minute');
-    if (noFootageMinute(rows, minute)) throw bad(NO_FOOTAGE_MSG);
-    tooRecent = start > now - SETTLE_MS - afterMs(cfg);
-    pending = tooRecent ? [] : [{ minute, ts: start }];
-  } else pending = pendingMinutes(cfg, rows, known, now);
+  const start = minute ? minuteStart(minute) : null;
+  if (minute && start === null) throw httpError('Not a transaction minute');
+  if (minute && noFootageMinute(rows, minute)) throw httpError(NO_FOOTAGE_MSG);
+  const tooRecent = start !== null && start > now - SETTLE_MS - afterMs(cfg);
+  const pending: PendingMinute[] = !minute ? pendingMinutes(cfg, rows, known, now) : tooRecent ? [] : [{ minute, ts: start! }];
   const out: SnapshotResult = { minutes: pending.length, done: 0, partial: 0, failed: 0, stopped: false };
   if (tooRecent) out.error = 'This minute may not be recorded yet; try again in a few minutes';
   const byMinute: SnapshotProgress['byMinute'] = Object.fromEntries(pending.map((p) => [p.minute,

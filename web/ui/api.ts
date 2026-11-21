@@ -47,7 +47,7 @@ export type GateApi = <T = unknown>(method: string, sub: string, body?: unknown)
 export const gateUrl = (phone: string, sub: string) => `/api/gates/${encodeURIComponent(phone)}${sub}`;
 export const gateApi = (phone: string): GateApi => (method, sub, body) => api(method, gateUrl(phone, sub), body);
 
-export const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 // True on a gate the signed-in user may only view (role readonly): edit controls are hidden or disabled. The server
 // refuses changes anyway.

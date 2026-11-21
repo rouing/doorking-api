@@ -59,6 +59,16 @@ export async function queueEmail(store: Store, { to, subject, text, kind }: { to
   return r!.id;
 }
 
+// A failed send: tried again after wait minutes, or given up (wait undefined: the retries are used up).
+async function recordFailure(store: Store, id: number, msg: string, wait: number | undefined): Promise<void> {
+  if (wait === undefined) {
+    await run(store, "UPDATE emails SET status = 'failed', attempts = attempts + 1, error = $2, body = NULL WHERE id = $1", [id, msg]);
+    return;
+  }
+  await run(store, `UPDATE emails SET attempts = attempts + 1, error = $2, next_try = now() + ($3 || ' minutes')::interval WHERE id = $1`,
+    [id, msg, String(wait)]);
+}
+
 // Sends the queued emails that are due. A failure is tried again after RETRY_MINUTES; after the last it is given up.
 // Returns the counts. log(message) gets each failure.
 export async function sendQueued(store: Store, mailer: Mailer, from: string, log: (m: string) => void = () => {}): Promise<{ sent: number; failed: number }> {
@@ -73,12 +83,7 @@ export async function sendQueued(store: Store, mailer: Mailer, from: string, log
     } catch (err) {
       const msg = String((err as Error).message || err).slice(0, 300);
       const wait = RETRY_MINUTES[e.attempts];
-      if (wait === undefined) {
-        await run(store, "UPDATE emails SET status = 'failed', attempts = attempts + 1, error = $2, body = NULL WHERE id = $1", [e.id, msg]);
-      } else {
-        await run(store, `UPDATE emails SET attempts = attempts + 1, error = $2, next_try = now() + ($3 || ' minutes')::interval WHERE id = $1`,
-          [e.id, msg, String(wait)]);
-      }
+      await recordFailure(store, e.id, msg, wait);
       log(`Email ${e.id} (${e.kind}) to ${e.to_addr} not sent${wait === undefined ? ', given up' : `, trying again in ${wait} min`}: ${msg}`);
       out.failed++;
     }

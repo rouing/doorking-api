@@ -14,16 +14,16 @@ export function useGateSettings(gapi: GateApi) {
   const [edits, setEdits] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
-    try { setReply(await gapi<SettingsReply>('GET', '/settings')); setError(''); } catch (e) { setReply(null); setError(errorText(e)); }
+    try { setReply(await gapi<SettingsReply>('GET', '/settings')); setError(''); } catch (err) { setReply(null); setError(errorText(err)); }
   }, [gapi]);
   useEffect(() => { load(); }, [load]);
 
   const fields = reply ? reply.fields : [];
-  const current = (s: GateSettingRow) => (s.key in edits ? edits[s.key] : s.value);
-  const edit = (s: GateSettingRow, v: string) => setEdits(({ [s.key]: _, ...rest }) => (v === s.value ? rest : { ...rest, [s.key]: v }));
-  const field = (key: string) => fields.find((f) => f.key === key);
-  const pending = fields.filter((s) => s.value !== s.gate);
-  const names = reply ? reply.cache.files.find((f) => f.name === 'names.bin') : undefined;
+  const current = (setting: GateSettingRow) => (setting.key in edits ? edits[setting.key] : setting.value);
+  const edit = (setting: GateSettingRow, v: string) => setEdits(({ [setting.key]: _, ...rest }) => (v === setting.value ? rest : { ...rest, [setting.key]: v }));
+  const field = (key: string) => fields.find((setting) => setting.key === key);
+  const pending = fields.filter((setting) => setting.value !== setting.gate);
+  const names = reply ? reply.cache.files.find((file) => file.name === 'names.bin') : undefined;
 
   // Saves the edits for `keys` (all edits when omitted). Returns the server's { changed, changedBlocks }.
   const save = async (keys?: string[]) => {
@@ -39,6 +39,6 @@ export function useGateSettings(gapi: GateApi) {
     reply, error, fields, edits, current, edit, field, save, discard, load, pending,
     blocks: (names && names.changedBlocks) || [],
     conflicts: reply ? reply.cache.conflicts : [],
-    changes: pending.map((s) => `${s.name}: ${gsShow(s.gate)} → ${gsShow(s.value)}`),
+    changes: pending.map((setting) => `${setting.name}: ${gsShow(setting.gate)} → ${gsShow(setting.value)}`),
   };
 }

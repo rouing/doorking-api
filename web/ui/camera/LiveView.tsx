@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Card, Flex, IconButton, Select, Text } from '@radix-ui/themes';
+import { Button, Card, Flex, IconButton, Text } from '@radix-ui/themes';
+import { Choice } from '../panes/fields.tsx';
 import type { CameraSettings } from '../../../src/types.ts';
 import { gateUrl } from '../api.ts';
 
@@ -51,23 +52,14 @@ export function LiveView({ phone, settings }: { phone: string; settings: CameraS
           <Flex align="center" gap="2">
             <Text weight="bold">View Camera</Text>
             {settings.channels.length > 1 && (
-              <Select.Root size="1" value={channel} onValueChange={(v) => { setChannel(v); start(); }}>
-                <Select.Trigger title="Channel" />
-                <Select.Content>
-                  {settings.channels.map((c) => <Select.Item key={c.channel} value={String(c.channel)}>{c.name || `Channel ${c.channel}`}</Select.Item>)}
-                </Select.Content>
-              </Select.Root>
+              <Choice size="1" title="Channel" value={channel} onChange={(v) => { setChannel(v); start(); }}
+                options={settings.channels.map((c) => [String(c.channel), c.name || `Channel ${c.channel}`] as const)} />
             )}
-            <Select.Root size="1" value={quality} onValueChange={(v) => { setQuality(v); start(); }}>
-              <Select.Trigger title="Quality" />
-              <Select.Content>
-                <Select.Item value="low">Low quality</Select.Item>
-                <Select.Item value="high">High quality</Select.Item>
-              </Select.Content>
-            </Select.Root>
+            <Choice size="1" title="Quality" value={quality} onChange={(v) => { setQuality(v); start(); }}
+              options={[['low', 'Low quality'], ['high', 'High quality']]} />
             <Flex flexGrow="1" />
             <IconButton size="1" variant="ghost" color="gray" title={dock === 'min' ? 'Restore' : 'Minimize'}
-              onClick={() => { if (dock === 'min') { setDock('open'); start(); } else setDock('min'); }}>–</IconButton>
+              onClick={() => { setDock(dock === 'min' ? 'open' : 'min'); if (dock === 'min') start(); }}>–</IconButton>
             <IconButton size="1" variant="ghost" color="gray" title="Close" onClick={() => setDock('closed')}>✕</IconButton>
           </Flex>
           {dock === 'open' && (

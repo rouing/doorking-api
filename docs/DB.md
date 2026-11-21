@@ -13,7 +13,7 @@ code and file were removed.)
 | `doorking.key` | the encryption key (`paths.keyFile`, by default next to `config.json`): 32 random bytes as 64 hex digits, created on first start, mode 0600 | yes, **with** the database | **never** |
 | `~/.pgpass` | the same login for `psql`, `pg_dump`, `pg_restore` (not used by the app) | no | **never** |
 | `media/<phone>/` | not the database: camera pictures and videos (`snapshots/`) | yes | no |
-| `logs/debug.log` | not the database: the debug log, written only while Debug logs is on | no | no |
+| `logs/server.jsonl` | not the database: the server log (JSON Lines) | no | no |
 
 - The server creates the key and the tables on first start. It doesn't start (exit 1) when `config.json` is wrong
   ("Configuration error"), when it or the key can be read by other users, or when the database can't be reached
@@ -261,7 +261,7 @@ The 2026-11-13 migration copied each gate's saved login into `managed_gates`. Sc
 | `last_result` | TEXT, null | `done` or `failed` |
 | `last_error` | TEXT, null | errors and notes of the last run, `; `-separated |
 
-### `cameras`: camera recorder settings per gate (`src/cameras.ts`)
+### `cameras`: camera recorder settings per gate (`src/camera-settings.ts`)
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -271,7 +271,7 @@ The 2026-11-13 migration copied each gate's saved login into `managed_gates`. Sc
 | `saved_by` | TEXT | user who saved them |
 | `saved_at` | TIMESTAMPTZ | when |
 
-### `snapshots`: camera picture log per transaction minute (`src/cameras.ts`)
+### `snapshots`: camera picture log per transaction minute (`src/camera-log.ts`)
 
 | Column | Type | Meaning |
 |---|---|---|

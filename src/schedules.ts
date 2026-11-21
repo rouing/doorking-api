@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { all, one, run, phoneDigits } from './db.ts';
 import type { Store } from './db.ts';
 import type { Schedule, ScheduleAction, ScheduleInput } from './types.ts';
+import { httpError } from './errors.ts';
 
 // Transfers in the order they run: send first (it ends with a check pull of residents), then the pulls, then
 // camera snapshots.
@@ -19,7 +20,6 @@ interface ScheduleRow {
 type Timed = Pick<ScheduleInput, 'days' | 'time'>;
 type RunFields = Partial<Record<'lastDue' | 'lastRun' | 'lastResult' | 'lastError', unknown>>;
 
-const fail = (msg: string, status: number) => Object.assign(new Error(msg), { status });
 
 // Returns { schedule: { days, time, actions, enabled } } or { error }. days: 0-6 = Sun-Sat.
 export function normalizeSchedule(body: unknown): { schedule: ScheduleInput; error?: undefined } | { schedule?: undefined; error: string } {
@@ -27,11 +27,11 @@ export function normalizeSchedule(body: unknown): { schedule: ScheduleInput; err
   const days = [...new Set((Array.isArray(b.days) ? b.days : []).map(Number))]
     .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6).sort();
   if (!days.length) return { error: 'Pick at least one day' };
-  const m = /^(\d{1,2}):(\d{2})$/.exec(String(b.time || '').trim());
-  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return { error: 'Time must be HH:MM (24-hour)' };
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(b.time || '').trim());
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return { error: 'Time must be HH:MM (24-hour)' };
   const actions = SCHEDULE_ACTIONS.filter((a) => Array.isArray(b.actions) && b.actions.includes(a));
   if (!actions.length) return { error: 'Pick at least one transfer' };
-  const time = `${m[1].padStart(2, '0')}:${m[2]}`;
+  const time = `${match[1].padStart(2, '0')}:${match[2]}`;
   return { schedule: { days, time, actions, enabled: b.enabled !== false } };
 }
 
@@ -44,8 +44,8 @@ function at(s: Timed, now: Date, offset: number): Date {
 // The latest time at or before `now` the schedule was due, or null.
 export function lastDue(s: Timed, now: Date = new Date()): Date | null {
   for (let i = 0; i >= -7; i--) {
-    const d = at(s, now, i);
-    if (d <= now && s.days.includes(d.getDay())) return d;
+    const date = at(s, now, i);
+    if (date <= now && s.days.includes(date.getDay())) return date;
   }
   return null;
 }
@@ -53,8 +53,8 @@ export function lastDue(s: Timed, now: Date = new Date()): Date | null {
 // The next time after `now` the schedule is due, or null.
 export function nextDue(s: Timed, now: Date = new Date()): Date | null {
   for (let i = 0; i <= 7; i++) {
-    const d = at(s, now, i);
-    if (d > now && s.days.includes(d.getDay())) return d;
+    const date = at(s, now, i);
+    if (date > now && s.days.includes(date.getDay())) return date;
   }
   return null;
 }
@@ -79,35 +79,35 @@ export async function listSchedules(store: Store, phone?: unknown): Promise<Sche
   const rows = phone
     ? await all<ScheduleRow>(store, 'SELECT * FROM schedules WHERE phone = $1 ORDER BY created_at', [phoneDigits(phone)])
     : await all<ScheduleRow>(store, 'SELECT * FROM schedules ORDER BY created_at');
-  return rows.map((r) => fromRow(r)).sort((a, b) => a.time.localeCompare(b.time));
+  return rows.map((row) => fromRow(row)).sort((a, b) => a.time.localeCompare(b.time));
 }
 
 export async function getSchedule(store: Store, phone: unknown, id: unknown): Promise<Schedule | null> {
-  const r = await one<ScheduleRow>(store, 'SELECT * FROM schedules WHERE phone = $1 AND id = $2', [phoneDigits(phone), String(id)]);
-  return r ? fromRow(r) : null;
+  const row = await one<ScheduleRow>(store, 'SELECT * FROM schedules WHERE phone = $1 AND id = $2', [phoneDigits(phone), String(id)]);
+  return row ? fromRow(row) : null;
 }
 
 // Creates (no id) or replaces an entry; `user` becomes its owner. Throws 400 on bad input, 404 on unknown id.
 export async function saveSchedule(store: Store, phone: unknown, user: unknown, body: unknown, id: string | null = null): Promise<Schedule | null> {
   const { schedule, error } = normalizeSchedule(body);
-  if (error !== undefined) throw fail(error, 400);
+  if (error !== undefined) throw httpError(error, 400);
   const now = new Date().toISOString();
   const data = JSON.stringify(schedule);
   if (id) {
     const changes = await run(store, 'UPDATE schedules SET username = $1, data = $2, last_due = $3 WHERE phone = $4 AND id = $5',
       [String(user), data, now, phoneDigits(phone), String(id)]);
-    if (!changes) throw fail('Schedule not found', 404);
-  } else {
-    id = crypto.randomBytes(8).toString('hex');
-    await run(store, 'INSERT INTO schedules (id, phone, username, data, created_at, last_due) VALUES ($1, $2, $3, $4, $5, $6)',
-      [id, phoneDigits(phone), String(user), data, now, now]);
+    if (!changes) throw httpError('Schedule not found', 404);
+    return getSchedule(store, phone, id);
   }
-  return getSchedule(store, phone, id);
+  const newId = crypto.randomBytes(8).toString('hex');
+  await run(store, 'INSERT INTO schedules (id, phone, username, data, created_at, last_due) VALUES ($1, $2, $3, $4, $5, $6)',
+    [newId, phoneDigits(phone), String(user), data, now, now]);
+  return getSchedule(store, phone, newId);
 }
 
 export async function deleteSchedule(store: Store, phone: unknown, id: unknown): Promise<void> {
   const changes = await run(store, 'DELETE FROM schedules WHERE phone = $1 AND id = $2', [phoneDigits(phone), String(id)]);
-  if (!changes) throw fail('Schedule not found', 404);
+  if (!changes) throw httpError('Schedule not found', 404);
 }
 
 // Updates the run fields: lastDue, lastRun, lastResult, lastError (only those given).

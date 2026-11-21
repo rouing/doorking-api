@@ -2,6 +2,7 @@
 // field for them). Keyed by the gate's system phone number, so every account that manages the gate shares them,
 // and by the directory code without leading zeros, so notes survive a change of "Num of Digits in Dir Code".
 import { all, one, run, type Store, phoneDigits } from './db.ts';
+import { httpError } from './errors.ts';
 
 export const NOTE_MAX = 500;
 
@@ -12,7 +13,7 @@ export const noteKey = (code: unknown): string => String(code ?? '').replace(/\D
 // { [noteKey(directoryCode)]: note } for the gate.
 export async function getNotes(store: Store, phone: unknown): Promise<Record<string, string>> {
   const rows = await all<{ code: string; note: string }>(store, 'SELECT code, note FROM notes WHERE phone = $1', [phoneDigits(phone)]);
-  return Object.fromEntries(rows.map((r) => [r.code, r.note]));
+  return Object.fromEntries(rows.map((row) => [row.code, row.note]));
 }
 
 export async function getNote(store: Store, phone: unknown, code: unknown): Promise<string> {
@@ -23,7 +24,7 @@ export async function getNote(store: Store, phone: unknown, code: unknown): Prom
 // Saves the note for a directory code (trimmed; blank deletes it). Returns the saved note.
 export async function setNote(store: Store, phone: unknown, code: unknown, note: unknown, user: unknown): Promise<string> {
   const text = String(note ?? '').trim();
-  if (text.length > NOTE_MAX) throw Object.assign(new Error(`A note is at most ${NOTE_MAX} characters`), { status: 400 });
+  if (text.length > NOTE_MAX) throw httpError(`A note is at most ${NOTE_MAX} characters`);
   if (!text) {
     await run(store, 'DELETE FROM notes WHERE phone = $1 AND code = $2', [phoneDigits(phone), noteKey(code)]);
     return '';

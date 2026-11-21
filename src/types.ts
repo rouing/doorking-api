@@ -164,7 +164,7 @@ export interface Job {
   log: string[];
   error?: string;
   adding?: boolean; // the connection that checks a gate being added
-  busyElsewhere?: boolean;
+  busyElsewhere?: boolean; // idle, but another gate with the same DKS login has a connection running
 }
 
 export interface HistoryEvent {

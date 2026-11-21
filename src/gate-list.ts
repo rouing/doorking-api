@@ -7,6 +7,7 @@ import { all, encrypt, decrypt, getMeta, one, run, setMeta, transaction, phoneDi
 import type { Store } from './db.ts';
 import { userKey } from './users.ts';
 import type { GateRole, GateUser } from './types.ts';
+import { httpError } from './errors.ts';
 
 export type { GateRole, GateUser };
 export const GATE_ROLES: GateRole[] = ['admin', 'readonly'];
@@ -17,28 +18,27 @@ export interface GateRecord {
 
 interface GateRow { phone: string; master_code: string; dks_user: string; dks_password: string; added_by: string; added_at: string }
 
-const err = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 export const ALREADY_ADDED = 'This gate is already managed here. Ask one of its gate admins to add you to it.';
 const LAST_ADMIN = 'A gate must keep at least one admin. Make someone else an admin first.';
 
 export function checkPhone(phone: unknown): string {
-  const p = phoneDigits(phone);
-  if (!/^\d{4,15}$/.test(p)) throw err('Gate phone number must be 4-15 digits');
-  return p;
+  const phoneKey = phoneDigits(phone);
+  if (!/^\d{4,15}$/.test(phoneKey)) throw httpError('Gate phone number must be 4-15 digits');
+  return phoneKey;
 }
 export function checkMasterCode(code: unknown): string {
   const c = String(code ?? '').trim();
-  if (!/^\d{4}$/.test(c)) throw err('Master code must be 4 digits');
+  if (!/^\d{4}$/.test(c)) throw httpError('Master code must be 4 digits');
   return c;
 }
 export function checkRole(role: unknown): GateRole {
-  if (!GATE_ROLES.includes(role as GateRole)) throw err('Role must be admin or readonly');
+  if (!GATE_ROLES.includes(role as GateRole)) throw httpError('Role must be admin or readonly');
   return role as GateRole;
 }
 const checkDksLogin = (user: unknown, password: unknown) => {
   const u = String(user ?? '').trim();
   const pw = String(password ?? '');
-  if (!u || !pw) throw err('The gate\'s DKS user and password are required');
+  if (!u || !pw) throw httpError('The gate\'s DKS user and password are required');
   return { u, pw };
 };
 
@@ -48,8 +48,8 @@ const fromRow = (store: Store, r: GateRow): GateRecord => ({
 });
 
 export async function getGate(store: Store, phone: unknown): Promise<GateRecord | null> {
-  const r = await one<GateRow>(store, 'SELECT * FROM managed_gates WHERE phone = $1', [phoneDigits(phone)]);
-  return r ? fromRow(store, r) : null;
+  const row = await one<GateRow>(store, 'SELECT * FROM managed_gates WHERE phone = $1', [phoneDigits(phone)]);
+  return row ? fromRow(store, row) : null;
 }
 
 export async function gateExists(store: Store, phone: unknown): Promise<boolean> {
@@ -61,12 +61,12 @@ export async function registerGate(store: Store, g: { phoneNumber: unknown; mast
   admin: string): Promise<GateRecord> {
   const p = checkPhone(g.phoneNumber);
   const code = checkMasterCode(g.masterCode);
-  const { u, pw } = checkDksLogin(g.dksUser, g.dksPassword);
+  const { u, pw: password } = checkDksLogin(g.dksUser, g.dksPassword);
   const now = new Date().toISOString();
   await transaction(store, async (tx) => {
     const added = await run(tx, `INSERT INTO managed_gates (phone, master_code, dks_user, dks_password, added_by, added_at)
-      VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (phone) DO NOTHING`, [p, encrypt(tx, code), u, encrypt(tx, pw), userKey(admin), now]);
-    if (!added) throw err(ALREADY_ADDED, 409);
+      VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (phone) DO NOTHING`, [p, encrypt(tx, code), u, encrypt(tx, password), userKey(admin), now]);
+    if (!added) throw httpError(ALREADY_ADDED, 409);
     await run(tx, `INSERT INTO gate_access (phone, username, role, granted_by, granted_at) VALUES ($1, $2, 'admin', $2, $3)`,
       [p, userKey(admin), now]);
   });
@@ -76,15 +76,15 @@ export async function registerGate(store: Store, g: { phoneNumber: unknown; mast
 // Changes the gate's master code and/or DKS login (only the values given; a blank password keeps the saved one).
 export async function updateGateLogin(store: Store, phone: unknown, { masterCode, dksUser, dksPassword }:
   { masterCode?: unknown; dksUser?: unknown; dksPassword?: unknown }): Promise<GateRecord> {
-  const g = await getGate(store, phone);
-  if (!g) throw err('Gate not found', 404);
-  const code = masterCode !== undefined && masterCode !== '' ? checkMasterCode(masterCode) : g.masterCode;
-  const user = dksUser !== undefined ? String(dksUser).trim() : g.dksUser;
-  const pw = dksPassword ? String(dksPassword) : g.dksPassword;
-  checkDksLogin(user, pw);
+  const gate = await getGate(store, phone);
+  if (!gate) throw httpError('Gate not found', 404);
+  const code = masterCode !== undefined && masterCode !== '' ? checkMasterCode(masterCode) : gate.masterCode;
+  const user = dksUser !== undefined ? String(dksUser).trim() : gate.dksUser;
+  const password = dksPassword ? String(dksPassword) : gate.dksPassword;
+  checkDksLogin(user, password);
   await run(store, 'UPDATE managed_gates SET master_code = $2, dks_user = $3, dks_password = $4 WHERE phone = $1',
-    [g.phoneNumber, encrypt(store, code), user, encrypt(store, pw)]);
-  return (await getGate(store, g.phoneNumber))!;
+    [gate.phoneNumber, encrypt(store, code), user, encrypt(store, password)]);
+  return (await getGate(store, gate.phoneNumber))!;
 }
 
 // The user's role on the gate, or null.
@@ -113,13 +113,13 @@ export async function gateUsers(store: Store, phone: unknown): Promise<GateUser[
 
 // Shares the gate with an existing user. 404 when there is no such user, 409 when they already have access.
 export async function grantAccess(store: Store, phone: unknown, username: unknown, role: unknown, by: string): Promise<void> {
-  const p = phoneDigits(phone);
+  const phoneKey = phoneDigits(phone);
   const name = userKey(username);
   const r = checkRole(role);
-  if (!await one(store, 'SELECT 1 AS x FROM users WHERE username = $1', [name])) throw err(`There is no user "${name}"`, 404);
+  if (!await one(store, 'SELECT 1 AS x FROM users WHERE username = $1', [name])) throw httpError(`There is no user "${name}"`, 404);
   const added = await run(store, `INSERT INTO gate_access (phone, username, role, granted_by, granted_at) VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (phone, username) DO NOTHING`, [p, name, r, userKey(by), new Date().toISOString()]);
-  if (!added) throw err(`"${name}" already has access to this gate (${(await accessOf(store, p, name)) === 'admin' ? 'admin' : 'read only'})`, 409);
+    ON CONFLICT (phone, username) DO NOTHING`, [phoneKey, name, r, userKey(by), new Date().toISOString()]);
+  if (!added) throw httpError(`"${name}" already has access to this gate (${(await accessOf(store, phoneKey, name)) === 'admin' ? 'admin' : 'read only'})`, 409);
 }
 
 // Admins of the gate, locked until the transaction ends so two changes can't remove the last two admins at once.
@@ -129,27 +129,27 @@ const lockedAdmins = async (tx: Store, p: string) => {
 };
 
 export async function setRole(store: Store, phone: unknown, username: unknown, role: unknown): Promise<void> {
-  const p = phoneDigits(phone);
+  const phoneKey = phoneDigits(phone);
   const name = userKey(username);
   const r = checkRole(role);
   await transaction(store, async (tx) => {
-    const admins = await lockedAdmins(tx, p);
-    if (r !== 'admin' && admins.length === 1 && admins[0] === name) throw err(LAST_ADMIN, 409);
-    if (!await run(tx, 'UPDATE gate_access SET role = $3 WHERE phone = $1 AND username = $2', [p, name, r])) {
-      throw err(`"${name}" has no access to this gate`, 404);
+    const admins = await lockedAdmins(tx, phoneKey);
+    if (r !== 'admin' && admins.length === 1 && admins[0] === name) throw httpError(LAST_ADMIN, 409);
+    if (!await run(tx, 'UPDATE gate_access SET role = $3 WHERE phone = $1 AND username = $2', [phoneKey, name, r])) {
+      throw httpError(`"${name}" has no access to this gate`, 404);
     }
   });
 }
 
 // Takes the user off the gate (also how a user leaves a gate).
 export async function revokeAccess(store: Store, phone: unknown, username: unknown): Promise<void> {
-  const p = phoneDigits(phone);
+  const phoneKey = phoneDigits(phone);
   const name = userKey(username);
   await transaction(store, async (tx) => {
-    const admins = await lockedAdmins(tx, p);
-    if (admins.length === 1 && admins[0] === name) throw err(LAST_ADMIN, 409);
-    if (!await run(tx, 'DELETE FROM gate_access WHERE phone = $1 AND username = $2', [p, name])) {
-      throw err(`"${name}" has no access to this gate`, 404);
+    const admins = await lockedAdmins(tx, phoneKey);
+    if (admins.length === 1 && admins[0] === name) throw httpError(LAST_ADMIN, 409);
+    if (!await run(tx, 'DELETE FROM gate_access WHERE phone = $1 AND username = $2', [phoneKey, name])) {
+      throw httpError(`"${name}" has no access to this gate`, 404);
     }
   });
 }
@@ -161,9 +161,9 @@ export async function adoptAdminlessGates(store: Store, username: unknown): Prom
   const phones = (await all<{ phone: string }>(store, `SELECT phone FROM managed_gates g WHERE NOT EXISTS
     (SELECT 1 FROM gate_access a WHERE a.phone = g.phone AND a.role = 'admin') ORDER BY phone`)).map((r) => r.phone);
   const now = new Date().toISOString();
-  for (const p of phones) {
+  for (const phone of phones) {
     await run(store, `INSERT INTO gate_access (phone, username, role, granted_by, granted_at) VALUES ($1, $2, 'admin', $2, $3)
-      ON CONFLICT (phone, username) DO UPDATE SET role = 'admin'`, [p, name, now]);
+      ON CONFLICT (phone, username) DO UPDATE SET role = 'admin'`, [phone, name, now]);
   }
   return phones;
 }
@@ -181,13 +181,13 @@ export async function migrateToLocalAccounts(store: Store): Promise<{ gates: str
       `SELECT g.username, g.phone, g.master_code, g.added_at, c.login, c.password FROM gates g
         LEFT JOIN credentials c ON c.username = g.username WHERE g.verified_at IS NOT NULL
         ORDER BY (c.password IS NULL), g.verified_at DESC`);
-    for (const r of rows) {
-      if (out.gates.includes(r.phone)) continue;
+    for (const row of rows) {
+      if (out.gates.includes(row.phone)) continue;
       await run(tx, `INSERT INTO managed_gates (phone, master_code, dks_user, dks_password, added_by, added_at)
         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (phone) DO NOTHING`,
-      [r.phone, r.master_code, r.login || '', r.password || '', r.username, r.added_at]);
-      out.gates.push(r.phone);
-      if (!r.password) out.noLogin.push(r.phone);
+      [row.phone, row.master_code, row.login || '', row.password || '', row.username, row.added_at]);
+      out.gates.push(row.phone);
+      if (!row.password) out.noLogin.push(row.phone);
     }
     await setMeta(tx, 'localAccountsMigrated', new Date().toISOString());
   });
@@ -202,12 +202,12 @@ const GATE_TABLES = ['gate_access', 'api_keys', 'managed_gates', 'gates', 'prefs
 // history, schedules, camera settings, snapshot log, notes, transaction history, board files and the tables decoded
 // from them; sessions that had it open close it. Returns the rows removed per table.
 export async function deleteGateData(store: Store, phoneNumber: unknown): Promise<Record<string, number>> {
-  const p = phoneDigits(phoneNumber);
-  if (!p) throw err('Gate phone number required');
+  const phoneKey = phoneDigits(phoneNumber);
+  if (!phoneKey) throw httpError('Gate phone number required');
   const removed: Record<string, number> = {};
   await transaction(store, async (tx) => {
-    for (const t of GATE_TABLES) removed[t] = await run(tx, `DELETE FROM ${t} WHERE phone = $1`, [p]);
-    await run(tx, 'UPDATE sessions SET gate = NULL WHERE gate = $1', [p]);
+    for (const table of GATE_TABLES) removed[table] = await run(tx, `DELETE FROM ${table} WHERE phone = $1`, [phoneKey]);
+    await run(tx, 'UPDATE sessions SET gate = NULL WHERE gate = $1', [phoneKey]);
   });
   return removed;
 }

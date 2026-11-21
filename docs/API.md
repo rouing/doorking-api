@@ -1,7 +1,7 @@
 # REST API
 
 Every action in the web page goes through this API. Scripts and other systems use it with a gate's **API key**
-(below); the routes are defined in the `ROUTES` table in `web/server.ts`.
+(below); the routes are defined in `web/routes/` (one file per area) and joined in order by `createRoutes` in `web/modules.ts`.
 
 **OpenAPI:** the routes an API key can use are described in [`openapi.json`](openapi.json) (OpenAPI 3.1), served at
 `GET /api/openapi.json` and browsable at **`/api/docs`** (Swagger UI: **Authorize** with a key, then **Try it out**).
@@ -59,7 +59,7 @@ Each route has one of these access levels (the `scope` in `ROUTES`):
 | gate-admin | signed in with the **admin** role on that gate, or an admin API key of that gate; 403 "Only a gate admin can do this" otherwise |
 
 **web only**: refused for API keys whatever their role: everything under "Session and gate list", "Gate login, users
-and API keys" and the debug log, plus `POST /delete-data`.
+and API keys", plus `POST /delete-data`.
 
 A user whose password was set by someone else (a new account, or the CLI's `reset-password`) gets 403
 `{ mustChangePassword: true }` from every non-public route except `PUT /api/me/password` until they choose their own.

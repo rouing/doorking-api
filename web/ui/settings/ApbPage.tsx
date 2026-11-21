@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { Flex, RadioGroup, Select, Table, Text, TextField } from '@radix-ui/themes';
+import { Flex, RadioGroup, Table, Text, TextField } from '@radix-ui/themes';
+import { Choice } from '../panes/fields.tsx';
 import type { GateSettingRow } from '../../../src/types.ts';
 import type { GateApi } from '../api.ts';
 import { HelpTip } from '../HelpTip.tsx';
@@ -18,19 +19,19 @@ const ROW_HELP: Record<string, string> = {
   'Reset Facility Counter to': 'apbCounter', 'Re-Sync': 'apbResync', 'Enable Scheduled Re-Sync All': 'apbResync',
 };
 
-function Choice({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
-  return (
-    <Select.Root size="1" value={value} onValueChange={onChange}>
-      <Select.Trigger />
-      <Select.Content>{(options.includes(value) ? options : [...options, value]).map((o) => <Select.Item key={o} value={o}>{o}</Select.Item>)}</Select.Content>
-    </Select.Root>
-  );
+// The gate's own value stays in the list even when it isn't one of the usual ones.
+function GateChoice({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
+  return <Choice size="1" value={value} options={options.includes(value) ? options : [...options, value]} onChange={onChange} />;
 }
 
 // In/Out relays: checkboxes for the shown relays; hidden relays already set are kept. At most 10 in total.
-function RelayPicks({ gs, f, name, shown }: { gs: GateSettings; f: GateSettingRow; name: (r: number) => string; shown: number[] }) {
-  const on = new Set(gs.current(f).split(',').filter(Boolean).map(Number));
-  const set = (r: number, v: boolean) => { if (v) on.add(r); else on.delete(r); gs.edit(f, [...on].sort((a, b) => a - b).join(',')); };
+function RelayPicks({ gs: settings, f: setting, name, shown }: { gs: GateSettings; f: GateSettingRow; name: (r: number) => string; shown: number[] }) {
+  const on = new Set(settings.current(setting).split(',').filter(Boolean).map(Number));
+  const set = (relay: number, picked: boolean) => {
+    on.delete(relay);
+    if (picked) on.add(relay);
+    settings.edit(setting, [...on].sort((a, b) => a - b).join(','));
+  };
   return (
     <Flex gap="3" wrap="wrap">
       {shown.map((r) => <Box key={r} label={name(r)} checked={on.has(r)} disabled={!on.has(r) && on.size >= MAX_RELAYS} onChange={(v) => set(r, v)} />)}
@@ -39,13 +40,13 @@ function RelayPicks({ gs, f, name, shown }: { gs: GateSettings; f: GateSettingRo
 }
 
 // Re-Sync: none, all devices, or a list of up to 5 device numbers.
-function Resync({ gs, all, list }: { gs: GateSettings; all: GateSettingRow; list: GateSettingRow }) {
-  const cur = gs.current(list);
-  const mode = cur !== '' ? 'list' : gs.current(all) === 'Yes' ? 'all' : 'none';
+function Resync({ gs: settings, all, list }: { gs: GateSettings; all: GateSettingRow; list: GateSettingRow }) {
+  const cur = settings.current(list);
+  const mode = cur !== '' ? 'list' : settings.current(all) === 'Yes' ? 'all' : 'none';
   const slots = (cur || ',,,,').split(',');
   const setMode = (m: string) => {
-    gs.edit(all, m === 'all' ? 'Yes' : 'No');
-    gs.edit(list, m === 'list' ? (cur || ',,,,') : '');
+    settings.edit(all, m === 'all' ? 'Yes' : 'No');
+    settings.edit(list, m === 'list' ? (cur || ',,,,') : '');
   };
   return (
     <Flex direction="column" gap="2">
@@ -56,7 +57,7 @@ function Resync({ gs, all, list }: { gs: GateSettings; all: GateSettingRow; list
       <Flex gap="1">
         {Array.from({ length: 5 }, (_, i) => (
           <TextField.Root key={i} size="1" type="number" min={1} max={65535} style={{ width: '9ch' }} disabled={mode !== 'list'} value={slots[i] ?? ''}
-            onChange={(e) => { const s = Array.from({ length: 5 }, (__, j) => slots[j] ?? ''); s[i] = e.target.value.trim(); gs.edit(list, s.join(',')); }} />
+            onChange={(event) => { const s = Array.from({ length: 5 }, (__, j) => slots[j] ?? ''); s[i] = event.target.value.trim(); settings.edit(list, s.join(',')); }} />
         ))}
       </Flex>
     </Flex>
@@ -66,31 +67,31 @@ function Resync({ gs, all, list }: { gs: GateSettings; all: GateSettingRow; list
 // Anti-Pass Back (names.bin block 20): mode, In/Out relays, facility counter, one-time re-sync and the scheduled
 // Re-Sync All. shown: relays 0-2 plus the Tracker relays.
 export function ApbPage({ gapi, relayLabels, relays: shown }: { gapi: GateApi; relayLabels: Record<string, string | undefined>; relays: number[] }) {
-  const gs = useGateSettings(gapi);
-  const f = (k: string) => gs.field(k);
+  const settings = useGateSettings(gapi);
+  const f = (k: string) => settings.field(k);
   const name = (r: number) => (relayLabels[r] && relayLabels[r] !== `Relay ${r}` ? relayLabels[r]! : String(r));
   const rows: [string, (GateSettingRow | undefined)[], (fs: GateSettingRow[]) => ReactNode][] = [
-    ['True Anti Passback', [f('apbMode')], ([x]) => <Choice value={gs.current(x)} options={['Off', 'Passive', 'Active', 'Trap']} onChange={(v) => gs.edit(x, v)} />],
-    ['Relays In', [f('apbRelaysIn')], ([x]) => <RelayPicks gs={gs} f={x} name={name} shown={shown} />],
-    ['Relays Out', [f('apbRelaysOut')], ([x]) => <RelayPicks gs={gs} f={x} name={name} shown={shown} />],
-    ['Record Facility Counter Every', [f('apbCounterEvery')], ([x]) => <Choice value={gs.current(x)} options={['Off', '15 Mins', '30 Mins', 'Hour']} onChange={(v) => gs.edit(x, v)} />],
-    ['Reset Facility Counter to', [f('apbCounterReset')], ([x]) => <TextField.Root size="1" type="number" min={0} max={65535} style={{ width: '10ch' }}
-      value={gs.current(x)} onChange={(e) => gs.edit(x, e.target.value.trim())} />],
-    ['Re-Sync', [f('apbResyncAll'), f('apbResyncList')], ([a, l]) => <Resync gs={gs} all={a} list={l} />],
-    ['Enable Scheduled Re-Sync All', [f('apbScheduleEnabled')], ([x]) => <Box checked={gs.current(x) === 'Yes'} onChange={(on) => gs.edit(x, on ? 'Yes' : 'No')} />],
-    ['Scheduled Re-Sync All days', [f('apbScheduleDays')], ([x]) => (
-      <Flex gap="2">{DAY_LETTERS.map((d, i) => <Box key={i} label={d} checked={gs.current(x)[i] === '1'} onChange={(on) => gs.edit(x, setBit(gs.current(x), i, on))} />)}</Flex>
+    ['True Anti Passback', [f('apbMode')], ([setting]) => <GateChoice value={settings.current(setting)} options={['Off', 'Passive', 'Active', 'Trap']} onChange={(v) => settings.edit(setting, v)} />],
+    ['Relays In', [f('apbRelaysIn')], ([setting]) => <RelayPicks gs={settings} f={setting} name={name} shown={shown} />],
+    ['Relays Out', [f('apbRelaysOut')], ([setting]) => <RelayPicks gs={settings} f={setting} name={name} shown={shown} />],
+    ['Record Facility Counter Every', [f('apbCounterEvery')], ([setting]) => <GateChoice value={settings.current(setting)} options={['Off', '15 Mins', '30 Mins', 'Hour']} onChange={(v) => settings.edit(setting, v)} />],
+    ['Reset Facility Counter to', [f('apbCounterReset')], ([setting]) => <TextField.Root size="1" type="number" min={0} max={65535} style={{ width: '10ch' }}
+      value={settings.current(setting)} onChange={(event) => settings.edit(setting, event.target.value.trim())} />],
+    ['Re-Sync', [f('apbResyncAll'), f('apbResyncList')], ([a, setting]) => <Resync gs={settings} all={a} list={setting} />],
+    ['Enable Scheduled Re-Sync All', [f('apbScheduleEnabled')], ([setting]) => <Box checked={settings.current(setting) === 'Yes'} onChange={(on) => settings.edit(setting, on ? 'Yes' : 'No')} />],
+    ['Scheduled Re-Sync All days', [f('apbScheduleDays')], ([setting]) => (
+      <Flex gap="2">{DAY_LETTERS.map((letter, i) => <Box key={i} label={letter} checked={settings.current(setting)[i] === '1'} onChange={(on) => settings.edit(setting, setBit(settings.current(setting), i, on))} />)}</Flex>
     )],
-    ['Scheduled Re-Sync All time', [f('apbScheduleTime')], ([x]) => <TimeBox value={gs.current(x)} onChange={(v) => gs.edit(x, v)} />],
+    ['Scheduled Re-Sync All time', [f('apbScheduleTime')], ([setting]) => <TimeBox value={settings.current(setting)} onChange={(v) => settings.edit(setting, v)} />],
   ];
   return (
-    <GroupPage gs={gs} group="Anti-Pass Back" title="Anti-Pass Back" help="apb" clearValue={(x) => CLEAR[x.key]}
+    <GroupPage gs={settings} group="Anti-Pass Back" title="Anti-Pass Back" help="apb" clearValue={(setting) => CLEAR[setting.key]}
       intro="Set the anti-pass back mode, In/Out relays (up to 10 each), facility counter, one-time re-sync functions and the scheduled Re-Sync All. Anti-pass back applies only to cards in security levels 02–27; levels 01, 28, 29 and 30 are never limited by it. Clear sets every setting on this page back to unset. Edits go to the working copy (blue = unsaved, green = saved but not sent to the gate).">
       <Head cols={['Setting', 'Value', 'Status']} />
       <Table.Body>
         {rows.map(([label, fs, build]) => {
           if (fs.some((x) => !x)) return null;
-          const st = rowState(gs, fs, undefined, undefined, 'saved, not sent');
+          const st = rowState(settings, fs, undefined, undefined, 'saved, not sent');
           return (
             <Table.Row key={label} style={st.style}>
               <Table.Cell>{label}{ROW_HELP[label] && <HelpTip of={ROW_HELP[label]} />}</Table.Cell>

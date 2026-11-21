@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { Button, Card, Checkbox, Flex, Grid, Heading, Select, Text, TextField } from '@radix-ui/themes';
+import { Button, Card, Checkbox, Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
 import type { GateConfig as Config, GateFeatures, GatePrefs, ResidentsReply } from '../../../src/types.ts';
 import { errorText, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { featuresOf, trackerOf } from '../format.ts';
-import { Field } from '../panes/fields.tsx';
+import { Choice, Field } from '../panes/fields.tsx';
 import { HelpTip } from '../HelpTip.tsx';
 
 export const CONFIG_KEYS: (keyof Config)[] = ['siteName', 'memorySize', 'areaCodes', 'modelNumber', 'antiPassBack', 'interface1816'];
@@ -19,6 +19,21 @@ export const CONFIG_LABELS: Record<keyof Config, string> = {
 
 // Gate configuration (must match the gate; DKS Cloud uses it to connect), the working copy's area codes and the
 // directory code digits. gate: what the gate's last pull records (system memory, memory chips), to point out a mismatch.
+// The gate configuration fields (drop-downs for the settings with fixed choices).
+export function ConfigFields({ cfg, onChange, disabled }: { cfg: Record<string, string>; onChange: (cfg: Record<string, string>) => void; disabled?: boolean }) {
+  return (
+    <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
+      {CONFIG_KEYS.map((k) => (
+        <Field key={k} label={CONFIG_LABELS[k]} help={k}>
+          {CONFIG_OPTIONS[k]
+            ? <Choice value={cfg[k]} onChange={(v) => onChange({ ...cfg, [k]: v })} options={CONFIG_OPTIONS[k]!} disabled={disabled} />
+            : <TextField.Root value={cfg[k]} maxLength={40} onChange={(event) => onChange({ ...cfg, [k]: event.target.value })} disabled={disabled} />}
+        </Field>
+      ))}
+    </Grid>
+  );
+}
+
 export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: {
   prefs: GatePrefs; defaults: Config; list: ResidentsReply | null; gapi: GateApi; gate?: { memory?: string; chips?: string };
   onSaved: () => Promise<void>;
@@ -46,8 +61,8 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
 
   async function save() {
     setInfo('Saving…');
-    try { await gapi('PUT', '/prefs', { gateConfig: cfg }); setInfo('Saved. Pulls and sends will use these.'); await onSaved(); } catch (e) {
-      setInfo(`Save failed: ${errorText(e)}`);
+    try { await gapi('PUT', '/prefs', { gateConfig: cfg }); setInfo('Saved. Pulls and sends will use these.'); await onSaved(); } catch (err) {
+      setInfo(`Save failed: ${errorText(err)}`);
     }
   }
 
@@ -56,18 +71,18 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
     const next = { ...features, [key]: on };
     setFeatures(next);
     setFeaturesInfo('Saving…');
-    try { await gapi('PUT', '/prefs', { features: next }); setFeaturesInfo('Saved.'); await onSaved(); } catch (e) {
+    try { await gapi('PUT', '/prefs', { features: next }); setFeaturesInfo('Saved.'); await onSaved(); } catch (err) {
       setFeatures(features);
-      setFeaturesInfo(`Save failed: ${errorText(e)}`);
+      setFeaturesInfo(`Save failed: ${errorText(err)}`);
     }
   }
 
   async function toggleTracker(on: boolean) {
     setTracker(on);
     setTrackerInfo('Saving…');
-    try { await gapi('PUT', '/prefs', { tracker: { ...prefs.tracker, enabled: on } }); setTrackerInfo('Saved.'); await onSaved(); } catch (e) {
+    try { await gapi('PUT', '/prefs', { tracker: { ...prefs.tracker, enabled: on } }); setTrackerInfo('Saved.'); await onSaved(); } catch (err) {
       setTracker(!on);
-      setTrackerInfo(`Save failed: ${errorText(e)}`);
+      setTrackerInfo(`Save failed: ${errorText(err)}`);
     }
   }
 
@@ -85,7 +100,7 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
       await gapi('PUT', '/dir-digits', { digits: to, confirm: decrease });
       setDigitsInfo(`Changed to ${to} digits. Send to update the gate.`);
       await onSaved();
-    } catch (e) { setDigitsInfo(`Change failed: ${errorText(e)}`); }
+    } catch (err) { setDigitsInfo(`Change failed: ${errorText(err)}`); }
   }
 
   return (
@@ -97,19 +112,8 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
           These must match the gate's own settings; DKS Cloud uses them to connect. Stored locally and <strong>shared by every
           account that manages this gate</strong> (keyed by system phone number). Pulls and sends use them automatically.
         </Text>
-        <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
-          {CONFIG_KEYS.map((k) => (
-            <Field key={k} label={CONFIG_LABELS[k]} help={k}>
-              {CONFIG_OPTIONS[k] ? (
-                <Select.Root value={cfg[k]} onValueChange={(v) => setCfg({ ...cfg, [k]: v })}>
-                  <Select.Trigger />
-                  <Select.Content>{CONFIG_OPTIONS[k]!.map((o) => <Select.Item key={o} value={o}>{o}</Select.Item>)}</Select.Content>
-                </Select.Root>
-              ) : <TextField.Root value={cfg[k]} onChange={(e) => setCfg({ ...cfg, [k]: e.target.value })} />}
-            </Field>
-          ))}
-        </Grid>
-        {mismatches.map((m) => <Text key={m} size="2" color="red" role="alert">{m} They must match, or pulls and sends fail.</Text>)}
+        <ConfigFields cfg={cfg} onChange={setCfg} />
+        {mismatches.map((mismatch) => <Text key={mismatch} size="2" color="red" role="alert">{mismatch} They must match, or pulls and sends fail.</Text>)}
         <Flex gap="3" align="center"><Button onClick={save}>Save gate configuration</Button><Text size="2" color="gray">{info}</Text></Flex>
         <Flex direction="column" gap="2">
           <Text as="label" size="2"><Flex gap="2" align="center">
@@ -147,10 +151,7 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
         )}
         <Flex gap="3" align="end" wrap="wrap">
           <Field label="Num of digits in dir code" help="dirDigits">
-            <Select.Root value={digits} onValueChange={setDigits}>
-              <Select.Trigger />
-              <Select.Content>{['1', '2', '3', '4'].map((d) => <Select.Item key={d} value={d}>{d}</Select.Item>)}</Select.Content>
-            </Select.Root>
+            <Choice value={digits} onChange={setDigits} options={['1', '2', '3', '4']} />
           </Field>
           <Button variant="soft" onClick={changeDigits} disabled={!list}>Change digits</Button>
           <Text size="2" color="gray">{digitsInfo}</Text>

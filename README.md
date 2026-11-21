@@ -87,7 +87,7 @@ Sign in (local account, passkey or SSO) ──> Your gates (admin / read only) �
 5. **Sessions.** A random token in the `sid` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS); the database keeps
    only its SHA-256 hash (table `sessions`), so sessions survive a restart. They end after **30 minutes idle**, **7 days**
    after signing in (`security.sessionMaxHours`), on **Sign out**, or when the user changes their password (other sessions). The open gate is kept in the session.
-6. **Step-up** (`STEP_UP` in `web/server.ts`). Sensitive actions need a passkey confirmation in the session within
+6. **Step-up** (`STEP_UP` in `web/requests.ts`). Sensitive actions need a passkey confirmation in the session within
    `security.stepUpMinutes` (180): Send to gate, scheduled transfers (add, change, run now), gate users (add,
    invite, share, role, remove), API keys (create, revoke), the gate's DKS login and master code, deleting the gate's
    data, and linking or unlinking single sign-on. Otherwise 403 `{ stepUp: true, hasPasskey }`; the page asks
@@ -131,7 +131,8 @@ see every page with the edit controls hidden or disabled.
 
 **Gate connection.** **Pull residents** / **Pull transactions** start a DKS Cloud session with the gate; the
 progress window (bottom right; minimize or close it, **Show progress** reopens it) shows the log. One gate
-connection runs at a time across all gates. When a pull or send finishes, the data reloads and its page opens.
+connection runs at a time per DKS login (DKS Cloud refuses a second session on the same login); gates with
+different DKS logins can pull and send at the same time. When a pull or send finishes, the data reloads and its page opens.
 
 | Page | Features |
 |---|---|
@@ -180,7 +181,7 @@ while `config.json` or the key can be read by other users (Linux/macOS).
 | `config.json` | the server's settings, including the database password (`config.example.json` is the committed template) | **No** |
 | `doorking.key` | AES-256-GCM key for the encrypted columns | **No**: with the database it decrypts master codes and passwords |
 | `media/<phone>/` | `snapshots/` (camera pictures and videos). The board files are in the database (`gate_files`) | No: camera pictures |
-| `logs/debug.log` | the server log, always written (also printed to the console) | No: holds phone numbers and recorder serials |
+| `logs/server.jsonl` (+ `.1`–`.5`) | the server log, JSON Lines (also printed to the console) | No: holds phone numbers and recorder serials |
 
 ## Scheduled transfers
 DoorKing32's Scheduled Transfers, reworked: each gate has its own list of entries instead of four shared
@@ -196,7 +197,8 @@ schedules A-D.
 - The server checks every 30 seconds. A time missed while the server was stopped runs once when it starts
   (DoorKing32 also runs past-due jobs). A new or edited entry waits for its next time; **Run now** queues it
   immediately.
-- Due entries queue and run one at a time; each transfer waits for any running gate connection. A failed
+- Due entries queue per DKS login and run one at a time on it; each transfer waits until that login is free (entries
+  for gates with different DKS logins run at the same time). A failed
   transfer does not stop the entry's other transfers. Each transfer is recorded in History with
   `(scheduled)` in its summary, and the entry shows its last result.
 - Entries run with the gate's DKS login (System Settings → Gate login); "Saved by" shows who last saved the entry.
@@ -220,7 +222,7 @@ server (dahua-p2p tunnel, in process) ──Dahua P2P cloud──> recorder
 - **The bridge** is the [`dahua-p2p`](https://github.com/ludufre/dahua-p2p) npm package (ludufre's, MIT; built on
   blackjid/dahua-p2p and khoanguyen-3fc/dh-p2p). It opens a relay tunnel to the recorder through the P2P cloud
   inside the server and exposes the recorder's RTSP port on a free port on `127.0.0.1` only (`start` in
-  `createCameraRunner`, `src/cameras.ts`). It needs only the serial; the recorder's username and password go to
+  `createCameraRunner`, `src/camera-runner.ts`). It needs only the serial; the recorder's username and password go to
   ffmpeg. It acknowledges only data that arrived in order and waits for missing pieces, so lost or reordered
   data from the relay doesn't stall or corrupt the stream. It carries one stream at a time (live views of several
   channels queue) and retries for up to 35 s while the recorder still holds an earlier session (it keeps a closed
@@ -317,7 +319,7 @@ camera settings is recorded in History (never the password).
   column. It runs a snapshot run for that transaction's minute only, whatever its transaction type, age or
   earlier tries (refused while a run is going; a minute less than about 2½ minutes old is not fetched yet).
   Transactions that never get footage (see the Transactions setting above) have no button, and a minute with only
-  those is refused (`footageApplies`, `noFootageMinute` in `src/cameras.ts`). Footage already saved for such a minute
+  those is refused (`footageApplies`, `noFootageMinute` in `src/camera-log.ts`). Footage already saved for such a minute
   is deleted by the clean-up (`removeNoFootageSnapshots`, logged in History).
 
 ### Live view
@@ -337,7 +339,7 @@ camera settings is recorded in History (never the password).
 errors and tries.
 
 ### Clean-up
-`tidySnapshots` (`src/cameras.ts`) runs at startup, every hour, at the start of each snapshot run and when **Keep
+`tidySnapshots` (`src/camera-log.ts`) runs at startup, every hour, at the start of each snapshot run and when **Keep
 pictures** changes (skipped while a run or refresh uses the folder):
 - deletes leftover pieces of videos whose fetch was cut off (`ch<N>.rec<n>.mp4`, `.best.mp4/.jpg`, `.new.mp4/.jpg`;
   e.g. after a restart during a download);
@@ -348,13 +350,19 @@ pictures** changes (skipped while a run or refresh uses the folder):
   pictures are not fetched either.
 
 ## Server log
-Always on, with no page in the app (until there is an admin panel): each entry is printed to the console
-(`journalctl -u doorking`) as `[area] message` and appended to `logs/debug.log` (see `paths.logs`) as
-`<ISO time> [area] message`. Areas:
+Always on, with no page in the app (until there is an admin panel), through [LogTape](https://logtape.org)
+(`src/logging.ts`). Each entry has a level (debug, info, warning, error) and a category `doorking.<area>`:
+- **Console** (`journalctl -u doorking`), info and up: `[INF] doorking.session: alice signed in`.
+- **`logs/server.jsonl`** (see `paths.logs`), debug and up, one JSON object per line:
+  `{"time", "level", "category", "message", ...}` plus the context of the request (`requestId`, `user`, `gate`) or
+  of the gate connection (`job`, `gate`, `what`) it was written in, so one request or one pull/send can be followed
+  with `jq`, e.g. `jq -c 'select(.job == "1a2b3c4d")' logs/server.jsonl`.
+
+Areas:
 
 | Area | Written for |
 |---|---|
-| `dks` | each DKS Cloud call: operation, time taken, reply size or error (never its parameters); `GetSessionStatus` polls only when they fail |
+| `dks` | (debug, file only) each DKS Cloud call: operation, time taken, reply size or error (never its parameters); `GetSessionStatus` polls only when they fail |
 | `gate` | every gate connection line, as in the Gate connection window, without repeated statuses, and how it ended; live relay changes |
 | `change` | every working-copy, preference, note and revert change recorded in History, with the user and the files it touched |
 | `gates` | gates added (or a failed add), users created, shared, changed or removed, the gate login or master code changed, a gate's stored data deleted (with the rows removed per table) |
@@ -365,9 +373,11 @@ Always on, with no page in the app (until there is an admin panel): each entry i
 | `request` | requests answered with an error status |
 | `server` | start, the one-time import, uncaught errors |
 
-Above 5 MB the file is moved to `debug.log.1`. Passwords and master codes are never
-written (the DKS session request is masked); the file still holds gate phone numbers, user names and recorder
-serials, so `logs/` is in `.gitignore`.
+Above 5 MB the file moves to `server.jsonl.1` (5 old files kept). Fields named like passwords, master codes, tokens,
+secrets and keys are removed, and API keys, `user:password@` in URLs and email addresses in the text are replaced,
+before anything is written (on top of the masking at each call site, such as the DKS session request). The file still
+holds gate phone numbers, user names and recorder serials, so `logs/` is in `.gitignore`. Writes are buffered and
+flushed every few seconds and when the server stops.
 
 ## How data flows
 ```
@@ -401,7 +411,8 @@ base + values ──build──> files ──send──> gate ──verify pull�
 - A send uploads the changed blocks, then pulls residents again. If the pull matches what was sent, it becomes
   the new base and the working copy (edits saved while the send ran are kept on top, as after any pull); if not, the pull is applied like any residents pull (what the gate doesn't hold stays unsent) and the
   differing blocks are logged.
-- One gate connection (pull or send) runs at a time across all gates.
+- One gate connection (pull, send, or a live relay read or change) runs at a time per DKS login (compared without
+  case); gates with different DKS logins run at the same time (`web/jobs.ts`).
 - Transactions (`rcv_out.bin`) are read-only. A pull reads the gate's whole buffer (10,000 events, oldest
   overwritten first); the events after the part already saved are added to the transaction history
   (`tx_history`), which the Transactions page shows; the file itself isn't kept, only the pull time (`tx_pulls`).
@@ -482,7 +493,7 @@ against changes observed on the gate. The database tests use the `doorking_test`
   tsconfig.json          type check settings for the server code (tsc, no output)
   config.json            server settings incl. the database password (not in git; copy config.example.json)
   doorking.key           the encryption key (created on first start; not in git)
-  logs/                  debug.log (the server log)
+  logs/                  server.jsonl (the server log)
   src/
     config.ts            server settings: config.json + environment + flags, checked at startup
     types.ts             shapes shared by the server and the web page (types only)
@@ -506,16 +517,34 @@ against changes observed on the gate. The database tests use the `doorking_test`
     tx-history.ts        transaction history: merges each pulled rcv_out.bin into tx_history (the file isn't kept)
     audit.ts             history log, sign-ins, revert patches
     schedules.ts         scheduled transfers (run with the gate's DKS login)
-    cameras.ts           camera settings, the dahua-p2p bridge, ffmpeg pictures, videos and live view
+    cameras.ts           snapshot runs: pictures and videos per transaction minute, refreshing one picture
+    camera-settings.ts   camera settings: validation and the cameras table
+    camera-log.ts        the snapshot log: which minutes need footage, frame names, tidying saved files
+    camera-runner.ts     the dahua-p2p bridge and ffmpeg: frames, videos and live view
+    errors.ts            httpError: an Error with the HTTP status the server answers with
     holidays.ts          fixed-date holiday names
     transactions.ts      reader for the desktop app's TRANSnnn.TRA files
     carchive.ts          MFC CArchive reader (used by transactions.ts)
-    debug-log.ts         the server log: console and logs/debug.log
+    logging.ts           the server log (LogTape): console and logs/server.jsonl, levels, context, redaction
     markdown.ts          renders docs/MANUAL.md as the /help page (small Markdown subset, all text escaped)
   web/
-    server.ts            HTTP server: the built page, /help + REST API
+    server.ts            entry point: loads the settings, builds the log, camera runner and mailer, starts the Application
+    app.ts               Application: start() (database, migrations, listen, background timers) and stop() (graceful)
+    modules.ts           builds the modules below from those services, and the route list
+    requests.ts          the request handler: host, origin, session or API key, role and step-up checks; the built page
+    migrations.ts        one-time data migrations run by start()
+    context.ts           shared state: settings, database, log, replies, gate access
+    auth.ts              sign-in helpers: rate limits, sessions, step-up, passkey relying party, single sign-on
+    mail.ts              account emails and gate alerts (through the outbox)
+    jobs.ts              gate connections (pulls, sends, login checks) and scheduled transfers
+    editing.ts           the working copy: edits with History, reverts, settings, relays, preferences
+    snapshots.ts         camera snapshot runs and clean-ups, picture/video replies
+    routing.ts           route table types and route()
+    routes/              the REST API routes, one file per area (auth, account, gates, connections, residents,
+                         working-copy, relays, schedules, cameras, docs)
     data.ts              shapes board files into UI rows (residents, transactions, schedules)
     ui/                  web page (React + Radix Themes, TypeScript), built by Vite: App, GateApp (sidebar),
+                         account/ (sign-in pages, User Settings, passkeys, single sign-on),
                          panes/ (residents, transactions, history, schedules), settings/ (System pages),
                          camera/ (snapshots, viewer, live view), HelpTip.tsx + help.ts ("?" hover tips and
                          their texts)

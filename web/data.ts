@@ -1,6 +1,6 @@
 import { decodeRcvEvent, residentRows, type RcvRecord, type ResidentsData } from '../src/board-files.ts';
 import { DEFAULT_DEVICE_ASSOCIATION, deviceNameFor } from '../src/prefs.ts';
-import { footageApplies, minuteKey } from '../src/cameras.ts';
+import { footageApplies, minuteKey } from '../src/camera-log.ts';
 import type { DeviceRange, TransactionRow } from '../src/types.ts';
 import type { WorkingState } from '../src/gate-state.ts';
 
@@ -29,27 +29,27 @@ function transactions(pulledAt: Date | null, values: WorkingState | null,
   if (!pulledAt) return null;
   type Who = { name: string; directoryCode: string };
   const by = { card: new Map<string | null, Who>(), entryCode: new Map<string | null, Who>(), directory: new Map<string | null, Who>() };
-  for (const r of values ? values.residents : []) {
-    if (r.entryCode) by.entryCode.set(r.entryCode, r);
-    by.directory.set(r.directoryCode, r);
+  for (const resident of values ? values.residents : []) {
+    if (resident.entryCode) by.entryCode.set(resident.entryCode, resident);
+    by.directory.set(resident.directoryCode, resident);
   }
   // A card assigned to a code with no directory entry still shows that code (with no name).
-  for (const c of values ? values.cards : []) {
-    if (c.directoryCode) by.card.set(c.cardNumber, by.directory.get(c.directoryCode) || { name: '', directoryCode: c.directoryCode });
+  for (const card of values ? values.cards : []) {
+    if (card.directoryCode) by.card.set(card.cardNumber, by.directory.get(card.directoryCode) || { name: '', directoryCode: card.directoryCode });
   }
   const rows = (history || [])
-    .filter((t) => t.month >= 1 && t.month <= 12 && t.day >= 1 && t.day <= 31)
+    .filter((record) => record.month >= 1 && record.month <= 12 && record.day >= 1 && record.day <= 31)
     .reverse()
-    .map((t) => {
-      const ev = decodeRcvEvent(t);
+    .map((record) => {
+      const ev = decodeRcvEvent(record);
       const who = ev.lookup ? by[ev.lookup].get(ev.number) : null;
-      const hour24 = (t.hour % 12) + (t.pm ? 12 : 0);
-      const ts = new Date(t.year as number, t.month - 1, t.day, hour24, t.minute).getTime();
+      const hour24 = (record.hour % 12) + (record.pm ? 12 : 0);
+      const ts = new Date(record.year as number, record.month - 1, record.day, hour24, record.minute).getTime();
       return {
         ts,
         minute: minuteKey(ts), // snapshot folder (see cameras.ts)
-        date: `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`,
-        time: `${t.hour}:${String(t.minute).padStart(2, '0')} ${t.pm ? 'PM' : 'AM'}`,
+        date: `${record.year}-${String(record.month).padStart(2, '0')}-${String(record.day).padStart(2, '0')}`,
+        time: `${record.hour}:${String(record.minute).padStart(2, '0')} ${record.pm ? 'PM' : 'AM'}`,
         eventType: ev.eventType === 'Cards' ? deviceNameFor(devices, ev.number as string) : ev.eventType,
         number: ev.number,
         lookup: ev.lookup,
@@ -59,7 +59,7 @@ function transactions(pulledAt: Date | null, values: WorkingState | null,
         apb: ev.apb,
         directoryCode: who ? who.directoryCode : '',
         camera: footageApplies(ev),
-        raw: t.raw,
+        raw: record.raw,
       };
     });
   return { updated: pulledAt, rows };

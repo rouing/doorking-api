@@ -27,10 +27,10 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await gapi<SchedulesReply>('GET', '/schedules');
-      setList(r);
-      setInfo(`${r.schedules.length} schedule${r.schedules.length === 1 ? '' : 's'}`);
-    } catch (e) { setInfo(errorText(e)); }
+      const reply = await gapi<SchedulesReply>('GET', '/schedules');
+      setList(reply);
+      setInfo(`${reply.schedules.length} schedule${reply.schedules.length === 1 ? '' : 's'}`);
+    } catch (err) { setInfo(errorText(err)); }
   }, [gapi]);
   useEffect(() => { load(); }, [load]);
 
@@ -50,24 +50,23 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
       body: 'This schedule sends the working copy to the gate without asking.' })) return;
     setFormInfo('Saving…');
     try {
-      if (editing) await gapi('PUT', `/schedules/${encodeURIComponent(editing)}`, body);
-      else await gapi('POST', '/schedules', body);
+      await (editing ? gapi('PUT', `/schedules/${encodeURIComponent(editing)}`, body) : gapi('POST', '/schedules', body));
       fill(null);
       setFormInfo('Saved. Your DKS password is stored for scheduled transfers.');
       await load();
-    } catch (e) { setFormInfo(`Save failed: ${errorText(e)}`); }
+    } catch (err) { setFormInfo(`Save failed: ${errorText(err)}`); }
   }
 
-  const act = async (fn: () => Promise<unknown>) => { try { await fn(); } catch (e) { setInfo(errorText(e)); } };
-  const runNow = (e: Schedule) => act(async () => {
-    await gapi('POST', `/schedules/${encodeURIComponent(e.id)}/run`, {});
+  const act = async (fn: () => Promise<unknown>) => { try { await fn(); } catch (err) { setInfo(errorText(err)); } };
+  const runNow = (schedule: Schedule) => act(async () => {
+    await gapi('POST', `/schedules/${encodeURIComponent(schedule.id)}/run`, {});
     await load();
     setInfo('Queued. Progress shows under Gate connection.');
   });
-  const remove = (e: Schedule) => act(async () => {
+  const remove = (schedule: Schedule) => act(async () => {
     if (!await confirm({ title: 'Delete this schedule?', action: 'Delete', color: 'red' })) return;
-    await gapi('DELETE', `/schedules/${encodeURIComponent(e.id)}`);
-    if (editing === e.id) fill(null);
+    await gapi('DELETE', `/schedules/${encodeURIComponent(schedule.id)}`);
+    if (editing === schedule.id) fill(null);
     await load();
   });
 
@@ -93,7 +92,7 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
           </Flex>
           <Flex gap="3" align="center" wrap="wrap">
             <Text size="2" weight="medium">Time</Text>
-            <TextField.Root type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+            <TextField.Root type="time" value={time} onChange={(event) => setTime(event.target.value)} />
             <Text size="2" weight="medium">Transfers:</Text>
             {ACTION_ORDER.map((a) => (
               <Text key={a} as="label" size="2"><Flex gap="1" align="center">
@@ -125,24 +124,24 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
             </Table.Row>
           </Table.Header>
           <Table.Body>
-            {(list?.schedules || []).map((e) => {
-              const result = e.queued ? 'Queued' : e.lastResult === 'failed' ? `Failed: ${e.lastError || ''}`
-                : e.lastResult === 'done' ? `OK${e.lastError ? ` — ${e.lastError}` : ''}` : '';
+            {(list?.schedules || []).map((schedule) => {
+              const result = schedule.queued ? 'Queued' : schedule.lastResult === 'failed' ? `Failed: ${schedule.lastError || ''}`
+                : schedule.lastResult === 'done' ? `OK${schedule.lastError ? ` — ${schedule.lastError}` : ''}` : '';
               return (
-                <Table.Row key={e.id} style={{ background: e.lastResult === 'failed' && !e.queued ? 'var(--red-a3)' : undefined,
-                  color: e.enabled ? undefined : 'var(--gray-10)' }}>
-                  <Table.Cell>{e.days.length === 7 ? 'Every day' : e.days.map((d) => DAYS[d]).join(', ')}</Table.Cell>
-                  <Table.Cell>{e.time}</Table.Cell>
-                  <Table.Cell>{e.actions.map((a) => NAMES[a]).join(', ')}</Table.Cell>
-                  <Table.Cell>{e.enabled ? 'Yes' : 'No'}</Table.Cell>
-                  <Table.Cell>{e.user}</Table.Cell>
-                  <Table.Cell>{fmtTime(e.nextRun)}</Table.Cell>
-                  <Table.Cell>{fmtTime(e.lastRun)}</Table.Cell>
+                <Table.Row key={schedule.id} style={{ background: schedule.lastResult === 'failed' && !schedule.queued ? 'var(--red-a3)' : undefined,
+                  color: schedule.enabled ? undefined : 'var(--gray-10)' }}>
+                  <Table.Cell>{schedule.days.length === 7 ? 'Every day' : schedule.days.map((day) => DAYS[day]).join(', ')}</Table.Cell>
+                  <Table.Cell>{schedule.time}</Table.Cell>
+                  <Table.Cell>{schedule.actions.map((a) => NAMES[a]).join(', ')}</Table.Cell>
+                  <Table.Cell>{schedule.enabled ? 'Yes' : 'No'}</Table.Cell>
+                  <Table.Cell>{schedule.user}</Table.Cell>
+                  <Table.Cell>{fmtTime(schedule.nextRun)}</Table.Cell>
+                  <Table.Cell>{fmtTime(schedule.lastRun)}</Table.Cell>
                   <Table.Cell>{result}</Table.Cell>
                   <Table.Cell><Flex gap="1">
-                    <Button size="1" variant="soft" color="gray" onClick={() => fill(e)}>Edit</Button>
-                    <Button size="1" variant="soft" color="gray" onClick={() => runNow(e)}>Run now</Button>
-                    <Button size="1" variant="soft" color="red" onClick={() => remove(e)}>Delete</Button>
+                    <Button size="1" variant="soft" color="gray" onClick={() => fill(schedule)}>Edit</Button>
+                    <Button size="1" variant="soft" color="gray" onClick={() => runNow(schedule)}>Run now</Button>
+                    <Button size="1" variant="soft" color="red" onClick={() => remove(schedule)}>Delete</Button>
                   </Flex></Table.Cell>
                 </Table.Row>
               );

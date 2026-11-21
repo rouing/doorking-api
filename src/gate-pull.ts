@@ -56,23 +56,24 @@ function sessionTag(what: string, residentCounts: unknown): string {
 
 // StartSessionSeries30 parameters. Relay holds are always 'NNN' (no relay held open).
 // what = 'transactions' | 'residents' (pulls) | 'send' (needs o.residentCounts).
-export function buildSessionRequest(what: string, o: SessionOptions): SessionSeries30Params & { userId: string } {
+export function buildSessionRequest(what: string, offset: SessionOptions): SessionSeries30Params & { userId: string } {
   if (!PULL_FILES[what as PullKind] && what !== 'send') throw new Error('what must be "transactions", "residents" or "send"');
   for (const k of ['user', 'password', 'masterCode', 'phoneNumber']) {
-    if (!o[k]) throw new Error(`Missing ${k}`);
+    if (!offset[k]) throw new Error(`Missing ${k}`);
   }
-  const g: Record<string, any> = { ...GATE_DEFAULTS, ...Object.fromEntries(Object.entries(o).filter(([, v]) => v != null && v !== '')) };
+  const given = Object.fromEntries(Object.entries(offset).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, String(v)]));
+  const g: Record<string, string> = { ...GATE_DEFAULTS, ...given };
   if (!MEMORY_SIZES.includes(String(g.memorySize))) {
     throw new Error(`System memory must be ${MEMORY_SIZES.join(', ')} (got "${g.memorySize}")`);
   }
   return {
-    userId: `${o.user}/6.5.b[${g.siteName}]{${sessionTag(what, o.residentCounts)}}`,
-    password: o.password,
+    userId: `${offset.user}/6.5.b[${g.siteName}]{${sessionTag(what, offset.residentCounts)}}`,
+    password: offset.password,
     userTime: new Date().toLocaleString('en-US'),
     dialDelay: g.dialDelay,
-    masterCode: o.masterCode,
+    masterCode: offset.masterCode,
     memorySize: g.memorySize,
-    phoneNumber: o.phoneNumber,
+    phoneNumber: offset.phoneNumber,
     relay012Hold: 'NNN',
     interface1816: g.interface1816,
     antiPassBack: g.antiPassBack,
@@ -110,7 +111,7 @@ export async function pullFromGate(
     for (const f of PULL_FILES[what]) files[f] = await client.getDataFile(sessionId, f);
     return { sessionId, status, files };
   } finally {
-    onStatus(`EndSession: ${await client.endSession(sessionId).catch((e: Error) => e.message)}`);
+    onStatus(`EndSession: ${await client.endSession(sessionId).catch((error: Error) => error.message)}`);
   }
 }
 
@@ -125,7 +126,7 @@ export async function pushToGate(client: Client, request: SessionSeries30Params,
   files?: Record<string, Buffer>; maps?: Record<string, Buffer>; oldSendStamp?: string; onStatus?: OnStatus;
   waitOptions?: WaitOptions; attempts?: number; retryMs?: number;
 } = {}): Promise<{ sessionId: string; status: string }> {
-  if (!files || !PULL_FILES.residents.every((f) => Buffer.isBuffer(files[f]))) {
+  if (!files || !PULL_FILES.residents.every((resident) => Buffer.isBuffer(files[resident]))) {
     throw new Error(`A send needs ${PULL_FILES.residents.join(', ')}`);
   }
   const sessionId = String(await client.startSessionSeries30(request)).trim();
@@ -138,8 +139,8 @@ export async function pushToGate(client: Client, request: SessionSeries30Params,
         reply = String(await client.sendResidentData(sessionId, { files, maps, oldSendStamp }));
         onStatus(`SendResidentData reply: ${reply}`);
         if (sendAccepted(reply)) break;
-      } catch (e) {
-        reply = (e as Error).message;
+      } catch (err) {
+        reply = (err as Error).message;
         onStatus(`SendResidentData failed: ${reply}`);
       }
       if (i >= attempts) throw new Error(`SendResidentData not accepted after ${attempts} tries: ${reply}`);
@@ -149,7 +150,7 @@ export async function pushToGate(client: Client, request: SessionSeries30Params,
     if (!success) throw new Error(`Session finished without success: ${status}`);
     return { sessionId, status };
   } finally {
-    onStatus(`EndSession: ${await client.endSession(sessionId).catch((e: Error) => e.message)}`);
+    onStatus(`EndSession: ${await client.endSession(sessionId).catch((error: Error) => error.message)}`);
   }
 }
 
@@ -199,8 +200,8 @@ export async function controlRelays(
   // The mode letter (FUN_004f1c20) depends on which relay banks change vs the current state: positions 3-10 and 11-18.
   //   both banks unchanged -> M ; only 3-10 changed -> R ; only 11-18 changed -> P ; both changed -> T.
   // States are the desired 19 chars; '2' (unknown) is sent as '0' (FUN_004f3c40 replaces '2' with '0').
-  const cur = before.map((r) => r.code).join('');
-  const des = before.map((r) => (r.relay in desired ? (desired[r.relay] ? '1' : '0') : (r.code === '2' ? '0' : r.code))).join('');
+  const cur = before.map((relay) => relay.code).join('');
+  const des = before.map((relay) => (relay.relay in desired ? (desired[relay.relay] ? '1' : '0') : (relay.code === '2' ? '0' : relay.code))).join('');
   const bank = (s: string, a: number) => s.slice(a, a + 8);
   const b1 = bank(cur, 3) === bank(des, 3); // relays 3-10 unchanged
   const b2 = bank(cur, 11) === bank(des, 11); // relays 11-18 unchanged

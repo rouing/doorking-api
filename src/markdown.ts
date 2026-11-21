@@ -43,34 +43,42 @@ export function markdownToHtml(md: string): string {
     if (!line.trim()) { flush(); continue; }
     if (heading) {
       flush();
-      const n = heading[1].length;
-      out.push(`<h${n} id="${slug(plain(heading[2]))}">${inline(heading[2])}</h${n}>`);
-    } else if (line.startsWith('>')) {
+      const level = heading[1].length;
+      out.push(`<h${level} id="${slug(plain(heading[2]))}">${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+    if (line.startsWith('>')) {
       flush();
       const quote: string[] = [];
       while (i < lines.length && lines[i].startsWith('>')) quote.push(lines[i++].replace(/^> ?/, ''));
       i--;
       out.push(`<blockquote><p>${inline(quote.join(' '))}</p></blockquote>`);
-    } else if (line.startsWith('|') && /^\|[\s:|-]+\|$/.test((lines[i + 1] || '').trim())) {
+      continue;
+    }
+    if (line.startsWith('|') && /^\|[\s:|-]+\|$/.test((lines[i + 1] || '').trim())) {
       flush();
       const head = cells(line);
       const rows: string[][] = [];
       for (i += 2; i < lines.length && lines[i].startsWith('|'); i++) rows.push(cells(lines[i]));
       i--;
       out.push(`<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${
-        rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
-    } else if (item) {
+        rows.map((row) => `<tr>${row.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+      continue;
+    }
+    if (item) {
       flushPara();
       const tag = item[1] === '-' ? 'ul' : 'ol';
       if (list && list.tag !== tag) flushList();
       if (!list) list = { tag, items: [] };
       list.items.push(item[2]);
-    } else if (list && /^\s+\S/.test(line)) {
-      list.items[list.items.length - 1] += ` ${line.trim()}`;
-    } else {
-      flushList();
-      para.push(line.trim());
+      continue;
     }
+    if (list && /^\s+\S/.test(line)) {
+      list.items[list.items.length - 1] += ` ${line.trim()}`;
+      continue;
+    }
+    flushList();
+    para.push(line.trim());
   }
   flush();
   return out.join('\n');

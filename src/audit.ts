@@ -100,13 +100,13 @@ export async function addEvent(store: Store, phone: unknown, event: Record<strin
 export async function entryHistory(store: Store, phone: unknown, code: unknown): Promise<EntryChange[]> {
   const key = String(code ?? '');
   const events = await readHistory(store, phone);
-  const reverts = new Map(events.filter((e) => e.revertOf).map((e) => [e.revertOf, e]));
+  const reverts = new Map(events.filter((event) => event.revertOf).map((event) => [event.revertOf, event]));
   const out: EntryChange[] = [];
-  for (const e of events.reverse()) {
-    const d = (Array.isArray(e.details) ? e.details as RecordChange[] : []).find((x) => x.key === key);
+  for (const event of events.reverse()) {
+    const d = (Array.isArray(event.details) ? event.details as RecordChange[] : []).find((x) => x.key === key);
     if (!d) continue;
-    const by = reverts.get(e.id);
-    out.push({ id: e.id, time: e.time, user: String(e.user ?? ''), action: String(e.action ?? ''), summary: String(e.summary ?? ''),
+    const by = reverts.get(event.id);
+    out.push({ id: event.id, time: event.time, user: String(event.user ?? ''), action: String(event.action ?? ''), summary: String(event.summary ?? ''),
       change: d.change, fields: d.fields, revertedBy: by ? { id: by.id, user: String(by.user ?? ''), time: by.time } : null });
   }
   return out;
@@ -115,7 +115,7 @@ export async function entryHistory(store: Store, phone: unknown, code: unknown):
 // Newest first, without the patch data. revertedBy names the revert that undid an event.
 export async function listHistory(store: Store, phone: unknown, limit = MAX_LIST): Promise<HistoryEvent[]> {
   const events = await readHistory(store, phone);
-  const reverts = new Map(events.filter((e) => e.revertOf).map((e) => [e.revertOf, e]));
+  const reverts = new Map(events.filter((event) => event.revertOf).map((event) => [event.revertOf, event]));
   return events.reverse().slice(0, limit).map(({ values, files, prefs, ...e }) => {
     const by = reverts.get(e.id);
     return {

@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Badge, Button, Callout, Card, Container, Flex, Grid, Heading, Link, Select, Separator, Text, TextField } from '@radix-ui/themes';
+import { Badge, Button, Callout, Card, Container, Flex, Grid, Heading, Link, Separator, Text, TextField } from '@radix-ui/themes';
 import type { GateInfo, Job } from '../../src/types.ts';
 import { api, errorText } from './api.ts';
 import { useConfirm } from './Confirm.tsx';
-import { UserSettings } from './Account.tsx';
+import { UserSettings } from './account/UserSettings.tsx';
 import { Field } from './panes/fields.tsx';
-import { CONFIG_KEYS, CONFIG_LABELS, CONFIG_OPTIONS } from './settings/GateConfig.tsx';
+import { CONFIG_KEYS, ConfigFields } from './settings/GateConfig.tsx';
 import type { SignedIn } from './App.tsx';
 
-export const gateLabel = (g: GateInfo) => g.siteName || `Gate ${g.phoneNumber}`;
-export const roleLabel = (r: GateInfo['role']) => (r === 'admin' ? 'Admin' : 'Read only');
+export const gateLabel = (gate: GateInfo) => gate.siteName || `Gate ${gate.phoneNumber}`;
+export const roleLabel = (role: GateInfo['role']) => (role === 'admin' ? 'Admin' : 'Read only');
 
 // Adds a gate: its phone, master code, DKS login and gate configuration. The server checks the DKS login, then pulls
 // residents with these values; the gate is added (with this user as its admin) only when that pull succeeds.
@@ -25,8 +25,8 @@ function AddGate({ session, onAdded }: { session: SignedIn; onAdded: () => void 
   // Polls the checking pull every 3 s while it runs.
   const poll = async () => {
     clearTimeout(timer.current);
-    const r = await api<{ job: Job | null }>('GET', '/api/gate-add').catch(() => null);
-    const j = r ? r.job : null;
+    const reply = await api<{ job: Job | null }>('GET', '/api/gate-add').catch(() => null);
+    const j = reply ? reply.job : null;
     setJob(j);
     if (j && j.state === 'running') { timer.current = setTimeout(poll, 3000); return; }
     setBusy(false);
@@ -34,8 +34,8 @@ function AddGate({ session, onAdded }: { session: SignedIn; onAdded: () => void 
   };
   useEffect(() => { poll(); return () => clearTimeout(timer.current); }, []);
 
-  async function add(e: FormEvent) {
-    e.preventDefault();
+  async function add(event: FormEvent) {
+    event.preventDefault();
     setError('');
     setBusy(true);
     try {
@@ -56,33 +56,22 @@ function AddGate({ session, onAdded }: { session: SignedIn; onAdded: () => void 
         </Text>
         <Grid columns={{ initial: '1', sm: '2' }} gap="3">
           <Field label="System phone" help="systemPhone">
-            <TextField.Root value={f.phoneNumber} onChange={(e) => set('phoneNumber', e.target.value)} required inputMode="tel" disabled={busy} />
+            <TextField.Root value={f.phoneNumber} onChange={(event) => set('phoneNumber', event.target.value)} required inputMode="tel" disabled={busy} />
           </Field>
           <Field label="Master code" help="gateMasterCode">
-            <TextField.Root type="password" value={f.masterCode} onChange={(e) => set('masterCode', e.target.value)} required inputMode="numeric"
+            <TextField.Root type="password" value={f.masterCode} onChange={(event) => set('masterCode', event.target.value)} required inputMode="numeric"
               maxLength={4} autoComplete="off" disabled={busy} />
           </Field>
           <Field label="DKS user" help="dksLogin">
-            <TextField.Root value={f.dksUser} onChange={(e) => set('dksUser', e.target.value)} required autoComplete="off" disabled={busy} />
+            <TextField.Root value={f.dksUser} onChange={(event) => set('dksUser', event.target.value)} required autoComplete="off" disabled={busy} />
           </Field>
           <Field label="DKS password" help="dksLogin">
-            <TextField.Root type="password" value={f.dksPassword} onChange={(e) => set('dksPassword', e.target.value)} required
+            <TextField.Root type="password" value={f.dksPassword} onChange={(event) => set('dksPassword', event.target.value)} required
               autoComplete="new-password" disabled={busy} />
           </Field>
         </Grid>
         <Text size="2" weight="medium">Gate configuration (must match the gate)</Text>
-        <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
-          {CONFIG_KEYS.map((k) => (
-            <Field key={k} label={CONFIG_LABELS[k]} help={k}>
-              {CONFIG_OPTIONS[k] ? (
-                <Select.Root value={cfg[k]} onValueChange={(v) => setCfg({ ...cfg, [k]: v })} disabled={busy}>
-                  <Select.Trigger />
-                  <Select.Content>{CONFIG_OPTIONS[k]!.map((o) => <Select.Item key={o} value={o}>{o}</Select.Item>)}</Select.Content>
-                </Select.Root>
-              ) : <TextField.Root value={cfg[k]} maxLength={40} onChange={(e) => setCfg({ ...cfg, [k]: e.target.value })} disabled={busy} />}
-            </Field>
-          ))}
-        </Grid>
+        <ConfigFields cfg={cfg} onChange={setCfg} disabled={busy} />
         <Flex gap="3" align="center"><Button type="submit" loading={busy}>Add gate</Button></Flex>
         {error && <Callout.Root color="red"><Callout.Text>{error}</Callout.Text></Callout.Root>}
         {job && (
@@ -106,20 +95,20 @@ export function Gates({ session, onChange }: { session: SignedIn; onChange: () =
   const [settings, setSettings] = useState(false);
   const [dialog, confirm] = useConfirm();
 
-  const load = () => api<{ gates: GateInfo[] }>('GET', '/api/gates').then((r) => setGates(r.gates), (e) => setError(errorText(e)));
+  const load = () => api<{ gates: GateInfo[] }>('GET', '/api/gates').then((r) => setGates(r.gates), (err) => setError(errorText(err)));
   useEffect(() => { load(); }, []);
 
   const run = async (fn: () => Promise<unknown>) => {
     setError('');
-    try { await fn(); } catch (e) { setError(errorText(e)); }
+    try { await fn(); } catch (err) { setError(errorText(err)); }
   };
 
-  const open = (g: GateInfo) => run(async () => { await api('PUT', '/api/session/gate', { phoneNumber: g.phoneNumber }); onChange(); });
+  const open = (gate: GateInfo) => run(async () => { await api('PUT', '/api/session/gate', { phoneNumber: gate.phoneNumber }); onChange(); });
 
-  const leave = async (g: GateInfo) => {
-    if (!await confirm({ title: `Leave ${gateLabel(g)}?`, action: 'Leave', color: 'red',
+  const leave = async (gate: GateInfo) => {
+    if (!await confirm({ title: `Leave ${gateLabel(gate)}?`, action: 'Leave', color: 'red',
       body: 'You will no longer see this gate. Its data stays for its other users. A gate admin can add you again.' })) return;
-    await run(() => api('DELETE', `/api/gates/${encodeURIComponent(g.phoneNumber)}`));
+    await run(() => api('DELETE', `/api/gates/${encodeURIComponent(gate.phoneNumber)}`));
     load();
   };
 
@@ -141,15 +130,15 @@ export function Gates({ session, onChange }: { session: SignedIn; onChange: () =
           <>
             {gates && !gates.length && <Text color="gray">No gates yet. Add one below, or ask a gate admin to add you to theirs.</Text>}
             <Flex direction="column" gap="2">
-              {(gates || []).map((g) => (
-                <Flex key={g.phoneNumber} align="center" gap="3">
+              {(gates || []).map((gate) => (
+                <Flex key={gate.phoneNumber} align="center" gap="3">
                   <Flex direction="column" flexGrow="1">
-                    <Text weight="medium">{gateLabel(g)}</Text>
-                    <Text size="1" color="gray">{g.phoneNumber}</Text>
+                    <Text weight="medium">{gateLabel(gate)}</Text>
+                    <Text size="1" color="gray">{gate.phoneNumber}</Text>
                   </Flex>
-                  <Badge color={g.role === 'admin' ? 'blue' : 'gray'}>{roleLabel(g.role)}</Badge>
-                  <Button onClick={() => open(g)}>Open</Button>
-                  <Button variant="soft" color="gray" onClick={() => leave(g)}>Leave</Button>
+                  <Badge color={gate.role === 'admin' ? 'blue' : 'gray'}>{roleLabel(gate.role)}</Badge>
+                  <Button onClick={() => open(gate)}>Open</Button>
+                  <Button variant="soft" color="gray" onClick={() => leave(gate)}>Leave</Button>
                 </Flex>
               ))}
             </Flex>

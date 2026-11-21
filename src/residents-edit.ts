@@ -10,13 +10,14 @@
 // names.bin and phone.bin layouts follow the area-code mode (255 or 10), detected from names.bin (namesLayout).
 
 import {
-  NAMES_LAYOUTS, namesLayout, readPhoneFields, writePhoneFields, NAMES_DIR_DIGITS_OFFSET, namesDirDigits, namesEntryCode,
+  bcd, NAMES_LAYOUTS, namesLayout, readPhoneFields, writePhoneFields, NAMES_DIR_DIGITS_OFFSET, namesDirDigits, namesEntryCode,
 } from './board-files.ts';
 import { GATE_SETTING_FIELDS } from './gate-settings.ts';
+import { httpError } from './errors.ts';
 
 export interface BoardBuffers { names: Buffer; phone: Buffer; cards: Buffer }
 // Fields of a resident edit; only those present are changed (see applyResidentEdit).
-export interface ResidentEdit { directoryCode?: unknown; [field: string]: any }
+export interface ResidentEdit { directoryCode?: unknown; [field: string]: unknown }
 export interface EditOptions { areaCodeSlots?: number }
 export interface AreaCodeUse { index: number; code: string | null; uses: number }
 
@@ -30,7 +31,6 @@ const CARD_SIZE = 4;
 // device numbers"; its export has 25 device columns).
 export const MAX_CARDS_PER_ENTRY = 25;
 
-const err = (msg: string, status = 400) => Object.assign(new Error(msg), { status });
 const digits = (s: unknown): string => String(s == null ? '' : s).replace(/\D/g, '');
 
 // Right-justify decimal digits into nbytes (leading-F padding), matching the bcd() decoder.
@@ -38,18 +38,13 @@ const digits = (s: unknown): string => String(s == null ? '' : s).replace(/\D/g,
 export function encodeBcd(value: unknown, nbytes: number): Buffer {
   const d = digits(value);
   if (!d) return Buffer.alloc(nbytes, 0xff);
-  if (d.length > nbytes * 2) throw err(`"${d}" is too long for ${nbytes * 2} digits`);
+  if (d.length > nbytes * 2) throw httpError(`"${d}" is too long for ${nbytes * 2} digits`);
   const nibbles = d.padStart(nbytes * 2, 'f').split('').map((c) => (c === 'f' ? 0xf : Number(c)));
   const out = Buffer.alloc(nbytes);
   for (let i = 0; i < nbytes; i++) out[i] = (nibbles[i * 2] << 4) | nibbles[i * 2 + 1];
   return out;
 }
 
-const bcdToStr = (buf: Uint8Array): string | null => {
-  let s = '';
-  for (const b of buf) for (const n of [b >> 4, b & 0xf]) if (n <= 9) s += n; else if (n !== 0xf) return null;
-  return s;
-};
 
 const dirStart = (names: Buffer) => namesLayout(names).directoryOffset;
 const phoneMode = (names: Buffer) => namesLayout(names).areaCodeMode;
@@ -58,35 +53,35 @@ const phoneMode = (names: Buffer) => namesLayout(names).areaCodeMode;
 function dirCode(names: Buffer, value: unknown): string {
   const n = namesDirDigits(names);
   const code = digits(value).padStart(n, '0');
-  if (!digits(value) || code.length !== n) throw err(`A ${n}-digit directory code is required`);
+  if (!digits(value) || code.length !== n) throw httpError(`A ${n}-digit directory code is required`);
   return code;
 }
 
 export function findNamesEntry(names: Buffer, code: string | null): number {
-  for (let o = dirStart(names); o + NAMES_ENTRY_SIZE <= names.length; o += NAMES_ENTRY_SIZE) {
-    if (namesEntryCode(names, o) === code) return o;
+  for (let offset = dirStart(names); offset + NAMES_ENTRY_SIZE <= names.length; offset += NAMES_ENTRY_SIZE) {
+    if (namesEntryCode(names, offset) === code) return offset;
   }
   return -1;
 }
 
-const isEntryAt = (names: Buffer, o: number): boolean => namesEntryCode(names, o) !== null;
+const isEntryAt = (names: Buffer, offset: number): boolean => namesEntryCode(names, offset) !== null;
 
 // Offset just past the last directory entry.
 function directoryEnd(names: Buffer): number {
-  let o = dirStart(names);
-  while (isEntryAt(names, o)) o += NAMES_ENTRY_SIZE;
-  return o;
+  let offset = dirStart(names);
+  while (isEntryAt(names, offset)) offset += NAMES_ENTRY_SIZE;
+  return offset;
 }
 
 // Offset just past the last used phone record.
 function phoneEnd(phone: Buffer): number {
   let end = 0;
-  for (let o = 0; o + PHONE_SIZE <= phone.length; o += PHONE_SIZE) if (!(phone[o] === 0xff && phone[o + 1] === 0xff)) end = o + PHONE_SIZE;
+  for (let offset = 0; offset + PHONE_SIZE <= phone.length; offset += PHONE_SIZE) if (!(phone[offset] === 0xff && phone[offset + 1] === 0xff)) end = offset + PHONE_SIZE;
   return end;
 }
 
 // DoorKing32 order: empty slots, then residents (shown or hidden), then vendors; each by name ignoring case.
-const entryGroup = (names: Buffer, o: number): number => (names[o + 15] & 0x01 ? 2 : isEmptySlot(names, o) ? 0 : 1);
+const entryGroup = (names: Buffer, offset: number): number => (names[offset + 15] & 0x01 ? 2 : isEmptySlot(names, offset) ? 0 : 1);
 const nameKey = (s: string): string => s.toUpperCase();
 
 // Writes the middle shown-entry pointer at 0xF8-0xFA, as DoorKing32 does on save. Unchanged when nothing is shown.
@@ -94,12 +89,12 @@ const nameKey = (s: string): string => s.toUpperCase();
 export function updateMiddlePointer(names: Buffer): void {
   const start = dirStart(names);
   const shown: number[] = [];
-  for (let o = start; isEntryAt(names, o); o += NAMES_ENTRY_SIZE) if (names[o + 15] === 0x20) shown.push(o);
+  for (let offset = start; isEntryAt(names, offset); offset += NAMES_ENTRY_SIZE) if (names[offset + 15] === 0x20) shown.push(offset);
   if (!shown.length) return;
-  const o = shown[Math.floor((shown.length - 1) / 2)] + (NAMES_LAYOUTS[255].directoryOffset - start);
-  names[NAMES_MIDDLE_POINTER_OFFSET] = (o >> 16) & 0xff;
-  names[NAMES_MIDDLE_POINTER_OFFSET + 1] = (o >> 8) & 0xff;
-  names[NAMES_MIDDLE_POINTER_OFFSET + 2] = o & 0xff;
+  const offset = shown[Math.floor((shown.length - 1) / 2)] + (NAMES_LAYOUTS[255].directoryOffset - start);
+  names[NAMES_MIDDLE_POINTER_OFFSET] = (offset >> 16) & 0xff;
+  names[NAMES_MIDDLE_POINTER_OFFSET + 1] = (offset >> 8) & 0xff;
+  names[NAMES_MIDDLE_POINTER_OFFSET + 2] = offset & 0xff;
 }
 
 // Recomputes the middle pointer only when the directory itself changed, so other edits leave the header alone.
@@ -111,9 +106,9 @@ export function withPointer<T extends { names: Buffer }>(before: Buffer, result:
 }
 
 export function findPhoneRecord(phone: Buffer, code: string): number {
-  for (let o = 0; o + PHONE_SIZE <= phone.length; o += PHONE_SIZE) {
-    if (phone[o] === 0xff && phone[o + 1] === 0xff) continue;
-    if (bcdToStr(phone.subarray(o, o + 2)) === code) return o;
+  for (let offset = 0; offset + PHONE_SIZE <= phone.length; offset += PHONE_SIZE) {
+    if (phone[offset] === 0xff && phone[offset + 1] === 0xff) continue;
+    if (bcd(phone.subarray(offset, offset + 2)) === code) return offset;
   }
   return -1;
 }
@@ -127,19 +122,19 @@ export const areaCodeLimit = (setting: unknown): number => (/^\s*10\b/.test(Stri
 export function areaCodeIndex(names: Buffer, value: unknown, limit: number = NAMES_AREA_CODE_SLOTS): number {
   const d = digits(value);
   if (!d) return 0xff;
-  if (!/^(\d{3}|1\d{3})$/.test(d)) throw err(`Area code must be 3 digits, or 4 starting with 1 (got "${d}")`);
+  if (!/^(\d{3}|1\d{3})$/.test(d)) throw httpError(`Area code must be 3 digits, or 4 starting with 1 (got "${d}")`);
   const { areaCodeOffset, areaCodeSlots } = namesLayout(names);
   const max = Math.min(limit, areaCodeSlots);
   const want = encodeBcd(d, 2);
   let free = -1;
   for (let i = 0; i < areaCodeSlots; i++) {
-    const o = areaCodeOffset + i * 2;
-    if (o + 2 > names.length) break;
-    const rec = names.subarray(o, o + 2);
+    const offset = areaCodeOffset + i * 2;
+    if (offset + 2 > names.length) break;
+    const rec = names.subarray(offset, offset + 2);
     if (rec.equals(want)) return i;
     if (free < 0 && i < max && rec[0] === 0xff && rec[1] === 0xff) free = i;
   }
-  if (free < 0) throw err(`No free area-code slots on the gate (limit ${max})`);
+  if (free < 0) throw httpError(`No free area-code slots on the gate (limit ${max})`);
   want.copy(names, areaCodeOffset + free * 2);
   return free;
 }
@@ -148,10 +143,10 @@ export function areaCodeIndex(names: Buffer, value: unknown, limit: number = NAM
 function phoneAreaIndexes(phone: Buffer, mode = 255): [number, number][] {
   const out: [number, number][] = [];
   const end = phoneEnd(phone);
-  for (let po = 0; po + PHONE_SIZE <= end; po += PHONE_SIZE) {
-    if (phone[po] === 0xff && phone[po + 1] === 0xff) continue;
-    const i = readPhoneFields(phone.subarray(po, po + PHONE_SIZE), mode).areaCodeIndex;
-    out.push([po, i == null ? 0xff : i]);
+  for (let phoneOffset = 0; phoneOffset + PHONE_SIZE <= end; phoneOffset += PHONE_SIZE) {
+    if (phone[phoneOffset] === 0xff && phone[phoneOffset + 1] === 0xff) continue;
+    const i = readPhoneFields(phone.subarray(phoneOffset, phoneOffset + PHONE_SIZE), mode).areaCodeIndex;
+    out.push([phoneOffset, i == null ? 0xff : i]);
   }
   return out;
 }
@@ -163,11 +158,11 @@ export function areaCodeUsage(names: Buffer, phone: Buffer): AreaCodeUse[] {
   for (const [, i] of phoneAreaIndexes(phone, areaCodeMode)) if (i !== 0xff) uses[i] = (uses[i] || 0) + 1;
   const out: AreaCodeUse[] = [];
   for (let i = 0; i < areaCodeSlots; i++) {
-    const o = areaCodeOffset + i * 2;
-    if (o + 2 > names.length) break;
-    const rec = names.subarray(o, o + 2);
+    const offset = areaCodeOffset + i * 2;
+    if (offset + 2 > names.length) break;
+    const rec = names.subarray(offset, offset + 2);
     if (rec[0] === 0xff && rec[1] === 0xff) continue;
-    out.push({ index: i, code: bcdToStr(rec), uses: uses[i] || 0 });
+    out.push({ index: i, code: bcd(rec), uses: uses[i] || 0 });
   }
   return out;
 }
@@ -182,21 +177,21 @@ export function tidyBoard(buffers: BoardBuffers): BoardBuffers {
   const start = dirStart(names);
   const end = directoryEnd(names);
   const entries = [];
-  for (let o = start; o < end; o += NAMES_ENTRY_SIZE) {
-    entries.push({ group: entryGroup(names, o), key: nameKey(names.toString('latin1', o, o + 15)), bytes: Buffer.from(names.subarray(o, o + NAMES_ENTRY_SIZE)) });
+  for (let offset = start; offset < end; offset += NAMES_ENTRY_SIZE) {
+    entries.push({ group: entryGroup(names, offset), key: nameKey(names.toString('latin1', offset, offset + 15)), bytes: Buffer.from(names.subarray(offset, offset + NAMES_ENTRY_SIZE)) });
   }
   entries.sort((a, b) => a.group - b.group || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  entries.forEach((e, i) => e.bytes.copy(names, start + i * NAMES_ENTRY_SIZE));
+  entries.forEach((entry, i) => entry.bytes.copy(names, start + i * NAMES_ENTRY_SIZE));
   updateMiddlePointer(names);
 
   const recs = [];
-  for (let o = 0; o + CARD_SIZE <= buffers.cards.length; o += CARD_SIZE) {
-    const rec = buffers.cards.subarray(o, o + CARD_SIZE);
+  for (let offset = 0; offset + CARD_SIZE <= buffers.cards.length; offset += CARD_SIZE) {
+    const rec = buffers.cards.subarray(offset, offset + CARD_SIZE);
     if (!rec.every((b) => b === 0xff)) recs.push(Buffer.from(rec));
   }
   recs.sort((a, b) => a.readUInt16BE(0) - b.readUInt16BE(0));
   const cards = Buffer.alloc(buffers.cards.length, 0xff);
-  recs.forEach((r, i) => r.copy(cards, i * CARD_SIZE));
+  recs.forEach((record, i) => record.copy(cards, i * CARD_SIZE));
 
   const used = new Set(phoneAreaIndexes(buffers.phone, phoneMode(names)).map(([, i]) => i));
   const { areaCodeOffset, areaCodeSlots } = namesLayout(names);
@@ -208,43 +203,48 @@ export function tidyBoard(buffers: BoardBuffers): BoardBuffers {
 
 // "directory code 101 (Smith, J)" for conflict messages; names is optional.
 function holderLabel(names: Buffer | undefined, code: string | null): string {
-  const o = names ? findNamesEntry(names, code) : -1;
-  const name = o >= 0 ? names!.toString('latin1', o, o + 15).trim() : '';
+  const offset = names ? findNamesEntry(names, code) : -1;
+  const name = offset >= 0 ? names!.toString('latin1', offset, offset + 15).trim() : '';
   return `directory code ${code}${name ? ` (${name})` : ''}`;
 }
 
 // desired = array of card-number strings. Adds missing ones to free (all-0xFF) slots, clears removed ones.
 // A card number already held by another directory code is refused (409); more than MAX_CARDS_PER_ENTRY cards too,
 // unless the entry already had that many (only removing is then allowed to stay above it).
-export function applyCards(cards: Buffer, code: string, desired: unknown[] | null | undefined, names?: Buffer): void {
+export function applyCards(cards: Buffer, code: string, desired: unknown, names?: Buffer): void {
+  if (desired != null && !Array.isArray(desired)) throw httpError('Cards must be a list of card numbers');
   const want = new Set((desired || []).map((c) => digits(c)).filter(Boolean).map((c) => String(Number(c)))); // "5" and "00005" are one card
   const have = new Set<string>();
   const free: number[] = [];
   const codeBcd = encodeBcd(code, 2);
-  for (let o = 0; o + CARD_SIZE <= cards.length; o += CARD_SIZE) {
-    const rec = cards.subarray(o, o + CARD_SIZE);
-    if (rec.every((b) => b === 0xff)) { free.push(o); continue; }
-    if (bcdToStr(rec.subarray(2, 4)) !== code) continue;
+  for (let offset = 0; offset + CARD_SIZE <= cards.length; offset += CARD_SIZE) {
+    const rec = cards.subarray(offset, offset + CARD_SIZE);
+    if (rec.every((b) => b === 0xff)) { free.push(offset); continue; }
+    if (bcd(rec.subarray(2, 4)) !== code) continue;
     const num = String(rec.readUInt16BE(0));
-    if (want.has(num)) have.add(num);
-    else { cards.fill(0xff, o, o + CARD_SIZE); free.push(o); } // remove
+    if (want.has(num)) {
+      have.add(num);
+      continue;
+    }
+    cards.fill(0xff, offset, offset + CARD_SIZE); // remove
+    free.push(offset);
   }
   if (want.size > MAX_CARDS_PER_ENTRY && [...want].some((c) => !have.has(c))) {
-    throw err(`A directory code can have at most ${MAX_CARDS_PER_ENTRY} cards (${want.size} given)`);
+    throw httpError(`A directory code can have at most ${MAX_CARDS_PER_ENTRY} cards (${want.size} given)`);
   }
   for (const c of want) {
     const num = Number(c);
     if (have.has(c)) continue;
-    if (num < 1 || num > 65407) throw err(`Card number ${c} is out of range (device codes are 00001-65407)`);
+    if (num < 1 || num > 65407) throw httpError(`Card number ${c} is out of range (device codes are 00001-65407)`);
     for (let p = 0; p + CARD_SIZE <= cards.length; p += CARD_SIZE) {
       if (cards.readUInt16BE(p) !== num || cards.subarray(p, p + CARD_SIZE).every((b) => b === 0xff)) continue;
-      const owner = bcdToStr(cards.subarray(p + 2, p + 4));
-      if (owner !== code) throw err(`Card ${num} is already assigned to ${holderLabel(names, owner)}`, 409);
+      const owner = bcd(cards.subarray(p + 2, p + 4));
+      if (owner !== code) throw httpError(`Card ${num} is already assigned to ${holderLabel(names, owner)}`, 409);
     }
-    const o = free.shift();
-    if (o == null) throw err('No free card slots on the gate');
-    cards.writeUInt16BE(num, o);
-    codeBcd.copy(cards, o + 2);
+    const offset = free.shift();
+    if (offset == null) throw httpError('No free card slots on the gate');
+    cards.writeUInt16BE(num, offset);
+    codeBcd.copy(cards, offset + 2);
   }
 }
 
@@ -255,7 +255,7 @@ export function applyCards(cards: Buffer, code: string, desired: unknown[] | nul
 // 0x20-0x7E; "Œ" would otherwise be stored as "R"). Names already on the gate aren't checked.
 export function checkName(name: unknown): void {
   const bad = [...String(name ?? '')].find((c) => c < ' ' || c > '~');
-  if (bad) throw err(`Names can use only plain letters, digits, spaces and punctuation ("${bad}" can't be stored on the gate)`);
+  if (bad) throw httpError(`Names can use only plain letters, digits, spaces and punctuation ("${bad}" can't be stored on the gate)`);
 }
 
 export function applyResidentEdit(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
@@ -267,81 +267,95 @@ function editBuffers(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOption
   let phone: Buffer = Buffer.from(buffers.phone);
   const cards = Buffer.from(buffers.cards);
   const code = dirCode(names, edit.directoryCode);
-
   const no = findNamesEntry(names, code);
-  if (no < 0) throw err(`No directory entry for code ${code}`, 404);
-  if ('name' in edit) {
-    const name = String(edit.name ?? '').slice(0, 15).padEnd(15, ' ');
-    names.write(name, no, 15, 'latin1');
+  if (no < 0) throw httpError(`No directory entry for code ${code}`, 404);
+  if ('name' in edit) names.write(String(edit.name ?? '').slice(0, 15).padEnd(15, ' '), no, 15, 'latin1');
+  if ('vendor' in edit || 'hidden' in edit) names[no + 15] = editedFlag(names[no + 15], edit);
+  let phoneOffset = findPhoneRecord(phone, code);
+  // A names entry with no phone record (other software can leave one): it gets a blank record when a phone field is
+  // given a value; otherwise only names and cards change.
+  const phoneValueGiven = PHONE_FIELDS.some((k) => k in edit && String(edit[k] ?? '') !== '');
+  if (phoneOffset < 0 && !phoneValueGiven) {
+    if ('cards' in edit) applyCards(cards, code, edit.cards, names);
+    return { names, phone, cards };
   }
-  if ('vendor' in edit || 'hidden' in edit) {
-    let flag = names[no + 15];
-    if ('vendor' in edit) flag = edit.vendor ? flag | 0x01 : flag & ~0x01;
-    // bit 5 = shown; hidden clears it. Vendors are never shown, so keep bit 5 clear for them.
-    if ('hidden' in edit) flag = edit.hidden || (('vendor' in edit ? edit.vendor : flag & 0x01)) ? flag & ~0x20 : flag | 0x20;
-    names[no + 15] = flag;
-  }
-
-  let po = findPhoneRecord(phone, code);
-  if (po < 0) {
-    // A names entry with no phone record (other software can leave one): it gets a blank record when a phone field is
-    // given a value; otherwise only names and cards change.
-    if (!PHONE_FIELDS.some((k) => k in edit && String(edit[k] ?? '') !== '')) {
-      if ('cards' in edit) applyCards(cards, code, edit.cards, names);
-      return { names, phone, cards };
-    }
+  if (phoneOffset < 0) {
     phone = insertPhoneRecord(phone, code);
-    po = findPhoneRecord(phone, code);
+    phoneOffset = findPhoneRecord(phone, code);
   }
-  if ('areaCode' in edit || 'phone' in edit) {
-    const mode = phoneMode(names);
-    const f = readPhoneFields(phone.subarray(po, po + PHONE_SIZE), mode);
-    if ('areaCode' in edit) {
-      const i = areaCodeIndex(names, edit.areaCode, opts.areaCodeSlots);
-      f.areaCodeIndex = i === 0xff ? null : i;
-    }
-    if ('phone' in edit) {
-      const d = digits(edit.phone);
-      if (d.length > 7) throw err('Phone number is the 7-digit local number (area code is separate)');
-      f.phone = d ? d.padStart(7, '0') : null;
-    }
-    writePhoneFields(phone, po, f, mode);
-  }
-  if ('entryCode' in edit) {
-    const bytes = encodeBcd(edit.entryCode, 2);
-    if (!bytes.equals(phone.subarray(po + 6, po + 8)) && digits(edit.entryCode)) {
-      for (let o = 0; o + PHONE_SIZE <= phone.length; o += PHONE_SIZE) {
-        if (o === po || (phone[o] === 0xff && phone[o + 1] === 0xff)) continue;
-        if (bytes.equals(phone.subarray(o + 6, o + 8))) {
-          throw err(`Entry code ${digits(edit.entryCode)} is already used by ${holderLabel(names, bcdToStr(phone.subarray(o, o + 2)))}`, 409);
-        }
-      }
-    }
-    bytes.copy(phone, po + 6);
-  }
-  if ('securityLevel' in edit || 'elevatorRef' in edit) {
-    let b = phone[po + 8];
-    if ('securityLevel' in edit) {
-      const s = Number(edit.securityLevel);
-      if (!Number.isInteger(s) || s < 0 || s > 30) throw err('Security level must be 0-30');
-      b = (b & ~0x1f) | s;
-    }
-    if ('elevatorRef' in edit) {
-      const e = Number(edit.elevatorRef);
-      if (!Number.isInteger(e) || e < 1 || e > 8) throw err('Elevator reference must be 1-8');
-      b = (b & 0x1f) | ((e - 1) << 5);
-    }
-    phone[po + 8] = b;
-  }
-  if ('floor' in edit) {
-    const f = edit.floor === '' || edit.floor == null ? null : Number(edit.floor);
-    if (f !== null && (!Number.isInteger(f) || f < 1 || f > 64)) throw err('Floor must be 1-64 or blank');
-    phone[po + 9] = f === null ? 0xff : f;
-  }
-
+  if ('areaCode' in edit || 'phone' in edit) editPhoneNumber(names, phone, phoneOffset, edit, opts);
+  if ('entryCode' in edit) editEntryCode(names, phone, phoneOffset, edit.entryCode);
+  if ('securityLevel' in edit) phone[phoneOffset + 8] = (phone[phoneOffset + 8] & ~0x1f) | securityLevelOf(edit.securityLevel);
+  if ('elevatorRef' in edit) phone[phoneOffset + 8] = (phone[phoneOffset + 8] & 0x1f) | ((elevatorRefOf(edit.elevatorRef) - 1) << 5);
+  if ('floor' in edit) phone[phoneOffset + 9] = floorByteOf(edit.floor);
   if ('cards' in edit) applyCards(cards, code, edit.cards, names);
-
   return { names, phone, cards };
+}
+
+// The names entry flag byte with vendor (bit 0) and shown (bit 5) as edited: hidden clears bit 5, and vendors are never
+// shown, so it stays clear for them.
+function editedFlag(flag: number, edit: ResidentEdit): number {
+  const withVendor = 'vendor' in edit ? (edit.vendor ? flag | 0x01 : flag & ~0x01) : flag;
+  if (!('hidden' in edit)) return withVendor;
+  const vendor = 'vendor' in edit ? edit.vendor : withVendor & 0x01;
+  return edit.hidden || vendor ? withVendor & ~0x20 : withVendor | 0x20;
+}
+
+function editPhoneNumber(names: Buffer, phone: Buffer, phoneOffset: number, edit: ResidentEdit, opts: EditOptions): void {
+  const mode = phoneMode(names);
+  const fields = readPhoneFields(phone.subarray(phoneOffset, phoneOffset + PHONE_SIZE), mode);
+  if ('areaCode' in edit) {
+    const index = areaCodeIndex(names, edit.areaCode, opts.areaCodeSlots);
+    fields.areaCodeIndex = index === 0xff ? null : index;
+  }
+  if ('phone' in edit) fields.phone = localNumberOf(edit.phone);
+  writePhoneFields(phone, phoneOffset, fields, mode);
+}
+
+function localNumberOf(value: unknown): string | null {
+  const number = digits(value);
+  if (number.length > 7) throw httpError('Phone number is the 7-digit local number (area code is separate)');
+  return number ? number.padStart(7, '0') : null;
+}
+
+// Sets the entry code; a code another record already has is refused (409).
+function editEntryCode(names: Buffer, phone: Buffer, phoneOffset: number, entryCode: unknown): void {
+  const bytes = encodeBcd(entryCode, 2);
+  const changed = !bytes.equals(phone.subarray(phoneOffset + 6, phoneOffset + 8)) && digits(entryCode);
+  const holder = changed ? entryCodeHolder(phone, bytes, phoneOffset) : -1;
+  if (holder >= 0) {
+    throw httpError(`Entry code ${digits(entryCode)} is already used by ${holderLabel(names, bcd(phone.subarray(holder, holder + 2)))}`, 409);
+  }
+  bytes.copy(phone, phoneOffset + 6);
+}
+
+// Offset of another phone record with this entry code, or -1.
+function entryCodeHolder(phone: Buffer, bytes: Buffer, skipOffset: number): number {
+  for (let offset = 0; offset + PHONE_SIZE <= phone.length; offset += PHONE_SIZE) {
+    const blank = phone[offset] === 0xff && phone[offset + 1] === 0xff;
+    if (offset !== skipOffset && !blank && bytes.equals(phone.subarray(offset + 6, offset + 8))) return offset;
+  }
+  return -1;
+}
+
+function securityLevelOf(value: unknown): number {
+  const level = Number(value);
+  if (!Number.isInteger(level) || level < 0 || level > 30) throw httpError('Security level must be 0-30');
+  return level;
+}
+
+function elevatorRefOf(value: unknown): number {
+  const ref = Number(value);
+  if (!Number.isInteger(ref) || ref < 1 || ref > 8) throw httpError('Elevator reference must be 1-8');
+  return ref;
+}
+
+// Floor 1-64, or 0xFF for none (blank).
+function floorByteOf(value: unknown): number {
+  if (value === '' || value == null) return 0xff;
+  const floor = Number(value);
+  if (!Number.isInteger(floor) || floor < 1 || floor > 64) throw httpError('Floor must be 1-64 or blank');
+  return floor;
 }
 
 // Sets whether a directory code is shown in the entry-panel directory: a resident is shown only with a name and a
@@ -350,9 +364,9 @@ export function applyShownRule(buffers: BoardBuffers, directoryCode: unknown): B
   const names = Buffer.from(buffers.names);
   const code = dirCode(names, directoryCode);
   const no = findNamesEntry(names, code);
-  const po = findPhoneRecord(buffers.phone, code);
-  if (no < 0 || po < 0) return buffers;
-  const { phone } = readPhoneFields(buffers.phone.subarray(po, po + PHONE_SIZE), phoneMode(names));
+  const phoneOffset = findPhoneRecord(buffers.phone, code);
+  if (no < 0 || phoneOffset < 0) return buffers;
+  const { phone } = readPhoneFields(buffers.phone.subarray(phoneOffset, phoneOffset + PHONE_SIZE), phoneMode(names));
   const shown = !(names[no + 15] & 0x01) && names.toString('latin1', no, no + 15).trim() !== '' && phone != null;
   names[no + 15] = shown ? names[no + 15] | 0x20 : names[no + 15] & ~0x20;
   return withPointer(buffers.names, { ...buffers, names });
@@ -368,14 +382,14 @@ export function deleteResident(buffers: BoardBuffers, directoryCode: unknown): B
   const cards = Buffer.from(buffers.cards);
   const code = dirCode(names, directoryCode);
   const no = findNamesEntry(names, code);
-  if (no < 0) throw err(`No directory entry for code ${code}`, 404);
+  if (no < 0) throw httpError(`No directory entry for code ${code}`, 404);
   names.fill(0x20, no, no + 15); // blank name (15 spaces), keep the code (16-19)
   names[no + 15] = 0x00; // flag: empty, unused slot
-  const po = findPhoneRecord(phone, code);
-  if (po >= 0) {
-    phone.fill(0xff, po + 2, po + 8); // area index, phone, entry code -> unset
-    phone[po + 8] = 0x01; // security level 1, elevator ref default (matches empty slots)
-    phone[po + 9] = 0xff; // floor unset
+  const phoneOffset = findPhoneRecord(phone, code);
+  if (phoneOffset >= 0) {
+    phone.fill(0xff, phoneOffset + 2, phoneOffset + 8); // area index, phone, entry code -> unset
+    phone[phoneOffset + 8] = 0x01; // security level 1, elevator ref default (matches empty slots)
+    phone[phoneOffset + 9] = 0xff; // floor unset
   }
   applyCards(cards, code, []); // drop every card assigned to this code
   return withPointer(buffers.names, { names, phone, cards });
@@ -389,14 +403,14 @@ export function removeDirectoryCode(buffers: BoardBuffers, directoryCode: unknow
   const cards = Buffer.from(buffers.cards);
   const code = dirCode(names, directoryCode);
   const no = findNamesEntry(names, code);
-  if (no < 0) throw err(`No directory entry for code ${code}`, 404);
+  if (no < 0) throw httpError(`No directory entry for code ${code}`, 404);
   const nEnd = directoryEnd(names);
   names.copyWithin(no, no + NAMES_ENTRY_SIZE, nEnd);
   names.fill(0xff, nEnd - NAMES_ENTRY_SIZE, nEnd);
-  const po = findPhoneRecord(phone, code);
-  if (po >= 0) {
+  const phoneOffset = findPhoneRecord(phone, code);
+  if (phoneOffset >= 0) {
     const pEnd = phoneEnd(phone);
-    phone.copyWithin(po, po + PHONE_SIZE, pEnd);
+    phone.copyWithin(phoneOffset, phoneOffset + PHONE_SIZE, pEnd);
     phone.fill(0xff, pEnd - PHONE_SIZE, pEnd);
   }
   applyCards(cards, code, []);
@@ -409,7 +423,7 @@ function memoryEntries(names: Buffer): number | null {
   const v = f ? f.type.decode(names.subarray(f.offset, f.offset + f.type.size)) : '';
   return /^\d+$/.test(v) ? Number(v) : null;
 }
-const SYSTEM_MEMORY = GATE_SETTING_FIELDS.find((f) => f.key === 'systemMemory');
+const SYSTEM_MEMORY = GATE_SETTING_FIELDS.find((field) => field.key === 'systemMemory');
 
 // Inserts a new directory code: the names entry goes in DoorKing32's name order and the phone record
 // (fields blank, byte 8 = 0x01) in code order; later entries/records move down. Refused when the directory already
@@ -420,10 +434,10 @@ function insertDirectoryCode(buffers: BoardBuffers, code: string, name: string, 
   const nEnd = directoryEnd(names);
   const memory = memoryEntries(names);
   if (memory !== null && (nEnd - dirStart(names)) / NAMES_ENTRY_SIZE >= memory) {
-    throw err(`The gate's memory holds ${memory} directory codes (System memory), and all are used. Remove one first.`, 409);
+    throw httpError(`The gate's memory holds ${memory} directory codes (System memory), and all are used. Remove one first.`, 409);
   }
   if (nEnd + NAMES_ENTRY_SIZE > names.length || !names.subarray(nEnd, nEnd + NAMES_ENTRY_SIZE).every((b) => b === 0xff)) {
-    throw err('No room for another directory entry', 409);
+    throw httpError('No room for another directory entry', 409);
   }
   const group = flag & 0x01 ? 2 : flag === 0 && !name.trim() ? 0 : 1;
   const key = nameKey(name);
@@ -444,14 +458,14 @@ function insertDirectoryCode(buffers: BoardBuffers, code: string, name: string, 
 function insertPhoneRecord(buf: Buffer, code: string): Buffer {
   const phone = Buffer.from(buf);
   const pEnd = phoneEnd(phone);
-  if (pEnd + PHONE_SIZE > phone.length) throw err('No room for another phone record', 409);
-  let po = 0;
-  for (; po < pEnd; po += PHONE_SIZE) {
-    if (phone[po] === 0xff && phone[po + 1] === 0xff) continue;
-    if (Number(bcdToStr(phone.subarray(po, po + 2))) > Number(code)) break;
+  if (pEnd + PHONE_SIZE > phone.length) throw httpError('No room for another phone record', 409);
+  let phoneOffset = 0;
+  for (; phoneOffset < pEnd; phoneOffset += PHONE_SIZE) {
+    if (phone[phoneOffset] === 0xff && phone[phoneOffset + 1] === 0xff) continue;
+    if (Number(bcd(phone.subarray(phoneOffset, phoneOffset + 2))) > Number(code)) break;
   }
-  phone.copyWithin(po + PHONE_SIZE, po, pEnd);
-  Buffer.concat([encodeBcd(code, 2), Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0xff])]).copy(phone, po);
+  phone.copyWithin(phoneOffset + PHONE_SIZE, phoneOffset, pEnd);
+  Buffer.concat([encodeBcd(code, 2), Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0xff])]).copy(phone, phoneOffset);
   return phone;
 }
 
@@ -464,8 +478,8 @@ function isEmptySlot(names: Buffer, offset: number): boolean {
 // Available (vacant) directory codes that a new resident/vendor can be assigned to.
 export function emptySlots(names: Buffer): string[] {
   const out: string[] = [];
-  for (let o = dirStart(names); isEntryAt(names, o); o += NAMES_ENTRY_SIZE) {
-    if (isEmptySlot(names, o)) out.push(namesEntryCode(names, o)!);
+  for (let offset = dirStart(names); isEntryAt(names, offset); offset += NAMES_ENTRY_SIZE) {
+    if (isEmptySlot(names, offset)) out.push(namesEntryCode(names, offset)!);
   }
   return out;
 }
@@ -479,17 +493,17 @@ export interface Duplicate { kind: 'directoryCode' | 'entryCode' | 'card'; value
 export function findDuplicates({ names, phone, cards }: BoardBuffers): Duplicate[] {
   const out: Duplicate[] = [];
   const entries = new Map<string, string[]>();
-  for (let o = dirStart(names); isEntryAt(names, o); o += NAMES_ENTRY_SIZE) {
-    const code = namesEntryCode(names, o)!;
-    entries.set(code, [...(entries.get(code) || []), names.toString('latin1', o, o + 15).trim() || '(empty)']);
+  for (let offset = dirStart(names); isEntryAt(names, offset); offset += NAMES_ENTRY_SIZE) {
+    const code = namesEntryCode(names, offset)!;
+    entries.set(code, [...(entries.get(code) || []), names.toString('latin1', offset, offset + 15).trim() || '(empty)']);
   }
   const records = new Map<string, number>();
   const entryCodes = new Map<string, string[]>();
-  for (let o = 0; o + PHONE_SIZE <= phone.length; o += PHONE_SIZE) {
-    if (phone[o] === 0xff && phone[o + 1] === 0xff) continue;
-    const code = bcdToStr(phone.subarray(o, o + 2)) || '?';
+  for (let offset = 0; offset + PHONE_SIZE <= phone.length; offset += PHONE_SIZE) {
+    if (phone[offset] === 0xff && phone[offset + 1] === 0xff) continue;
+    const code = bcd(phone.subarray(offset, offset + 2)) || '?';
     records.set(code, (records.get(code) || 0) + 1);
-    const entry = phone[o + 6] === 0xff && phone[o + 7] === 0xff ? null : bcdToStr(phone.subarray(o + 6, o + 8));
+    const entry = phone[offset + 6] === 0xff && phone[offset + 7] === 0xff ? null : bcd(phone.subarray(offset + 6, offset + 8));
     if (entry) entryCodes.set(entry, [...(entryCodes.get(entry) || []), holderLabel(names, code)]);
   }
   for (const code of new Set([...entries.keys(), ...records.keys()])) {
@@ -503,10 +517,10 @@ export function findDuplicates({ names, phone, cards }: BoardBuffers): Duplicate
     if (holders.length > 1) out.push({ kind: 'entryCode', value, holders, text: `Entry code ${value} is used by ${holders.join(' and ')}` });
   }
   const owners = new Map<string, Set<string>>();
-  for (let o = 0; o + CARD_SIZE <= cards.length; o += CARD_SIZE) {
-    if (cards.subarray(o, o + CARD_SIZE).every((b) => b === 0xff)) continue;
-    const num = String(cards.readUInt16BE(o)).padStart(5, '0');
-    owners.set(num, (owners.get(num) || new Set()).add(bcdToStr(cards.subarray(o + 2, o + 4)) || '?'));
+  for (let offset = 0; offset + CARD_SIZE <= cards.length; offset += CARD_SIZE) {
+    if (cards.subarray(offset, offset + CARD_SIZE).every((b) => b === 0xff)) continue;
+    const num = String(cards.readUInt16BE(offset)).padStart(5, '0');
+    owners.set(num, (owners.get(num) || new Set()).add(bcd(cards.subarray(offset + 2, offset + 4)) || '?'));
   }
   for (const [value, codes] of owners) {
     if (codes.size < 2) continue;
@@ -521,18 +535,14 @@ export function findDuplicates({ names, phone, cards }: BoardBuffers): Duplicate
 // state). Fields are applied via the same encoder used for edits, so the byte layout is identical to the gate's.
 export function addEntry(buffers: BoardBuffers, entry: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
   const code = dirCode(buffers.names, entry && entry.directoryCode);
-  if (!String(entry.name || '').trim()) throw err('A name is required');
+  if (!String(entry.name || '').trim()) throw httpError('A name is required');
   const vendor = Boolean(entry.vendor);
   const hidden = Boolean(entry.hidden);
   const no = findNamesEntry(buffers.names, code);
-  let start = buffers;
-  if (no >= 0) {
-    if (!isEmptySlot(buffers.names, no)) throw err(`Directory code ${code} is already in use`, 409);
-  } else {
-    if (findPhoneRecord(buffers.phone, code) >= 0) throw err(`Directory code ${code} has a phone record but no directory entry`, 409);
-    const name = String(entry.name).slice(0, 15).padEnd(15, ' ');
-    start = insertDirectoryCode(buffers, code, name, vendor ? 0x01 : hidden ? 0x00 : 0x20);
-  }
+  if (no >= 0 && !isEmptySlot(buffers.names, no)) throw httpError(`Directory code ${code} is already in use`, 409);
+  if (no < 0 && findPhoneRecord(buffers.phone, code) >= 0) throw httpError(`Directory code ${code} has a phone record but no directory entry`, 409);
+  const name = String(entry.name).slice(0, 15).padEnd(15, ' ');
+  const start = no >= 0 ? buffers : insertDirectoryCode(buffers, code, name, vendor ? 0x01 : hidden ? 0x00 : 0x20);
   return withPointer(buffers.names, editBuffers(start, { ...entry, directoryCode: code, vendor, hidden }, opts));
 }
 
@@ -541,7 +551,7 @@ export function addEntry(buffers: BoardBuffers, entry: ResidentEdit, opts: EditO
 export function addStoredEntry(buffers: BoardBuffers, entry: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
   const code = dirCode(buffers.names, entry && entry.directoryCode);
   if (findNamesEntry(buffers.names, code) >= 0 || findPhoneRecord(buffers.phone, code) >= 0) {
-    throw err(`Directory code ${code} is already in use`, 409);
+    throw httpError(`Directory code ${code} is already in use`, 409);
   }
   const vendor = Boolean(entry.vendor);
   const hidden = Boolean(entry.hidden);
@@ -559,13 +569,13 @@ export function addStoredEntry(buffers: BoardBuffers, entry: ResidentEdit, opts:
 // The middle pointer is kept: it counts from 0xF80 in both modes.
 export function convertAreaCodeMode(buffers: BoardBuffers, mode: number): BoardBuffers {
   const to = NAMES_LAYOUTS[mode as 255 | 10];
-  if (!to) throw err(`Area-code mode must be 255 or 10 (got ${mode})`);
+  if (!to) throw httpError(`Area-code mode must be 255 or 10 (got ${mode})`);
   const from = namesLayout(buffers.names);
   if (from === to) return { names: Buffer.from(buffers.names), phone: Buffer.from(buffers.phone), cards: buffers.cards };
   const usage = areaCodeUsage(buffers.names, buffers.phone);
   const kept = to.areaCodeMode === 10 ? usage.filter((a) => a.uses) : usage;
   if (kept.length > to.areaCodeSlots) {
-    throw err(`The working copy uses ${kept.length} area codes (${kept.map((a) => a.code).join(', ')}). Reduce them to ${to.areaCodeSlots} or fewer first.`, 409);
+    throw httpError(`The working copy uses ${kept.length} area codes (${kept.map((a) => a.code).join(', ')}). Reduce them to ${to.areaCodeSlots} or fewer first.`, 409);
   }
   const newIndex = new Map(kept.map((a, i) => [a.index, to.areaCodeMode === 10 ? i : a.index]));
 
@@ -579,11 +589,11 @@ export function convertAreaCodeMode(buffers: BoardBuffers, mode: number): BoardB
 
   const phone = Buffer.from(buffers.phone);
   const end = phoneEnd(phone);
-  for (let po = 0; po + PHONE_SIZE <= end; po += PHONE_SIZE) {
-    if (phone[po] === 0xff && phone[po + 1] === 0xff) continue;
-    const f = readPhoneFields(phone.subarray(po, po + PHONE_SIZE), from.areaCodeMode);
+  for (let phoneOffset = 0; phoneOffset + PHONE_SIZE <= end; phoneOffset += PHONE_SIZE) {
+    if (phone[phoneOffset] === 0xff && phone[phoneOffset + 1] === 0xff) continue;
+    const f = readPhoneFields(phone.subarray(phoneOffset, phoneOffset + PHONE_SIZE), from.areaCodeMode);
     const i = f.areaCodeIndex == null ? undefined : newIndex.get(f.areaCodeIndex);
-    writePhoneFields(phone, po, { ...f, areaCodeIndex: i == null ? null : i }, to.areaCodeMode);
+    writePhoneFields(phone, phoneOffset, { ...f, areaCodeIndex: i == null ? null : i }, to.areaCodeMode);
   }
   return { names, phone, cards: buffers.cards };
 }
@@ -594,33 +604,34 @@ export function convertAreaCodeMode(buffers: BoardBuffers, mode: number): BoardB
 //     every phone.bin and cards.bin record become 0xFF. The rest of the names.bin header is kept.
 export function convertDirDigits(buffers: BoardBuffers, digitCount: unknown): BoardBuffers {
   const n = Number(digitCount);
-  if (![1, 2, 3, 4].includes(n)) throw err('Directory code digits must be 1, 2, 3 or 4');
+  if (![1, 2, 3, 4].includes(n)) throw httpError('Directory code digits must be 1, 2, 3 or 4');
   const from = namesDirDigits(buffers.names);
   const layout = namesLayout(buffers.names);
   const names = Buffer.from(buffers.names);
   const phone = Buffer.from(buffers.phone);
   const cards = Buffer.from(buffers.cards);
   names[NAMES_DIR_DIGITS_OFFSET] = n;
-  if (n > from) {
-    const pad = (c: string | null) => '0'.repeat(n - from) + c;
-    for (let o = layout.directoryOffset; isEntryAt(names, o); o += NAMES_ENTRY_SIZE) {
-      names.write(pad(namesEntryCode(names, o)).padStart(4, ' '), o + 16, 4, 'latin1');
-    }
-    const end = phoneEnd(phone);
-    for (let po = 0; po + PHONE_SIZE <= end; po += PHONE_SIZE) {
-      const c = bcdToStr(phone.subarray(po, po + 2));
-      if (c) encodeBcd(pad(c), 2).copy(phone, po);
-    }
-    for (let o = 0; o + CARD_SIZE <= cards.length; o += CARD_SIZE) {
-      const c = bcdToStr(cards.subarray(o + 2, o + 4));
-      if (c) encodeBcd(pad(c), 2).copy(cards, o + 2);
-    }
-  } else if (n < from) {
+  if (n < from) {
     names.fill(0xff, layout.areaCodeOffset, Math.min(layout.areaCodeOffset + layout.areaCodeSlots * 2, layout.directoryOffset));
     names.fill(0xff, NAMES_MIDDLE_POINTER_OFFSET, NAMES_MIDDLE_POINTER_OFFSET + 3);
     names.fill(0xff, layout.directoryOffset);
     phone.fill(0xff);
     cards.fill(0xff);
+  }
+  if (n > from) {
+    const pad = (c: string | null) => '0'.repeat(n - from) + c;
+    for (let offset = layout.directoryOffset; isEntryAt(names, offset); offset += NAMES_ENTRY_SIZE) {
+      names.write(pad(namesEntryCode(names, offset)).padStart(4, ' '), offset + 16, 4, 'latin1');
+    }
+    const end = phoneEnd(phone);
+    for (let phoneOffset = 0; phoneOffset + PHONE_SIZE <= end; phoneOffset += PHONE_SIZE) {
+      const c = bcd(phone.subarray(phoneOffset, phoneOffset + 2));
+      if (c) encodeBcd(pad(c), 2).copy(phone, phoneOffset);
+    }
+    for (let offset = 0; offset + CARD_SIZE <= cards.length; offset += CARD_SIZE) {
+      const c = bcd(cards.subarray(offset + 2, offset + 4));
+      if (c) encodeBcd(pad(c), 2).copy(cards, offset + 2);
+    }
   }
   return { names, phone, cards };
 }

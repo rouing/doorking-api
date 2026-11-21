@@ -1,4 +1,4 @@
-// Snapshot file names shared by the server (cameras.ts) and the page (web/ui/camera/snapshots.ts); no Node imports.
+// Snapshot file names shared by the server (camera-log.ts, cameras.ts) and the page (web/ui/camera/snapshots.ts); no Node imports.
 
 // Seconds into the minute of n frames, evenly spread: 3 -> [0, 20, 40].
 export const frameOffsets = (n: number): number[] => Array.from({ length: n }, (_, i) => Math.floor((i * 60) / n));

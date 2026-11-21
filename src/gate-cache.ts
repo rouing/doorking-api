@@ -9,6 +9,7 @@ import {
   type Conflict, type ConflictKind, type ItemChange, type RebasePlan, type WorkingState,
 } from './gate-state.ts';
 import { withPointer, type BoardBuffers } from './residents-edit.ts';
+import { httpError } from './errors.ts';
 
 // The gate's working copy. Nothing here talks to the gate.
 // gate_files (encrypted: names.bin holds the master code) keeps per gate and file the base: the latest residents
@@ -34,7 +35,6 @@ export interface StoredFile { data: Buffer; savedAt: Date }
 type Copy = 'pulled' | 'base' | 'working';
 type Copies = Record<Copy, Map<string, StoredFile>>;
 
-const statusError = (msg: string, status: number) => Object.assign(new Error(msg), { status });
 
 // Sizes allowed for a working-copy file: the pulled size, or for names.bin the other area-code layout's size.
 const sizeOk = (name: string, base: Buffer, data: Buffer): boolean => data.length === base.length
@@ -53,30 +53,30 @@ async function loadFiles(store: Store, phone: unknown, names: string[]): Promise
   const rows = await all<{ copy: Copy; name: string; data: Buffer; saved_at: string }>(store,
     'SELECT copy, name, data, saved_at FROM gate_files WHERE phone = $1 AND name = ANY($2)', [phoneDigits(phone), names]);
   const out: Copies = { pulled: new Map(), base: new Map(), working: new Map() };
-  for (const r of rows) out[r.copy].set(r.name, { data: decryptBytes(store, r.data), savedAt: new Date(r.saved_at) });
+  for (const row of rows) out[row.copy].set(row.name, { data: decryptBytes(store, row.data), savedAt: new Date(row.saved_at) });
   return out;
 }
 
 const boardOf = (m: Map<string, StoredFile>): BoardBuffers => ({
   names: m.get('names.bin')!.data, phone: m.get('phone.bin')!.data, cards: m.get('cards.bin')!.data,
 });
-const hasAll = (m: Map<string, StoredFile>) => CACHE_FILES.every((n) => m.has(n));
+const hasAll = (m: Map<string, StoredFile>) => CACHE_FILES.every((file) => m.has(file));
 
 // The base from gate_files; working built from base and the working copy's values, with the master code saved with
 // the gate's login (managed_gates; for a gate not managed here the base's bytes stay). conflicts: as stored.
 // hasWorking: a working copy exists; build false skips building its files (c.working stays empty).
 type Loaded = Copies & { baseOk: boolean; masterCode?: string; conflicts: Conflict[]; hasWorking: boolean };
 async function loadCopies(store: Store, phone: unknown, names: string[] = CACHE_FILES, { build = true } = {}): Promise<Loaded> {
-  const c = await loadFiles(store, phone, [...new Set([...names, ...CACHE_FILES])]);
-  c.working = new Map();
+  const files = await loadFiles(store, phone, [...new Set([...names, ...CACHE_FILES])]);
+  files.working = new Map();
   const [w, gate] = await Promise.all([loadWorkingState(store, phone), getGate(store, phone)]);
   const masterCode = gate ? gate.masterCode : undefined;
-  const hasWorking = Boolean(w && hasAll(c.base));
+  const hasWorking = Boolean(w && hasAll(files.base));
   if (w && hasWorking && build) {
-    const built = buildFiles(boardOf(c.base), w.state, { masterCode });
-    for (const n of CACHE_FILES) c.working.set(n, { data: built[n.replace('.bin', '') as keyof BoardBuffers], savedAt: w.savedAt });
+    const built = buildFiles(boardOf(files.base), w.state, { masterCode });
+    for (const file of CACHE_FILES) files.working.set(file, { data: built[file.replace('.bin', '') as keyof BoardBuffers], savedAt: w.savedAt });
   }
-  return { ...c, baseOk: Boolean(w && w.baseOk), masterCode, conflicts: w ? w.conflicts : [], hasWorking };
+  return { ...files, baseOk: Boolean(w && w.baseOk), masterCode, conflicts: w ? w.conflicts : [], hasWorking };
 }
 
 async function putFile(store: Store, phone: unknown, copy: Copy, name: string, data: Buffer, savedAt: Date = new Date()): Promise<void> {
@@ -92,7 +92,7 @@ function statusOf(c: Loaded): CacheStatus {
     if (!work || !base) return { name, cached: false, pulled: Boolean(base) };
     return { name, cached: true, changedBlocks: changed(blockMap(base.data, work.data)), baseTime: base.savedAt, savedTime: work.savedAt };
   });
-  const cached = files.filter((f): f is Extract<CacheFileStatus, { cached: true }> => f.cached);
+  const cached = files.filter((file): file is Extract<CacheFileStatus, { cached: true }> => file.cached);
   return { exists: cached.length > 0, edited: cached.some((f) => f.changedBlocks.length), conflicts: liveConflicts(c), files };
 }
 
@@ -100,9 +100,9 @@ function statusOf(c: Loaded): CacheStatus {
 function liveConflicts(c: Loaded): ConflictView[] {
   if (!c.conflicts.length || !hasAll(c.working) || !hasAll(c.base)) return [];
   const [mine, gate] = [itemsOf(decodeWorking(boardOf(c.working))), itemsOf(decodeWorking(boardOf(c.base)))];
-  return c.conflicts.flatMap((x) => {
-    const [m, g] = [mine[x.kind].get(x.key) ?? null, gate[x.kind].get(x.key) ?? null];
-    return sameItem(x.kind, m, g) ? [] : [{ ...x, ...describeConflict(x.kind, g, m) }];
+  return c.conflicts.flatMap((conflict) => {
+    const [m, g] = [mine[conflict.kind].get(conflict.key) ?? null, gate[conflict.kind].get(conflict.key) ?? null];
+    return sameItem(conflict.kind, m, g) ? [] : [{ ...conflict, ...describeConflict(conflict.kind, g, m) }];
   });
 }
 // Per file: whether it is cached and the changed blocks; whether anything is unsent; the conflicts to decide.
@@ -112,17 +112,20 @@ export async function cacheStatus(store: Store, phone: unknown): Promise<CacheSt
 
 // The gate's files as stored (the latest residents pull), or null when one is missing.
 export async function readBaseFiles(store: Store, phone: unknown): Promise<BoardBuffers | null> {
-  const c = await loadFiles(store, phone, CACHE_FILES);
-  return hasAll(c.base) ? boardOf(c.base) : null;
+  const files = await loadFiles(store, phone, CACHE_FILES);
+  return hasAll(files.base) ? boardOf(files.base) : null;
 }
 
 // Makes files the base and the working copy their values (no unsent changes, no conflicts). A missing file drops the
 // working copy. When the files fail the round-trip check, editing stays locked (baseOk false).
 async function setBase(tx: Store, phone: unknown, files: Map<string, StoredFile>): Promise<void> {
   for (const name of CACHE_FILES) {
-    const f = files.get(name);
-    if (f) await putFile(tx, phone, 'base', name, f.data, f.savedAt);
-    else await run(tx, "DELETE FROM gate_files WHERE phone = $1 AND copy = 'base' AND name = $2", [phoneDigits(phone), name]);
+    const file = files.get(name);
+    if (!file) {
+      await run(tx, "DELETE FROM gate_files WHERE phone = $1 AND copy = 'base' AND name = $2", [phoneDigits(phone), name]);
+      continue;
+    }
+    await putFile(tx, phone, 'base', name, file.data, file.savedAt);
   }
   await run(tx, "DELETE FROM gate_files WHERE phone = $1 AND copy IN ('pulled', 'working')", [phoneDigits(phone)]);
   if (!hasAll(files)) { await deleteWorkingState(tx, phone); return; }
@@ -142,9 +145,9 @@ export async function replaceBase(store: Store, phone: unknown, files: Record<st
 // Reset to gate: drops the unsent changes and conflicts; the working copy becomes the gate's files again.
 export async function resetCache(store: Store, phone: unknown): Promise<CacheStatus> {
   await transaction(store, async (tx) => {
-    const c = await loadFiles(tx, phone, CACHE_FILES);
-    if (!c.base.size) throw statusError('No resident files yet. Pull residents from the gate.', 404);
-    await setBase(tx, phone, c.base);
+    const files = await loadFiles(tx, phone, CACHE_FILES);
+    if (!files.base.size) throw httpError('No resident files yet. Pull residents from the gate.', 404);
+    await setBase(tx, phone, files.base);
   });
   return cacheStatus(store, phone);
 }
@@ -165,33 +168,37 @@ export interface PullResult {
 // take (for example an entry code the gate now gives to someone else). The middle-entry pointer is worked out again
 // when the directory differs from the pull's.
 function buildRebase(base: BoardBuffers, plan: RebasePlan, masterCode?: string): { state: WorkingState; notKept: PullResult['notKept'] } {
-  const attempt = (w: WorkingState): WorkingState | string => {
+  const attempt = (working: WorkingState): WorkingState | string => {
     try {
-      const built = withPointer(base.names, buildFiles(base, w, { masterCode }));
+      const built = withPointer(base.names, buildFiles(base, working, { masterCode }));
       const state = decodeWorking(built);
       const diff = fileDifferences(built, buildFiles(base, state, { masterCode }));
       return diff.length ? `rebuilding gives different bytes (${diff.map((d) => d.file).join(', ')})` : state;
-    } catch (e) { return (e as Error).message; }
+    } catch (err) { return (err as Error).message; }
   };
-  const put = (w: WorkingState, c: ItemChange) => withItem(w, c.kind, c.key, c.value);
+  const put = (working: WorkingState, c: ItemChange) => withItem(working, c.kind, c.key, c.value);
   const all = attempt(plan.changes.reduce(put, plan.gate));
   if (typeof all !== 'string') return { state: all, notKept: [] };
   const notKept: PullResult['notKept'] = [];
-  let w = plan.gate;
-  for (const c of plan.changes) {
-    const next = put(w, c);
-    const r = attempt(next);
-    if (typeof r === 'string') notKept.push({ kind: c.kind, key: c.key, label: c.label, error: r }); else w = next;
+  let working = plan.gate;
+  for (const change of plan.changes) {
+    const next = put(working, change);
+    const problem = attempt(next);
+    if (typeof problem === 'string') {
+      notKept.push({ kind: change.kind, key: change.key, label: change.label, error: problem });
+      continue;
+    }
+    working = next;
   }
-  const state = attempt(w);
+  const state = attempt(working);
   if (typeof state === 'string') throw new Error(`The pull can't be built into a working copy: ${state}`);
   return { state, notKept };
 }
 
 // How many items a values patch changes.
-const patchSize = (w0: WorkingState, w1: WorkingState): number => {
-  const p = diffStates(w0, w1);
-  return p ? ['residents', 'cards', 'settings'].reduce((n, k) => n + Object.keys((p as Record<string, object>)[k] || {}).length, 0) : 0;
+const patchSize = (working: WorkingState, w1: WorkingState): number => {
+  const patch = diffStates(working, w1);
+  return patch ? ['residents', 'cards', 'settings'].reduce((n, k) => n + Object.keys((patch as Record<string, object>)[k] || {}).length, 0) : 0;
 };
 
 // A residents pull: its files become the base (what the gate holds) at once, and the working copy follows. Unsent
@@ -203,16 +210,16 @@ export async function applyPull(store: Store, phone: unknown, files: Record<stri
   const pulled = fileMap(files, at);
   const none = { kept: 0, fromGate: 0, conflicts: [], notKept: [] };
   const result = await transaction(store, async (tx): Promise<PullResult> => {
-    const c = await loadCopies(tx, phone);
-    if (!hasAll(pulled) || !hasAll(c.base) || !hasAll(c.working)) { await setBase(tx, phone, pulled); return { outcome: 'new', ...none }; }
-    if (CACHE_FILES.every((n) => pulled.get(n)!.data.equals(c.base.get(n)!.data))) {
-      for (const n of CACHE_FILES) await putFile(tx, phone, 'base', n, pulled.get(n)!.data, at);
+    const copies = await loadCopies(tx, phone);
+    if (!hasAll(pulled) || !hasAll(copies.base) || !hasAll(copies.working)) { await setBase(tx, phone, pulled); return { outcome: 'new', ...none }; }
+    if (CACHE_FILES.every((file) => pulled.get(file)!.data.equals(copies.base.get(file)!.data))) {
+      for (const file of CACHE_FILES) await putFile(tx, phone, 'base', file, pulled.get(file)!.data, at);
       return { outcome: 'unchanged', ...none };
     }
-    if (!statusOf(c).edited) { await setBase(tx, phone, pulled); return { outcome: 'refreshed', ...none }; }
+    if (!statusOf(copies).edited) { await setBase(tx, phone, pulled); return { outcome: 'refreshed', ...none }; }
     const board = boardOf(pulled);
     const mine = (await loadWorkingState(tx, phone))!;
-    const oldBase = decodeWorking(boardOf(c.base));
+    const oldBase = decodeWorking(boardOf(copies.base));
     const plan = rebasePlan(oldBase, mine.state, decodeWorking(board), mine.conflicts);
     const locked = !checkRoundTrip(board).ok;
     if (plan.layoutChanged || locked) {
@@ -222,10 +229,10 @@ export async function applyPull(store: Store, phone: unknown, files: Record<stri
         ? 'the new pull can\'t be edited (its round-trip check failed)'
         : 'the directory code digits or the area-code mode changed, at the gate or in the working copy' } };
     }
-    const built = buildRebase(board, plan, c.masterCode);
+    const built = buildRebase(board, plan, copies.masterCode);
     for (const n of CACHE_FILES) await putFile(tx, phone, 'base', n, pulled.get(n)!.data, at);
     await saveWorkingState(tx, phone, built.state, { baseOk: true, savedAt: mine.savedAt });
-    const conflicts = plan.conflicts.filter((x) => !built.notKept.some((n) => n.kind === x.kind && n.key === x.key));
+    const conflicts = plan.conflicts.filter((conflict) => !built.notKept.some((n) => n.kind === conflict.kind && n.key === conflict.key));
     await setConflicts(tx, phone, conflicts);
     return { outcome: 'rebased', kept: plan.changes.length - built.notKept.length, fromGate: plan.fromGate, conflicts, notKept: built.notKept };
   });
@@ -235,20 +242,20 @@ export async function applyPull(store: Store, phone: unknown, files: Record<stri
 // Decides a conflict: mine keeps the working copy's value; gate takes the gate's (saved like any edit). Returns the
 // status.
 export async function resolveConflict(store: Store, phone: unknown, kind: unknown, key: unknown, choice: unknown): Promise<CacheStatus> {
-  if (choice !== 'mine' && choice !== 'gate') throw statusError('choice must be "mine" or "gate"', 400);
-  const c = await loadCopies(store, phone);
-  const conflict = c.conflicts.find((x) => x.kind === kind && x.key === String(key));
-  if (!conflict) throw statusError('There is no such conflict', 404);
-  if (choice === 'gate' && hasAll(c.working)) {
-    const gateValue = itemsOf(decodeWorking(boardOf(c.base)))[conflict.kind].get(conflict.key) ?? null;
-    const work = boardOf(c.working);
+  if (choice !== 'mine' && choice !== 'gate') throw httpError('choice must be "mine" or "gate"', 400);
+  const copies = await loadCopies(store, phone);
+  const conflict = copies.conflicts.find((x) => x.kind === kind && x.key === String(key));
+  if (!conflict) throw httpError('There is no such conflict', 404);
+  if (choice === 'gate' && hasAll(copies.working)) {
+    const gateValue = itemsOf(decodeWorking(boardOf(copies.base)))[conflict.kind].get(conflict.key) ?? null;
+    const work = boardOf(copies.working);
     let built: BoardBuffers;
     try {
-      built = withPointer(work.names, buildFiles(boardOf(c.base), withItem(decodeWorking(work), conflict.kind, conflict.key, gateValue), { masterCode: c.masterCode }));
-    } catch (e) { throw statusError(`Can't take the gate's value: ${(e as Error).message}`, 409); }
+      built = withPointer(work.names, buildFiles(boardOf(copies.base), withItem(decodeWorking(work), conflict.kind, conflict.key, gateValue), { masterCode: copies.masterCode }));
+    } catch (err) { throw httpError(`Can't take the gate's value: ${(err as Error).message}`, 409); }
     await writeCacheFiles(store, phone, { 'names.bin': built.names, 'phone.bin': built.phone, 'cards.bin': built.cards });
   }
-  await setConflicts(store, phone, c.conflicts.filter((x) => x !== conflict));
+  await setConflicts(store, phone, copies.conflicts.filter((x) => x !== conflict));
   return cacheStatus(store, phone);
 }
 
@@ -267,7 +274,7 @@ function filesOf(c: Loaded): CacheFiles {
   return Object.fromEntries(CACHE_FILES.map((name) => {
     const work = c.working.get(name);
     const base = c.base.get(name);
-    if (!work || !base) throw statusError(`${name} is not in the working copy. Pull residents from the gate.`, 404);
+    if (!work || !base) throw httpError(`${name} is not in the working copy. Pull residents from the gate.`, 404);
     return [name, { data: work.data, base: base.data, savedTime: work.savedAt, baseTime: base.savedAt }];
   }));
 }
@@ -275,9 +282,9 @@ function filesOf(c: Loaded): CacheFiles {
 // The working copy's files (see readCacheFiles) and status (see cacheStatus) from one build, making the working copy
 // first when there is none yet (see ensureCache).
 export async function readCache(store: Store, phone: unknown): Promise<{ files: CacheFiles; status: CacheStatus }> {
-  let c = await loadCopies(store, phone);
-  if (!statusOf(c).exists) { await resetCache(store, phone); c = await loadCopies(store, phone); }
-  return { files: filesOf(c), status: statusOf(c) };
+  let copies = await loadCopies(store, phone);
+  if (!statusOf(copies).exists) { await resetCache(store, phone); copies = await loadCopies(store, phone); }
+  return { files: filesOf(copies), status: statusOf(copies) };
 }
 
 // { data, base, savedTime, baseTime } for one cached file.
@@ -286,7 +293,7 @@ export async function readCacheFile(store: Store, phone: unknown, name: string):
   const c = CACHE_FILES.includes(name) ? await loadCopies(store, phone, [name]) : null;
   const work = c && c.working.get(name);
   const base = c && c.base.get(name);
-  if (!work || !base) throw statusError(`${name} is not in the working copy. Pull residents from the gate.`, 404);
+  if (!work || !base) throw httpError(`${name} is not in the working copy. Pull residents from the gate.`, 404);
   return { data: work.data, base: base.data, savedTime: work.savedAt, baseTime: base.savedAt };
 }
 
@@ -300,36 +307,36 @@ export async function writeCacheFiles(store: Store, phone: unknown, files: Recor
 // writeCacheFiles that also returns the new status. With all three files given, the old working copy isn't built.
 export async function saveCacheFiles(store: Store, phone: unknown, files: Record<string, Buffer>):
   Promise<{ blocks: Record<string, number[]>; status: CacheStatus }> {
-  const c = await loadCopies(store, phone, CACHE_FILES, { build: !CACHE_FILES.every((n) => n in files) });
+  const copies = await loadCopies(store, phone, CACHE_FILES, { build: !CACHE_FILES.every((file) => file in files) });
   for (const name of Object.keys(files)) {
-    if (!CACHE_FILES.includes(name) || !c.hasWorking) {
-      throw statusError(`${name} is not in the working copy. Pull residents from the gate.`, 404);
+    if (!CACHE_FILES.includes(name) || !copies.hasWorking) {
+      throw httpError(`${name} is not in the working copy. Pull residents from the gate.`, 404);
     }
   }
-  if (!c.baseOk) {
-    throw statusError('Editing is locked for this gate: its last pull could not be rebuilt byte for byte from its values (round-trip check). Nothing was saved.', 409);
+  if (!copies.baseOk) {
+    throw httpError('Editing is locked for this gate: its last pull could not be rebuilt byte for byte from its values (round-trip check). Nothing was saved.', 409);
   }
-  const merged = new Map(c.working);
+  const merged = new Map(copies.working);
   for (const [name, data] of Object.entries(files)) {
-    const base = c.base.get(name)!.data;
+    const base = copies.base.get(name)!.data;
     if (!sizeOk(name, base, data)) throw new Error(`${name} must stay ${base.length} bytes`);
     merged.set(name, { data, savedAt: new Date() });
   }
   const want = boardOf(merged);
   const state = decodeWorking(want);
   let rebuilt: BoardBuffers;
-  try { rebuilt = buildFiles(boardOf(c.base), state, { masterCode: c.masterCode }); } catch (e) {
-    throw statusError(`This change can't be stored as gate values (${(e as Error).message}). Nothing was saved.`, 409);
+  try { rebuilt = buildFiles(boardOf(copies.base), state, { masterCode: copies.masterCode }); } catch (err) {
+    throw httpError(`This change can't be stored as gate values (${(err as Error).message}). Nothing was saved.`, 409);
   }
   const diff = fileDifferences(want, rebuilt);
   if (diff.length) {
-    throw statusError(`This change can't be stored as gate values: rebuilding gives different bytes (${diff
+    throw httpError(`This change can't be stored as gate values: rebuilding gives different bytes (${diff
       .map((d) => `${d.file} ${d.bytes} at ${d.offsets.join(' ')}`).join('; ')}). Nothing was saved.`, 409);
   }
   await saveWorkingState(store, phone, state, { baseOk: true });
   return {
-    blocks: Object.fromEntries(CACHE_FILES.map((n) => [n, changed(blockMap(c.base.get(n)!.data, merged.get(n)!.data))])),
-    status: statusOf({ ...c, working: merged }),
+    blocks: Object.fromEntries(CACHE_FILES.map((file) => [file, changed(blockMap(copies.base.get(file)!.data, merged.get(file)!.data))])),
+    status: statusOf({ ...copies, working: merged }),
   };
 }
 
@@ -343,15 +350,15 @@ export async function writeCacheFile(store: Store, phone: unknown, name: string,
 export async function migrateWorkingFiles(store: Store): Promise<string[]> {
   const phones = (await all<{ phone: string }>(store, "SELECT DISTINCT phone FROM gate_files WHERE copy = 'working'")).map((r) => r.phone);
   for (const phone of phones) {
-    const c = await loadFiles(store, phone, CACHE_FILES);
+    const files = await loadFiles(store, phone, CACHE_FILES);
     await transaction(store, async (tx) => {
-      if (hasAll(c.base) && hasAll(c.working)) {
-        const work = boardOf(c.working);
+      if (hasAll(files.base) && hasAll(files.working)) {
+        const work = boardOf(files.working);
         const state = decodeWorking(work);
-        const diff = fileDifferences(work, buildFiles(boardOf(c.base), state));
+        const diff = fileDifferences(work, buildFiles(boardOf(files.base), state));
         if (diff.length) throw new Error(`Gate ${phone}: its working copy doesn't rebuild from its values (${JSON.stringify(diff)}); kept as files`);
-        const savedAt = new Date(Math.max(...[...c.working.values()].map((f) => f.savedAt.getTime())));
-        await saveWorkingState(tx, phone, state, { baseOk: checkRoundTrip(boardOf(c.base)).ok, savedAt });
+        const savedAt = new Date(Math.max(...[...files.working.values()].map((f) => f.savedAt.getTime())));
+        await saveWorkingState(tx, phone, state, { baseOk: checkRoundTrip(boardOf(files.base)).ok, savedAt });
       }
       await run(tx, "DELETE FROM gate_files WHERE phone = $1 AND copy = 'working'", [phone]);
     });
@@ -367,15 +374,15 @@ export async function addMissingValues(store: Store): Promise<string[]> {
   for (const { phone, complete } of await all<{ phone: string; complete: boolean }>(store,
     'SELECT phone, extra IS NOT NULL AND sizes IS NOT NULL AS complete FROM gate_working ORDER BY phone')) {
     const have = new Set((await all<{ key: string }>(store, 'SELECT key FROM gate_settings WHERE phone = $1', [phone])).map((r) => r.key));
-    if (complete && GATE_SETTING_FIELDS.every((f) => f.secret || have.has(f.key))) continue;
-    const c = await loadCopies(store, phone);
-    if (!hasAll(c.working)) continue;
-    const w = decodeWorking(boardOf(c.working));
+    if (complete && GATE_SETTING_FIELDS.every((field) => field.secret || have.has(field.key))) continue;
+    const copies = await loadCopies(store, phone);
+    if (!hasAll(copies.working)) continue;
+    const working = decodeWorking(boardOf(copies.working));
     await transaction(store, async (tx) => {
-      const missing = decodeGateSettings(c.working.get('names.bin')!.data).filter((s) => !s.secret && !have.has(s.key));
-      await addSettingRows(tx, phone, Object.fromEntries(missing.map((s) => [s.key, s.value])));
+      const missing = decodeGateSettings(copies.working.get('names.bin')!.data).filter((setting) => !setting.secret && !have.has(setting.key));
+      await addSettingRows(tx, phone, Object.fromEntries(missing.map((setting) => [setting.key, setting.value])));
       await run(tx, 'UPDATE gate_working SET extra = COALESCE(extra, $2), sizes = COALESCE(sizes, $3) WHERE phone = $1',
-        [phone, JSON.stringify(w.extra), JSON.stringify(w.sizes)]);
+        [phone, JSON.stringify(working.extra), JSON.stringify(working.sizes)]);
     });
     done.push(phone);
   }
@@ -401,11 +408,11 @@ export async function migratePulledCopies(store: Store): Promise<{ phone: string
 
 // A working-copy file (.bin) or its change map (.map) for download, or null.
 export async function cacheFileData(store: Store, phone: unknown, name: string): Promise<Buffer | null> {
-  const bin = CACHE_FILES.find((n) => n === name || mapName(n) === name);
+  const bin = CACHE_FILES.find((file) => file === name || mapName(file) === name);
   if (!bin) return null;
-  const c = await loadCopies(store, phone, [bin]);
-  const work = c.working.get(bin);
-  const base = c.base.get(bin);
+  const copies = await loadCopies(store, phone, [bin]);
+  const work = copies.working.get(bin);
+  const base = copies.base.get(bin);
   if (!work || !base) return null;
   return name === bin ? work.data : blockMap(base.data, work.data);
 }
@@ -413,10 +420,10 @@ export async function cacheFileData(store: Store, phone: unknown, name: string):
 // Files and maps (keyed by .bin name) for a send. Refused when nothing changed, a file is missing, or the
 // last pull differs from the base (the gate may have been changed elsewhere; Reset to gate first).
 export async function prepareSend(store: Store, phone: unknown) {
-  const c = await loadCopies(store, phone);
-  const status = statusOf(c);
-  const fail = (msg: string): never => { throw statusError(msg, 409); };
-  if (status.files.some((f) => !f.cached)) fail('The working copy is missing files. Pull residents from the gate.');
+  const copies = await loadCopies(store, phone);
+  const status = statusOf(copies);
+  const fail = (msg: string): never => { throw httpError(msg, 409); };
+  if (status.files.some((file) => !file.cached)) fail('The working copy is missing files. Pull residents from the gate.');
   if (status.conflicts.length) {
     fail(`Decide the ${status.conflicts.length} conflict(s) with the gate first (Keep mine or Take the gate's).`);
   }
@@ -425,8 +432,8 @@ export async function prepareSend(store: Store, phone: unknown) {
   const maps: Record<string, Buffer> = {};
   const changedBlocks: Record<string, number[]> = {};
   for (const name of CACHE_FILES) {
-    const data = c.working.get(name)!.data;
-    const base = c.base.get(name)!.data;
+    const data = copies.working.get(name)!.data;
+    const base = copies.base.get(name)!.data;
     if (!sizeOk(name, base, data)) fail(`${name} must stay ${base.length} bytes`);
     const map = blockMap(base, data);
     files[name] = data;

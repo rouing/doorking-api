@@ -49,8 +49,8 @@ const csvCell = (v: unknown): string => {
   const s = v == null ? '' : String(v);
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
-const toCsv = (columns: [string, string][], rows: object[]): string => [columns.map((c) => c[0]),
-  ...rows.map((r) => columns.map((c) => (r as Record<string, unknown>)[c[1]]))]
+const toCsv = (columns: [string, string][], rows: object[]): string => [columns.map((column) => column[0]),
+  ...rows.map((row) => columns.map((column) => (row as Record<string, unknown>)[column[1]]))]
   .map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 
 // Area-code mode of a phone.bin, from the names.bin in the same folder (255 when there is none).
@@ -61,13 +61,13 @@ function phoneModeFor(file: string) {
 }
 
 function output(text: string, args: string[]) {
-  const i = args.indexOf('--out');
-  if (i >= 0 && args[i + 1]) {
-    fs.writeFileSync(args[i + 1], text);
-    console.error(`Wrote ${args[i + 1]}`);
-  } else {
+  const file = args[args.indexOf('--out') + 1];
+  if (!args.includes('--out') || !file) {
     process.stdout.write(text);
+    return;
   }
+  fs.writeFileSync(file, text);
+  console.error(`Wrote ${file}`);
 }
 
 function cloudClient() {
@@ -109,14 +109,17 @@ function askHidden(prompt: string): Promise<string> {
       input.pause();
       input.removeListener('data', onData);
       process.stderr.write('\n');
-      if (value === null) reject(new Error('Cancelled')); else resolve(value);
+      if (value === null) {
+        reject(new Error('Cancelled'));
+        return;
+      }
+      resolve(value);
     };
     const onData = (chunk: string) => {
       for (const ch of chunk) {
         if (ch === '\r' || ch === '\n') return done(text);
         if (ch === '\u0003') return done(null);
-        if (ch === '\u007f' || ch === '\b') text = text.slice(0, -1);
-        else text += ch;
+        text = ch === '\u007f' || ch === '\b' ? text.slice(0, -1) : text + ch;
       }
     };
     input.on('data', onData);
@@ -126,10 +129,10 @@ function askHidden(prompt: string): Promise<string> {
 
 // A new password, asked twice on a terminal.
 async function newPassword(): Promise<string> {
-  const pw = await askHidden(`New password (at least ${dk.PASSWORD_MIN} characters): `);
-  dk.checkPassword(pw);
-  if (process.stdin.isTTY && await askHidden('Again: ') !== pw) throw new Error('The two passwords differ');
-  return pw;
+  const password = await askHidden(`New password (at least ${dk.PASSWORD_MIN} characters): `);
+  dk.checkPassword(password);
+  if (process.stdin.isTTY && await askHidden('Again: ') !== password) throw new Error('The two passwords differ');
+  return password;
 }
 
 async function withDatabase(fn: (store: dk.Store) => Promise<void>): Promise<void> {
@@ -158,17 +161,17 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
     if (!username) throw new Error('Usage: create-admin <username>');
     dk.checkUsername(username);
     if (await dk.getUser(store, username)) throw new Error(`The username "${dk.userKey(username)}" already exists`);
-    const u = await dk.createUser(store, { username, password: await newPassword(), createdBy: 'cli', mustChangePassword: false });
-    const gates = await dk.adoptAdminlessGates(store, u.username);
-    console.error(`Created ${u.username}; admin of ${gates.length} gate(s)${gates.length ? `: ${gates.join(', ')}` : ''}`);
+    const user = await dk.createUser(store, { username, password: await newPassword(), createdBy: 'cli', mustChangePassword: false });
+    const gates = await dk.adoptAdminlessGates(store, user.username);
+    console.error(`Created ${user.username}; admin of ${gates.length} gate(s)${gates.length ? `: ${gates.join(', ')}` : ''}`);
   }),
 
   'reset-password': ([username]) => withDatabase(async (store) => {
     if (!username) throw new Error('Usage: reset-password <username>');
-    const u = await dk.getUser(store, username);
-    if (!u) throw new Error(`There is no user "${dk.userKey(username)}"`);
-    await dk.setPassword(store, u.username, await newPassword(), { mustChange: true });
-    console.error(`Password of ${u.username} reset; they must choose a new one at their next sign-in. Their sessions were ended.`);
+    const user = await dk.getUser(store, username);
+    if (!user) throw new Error(`There is no user "${dk.userKey(username)}"`);
+    await dk.setPassword(store, user.username, await newPassword(), { mustChange: true });
+    console.error(`Password of ${user.username} reset; they must choose a new one at their next sign-in. Their sessions were ended.`);
   }),
 
   'test-email': async ([to]) => {
@@ -186,16 +189,16 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
     if (!cfg.sso.providers.length) throw new Error('No single sign-on providers in config.json (sso.providers)');
     const origin = cfg.server.publicHost ? `https://${cfg.server.publicHost}` : `http://localhost:${cfg.server.port}`;
     let failed = 0;
-    for (const p of cfg.sso.providers) {
-      console.log(`${p.name} (${p.id})`);
-      console.log(`  redirect address to register: ${origin}/api/sso/${p.id}/callback`);
+    for (const provider of cfg.sso.providers) {
+      console.log(`${provider.name} (${provider.id})`);
+      console.log(`  redirect address to register: ${origin}/api/sso/${provider.id}/callback`);
       try {
-        const m = await dk.discoverProvider(p);
-        console.log(`  issuer ${m.issuer}\n  sign-in page ${m.authorization}\n  token endpoint ${m.token}`);
-        console.log(`  auth_time claim: ${m.authTime === null ? 'not listed (the provider lists no claims)' : m.authTime ? 'listed' : 'not listed in discovery (some providers still send it: check with a real sign-in)'}`
-          + (p.maxAgeHours ? `; sign-ins older than ${p.maxAgeHours} hours are refused` : '; no session-age limit'));
-      } catch (e) { failed++; console.log(`  NOT reachable: ${(e as Error).message}`); }
-      console.log(`  allowed domains: ${p.allowedDomains.join(', ') || 'none (invitations and linking only)'}; new accounts: ${p.autoCreate ? 'yes' : 'no'}; passwords: ${p.passwords ? 'allowed' : 'off'}`);
+        const metadata = await dk.discoverProvider(provider);
+        console.log(`  issuer ${metadata.issuer}\n  sign-in page ${metadata.authorization}\n  token endpoint ${metadata.token}`);
+        console.log(`  auth_time claim: ${metadata.authTime === null ? 'not listed (the provider lists no claims)' : metadata.authTime ? 'listed' : 'not listed in discovery (some providers still send it: check with a real sign-in)'}`
+          + (provider.maxAgeHours ? `; sign-ins older than ${provider.maxAgeHours} hours are refused` : '; no session-age limit'));
+      } catch (err) { failed++; console.log(`  NOT reachable: ${(err as Error).message}`); }
+      console.log(`  allowed domains: ${provider.allowedDomains.join(', ') || 'none (invitations and linking only)'}; new accounts: ${provider.autoCreate ? 'yes' : 'no'}; passwords: ${provider.passwords ? 'allowed' : 'off'}`);
     }
     if (failed) process.exitCode = 1;
   },
@@ -208,11 +211,10 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
 
   grant: ([username, phone, role]) => withDatabase(async (store) => {
     if (!username || !phone || !role) throw new Error('Usage: grant <username> <gate phone> <admin|readonly>');
-    const r = dk.checkRole(role);
+    const checked = dk.checkRole(role);
     if (!await dk.getGate(store, phone)) throw new Error(`Gate ${phone} is not managed here`);
-    if (await dk.accessOf(store, phone, username)) await dk.setRole(store, phone, username, r);
-    else await dk.grantAccess(store, phone, username, r, 'cli');
-    console.error(`${dk.userKey(username)} is now ${r} of gate ${dk.checkPhone(phone)}`);
+    await (await dk.accessOf(store, phone, username) ? dk.setRole(store, phone, username, checked) : dk.grantAccess(store, phone, username, checked, 'cli'));
+    console.error(`${dk.userKey(username)} is now ${checked} of gate ${dk.checkPhone(phone)}`);
   }),
 
   transactions: ([file], args) => output(toCsv([
@@ -287,7 +289,7 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
     if (args.includes('--dry-run')) return;
 
     const { files } = await dk.pullFromGate(cloudClient(), what as dk.PullKind, request, {
-      marker, onStatus: (s) => console.error(s),
+      marker, onStatus: (message) => console.error(message),
     });
     fs.mkdirSync(dir, { recursive: true });
     for (const [f, data] of Object.entries(files)) {

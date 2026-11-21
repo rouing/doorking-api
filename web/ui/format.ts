@@ -14,14 +14,14 @@ export function cmpCells(a: unknown, b: unknown): number {
 }
 
 // An unused directory slot: no name, phone, entry code or cards (the gate keeps the slot's code, flag 0x00).
-export const isEmptySlot = (r: ResidentRow) => !r.name && !r.phone && !r.entryCode && !(r.cards && r.cards.length);
+export const isEmptySlot = (resident: ResidentRow) => !resident.name && !resident.phone && !resident.entryCode && !(resident.cards && resident.cards.length);
 
 // The phone as one value; the gate stores the area code (3 digits, or 4 as 1 + area code for long distance) and
 // the 7-digit number separately.
-export function phoneFull(r: ResidentRow): string {
-  const local = (r.phone || '').replace(/\D/g, '');
+export function phoneFull(resident: ResidentRow): string {
+  const local = (resident.phone || '').replace(/\D/g, '');
   if (!local) return '';
-  const full = (r.areaCode || '') + local;
+  const full = (resident.areaCode || '') + local;
   return full.length === 10 || full.length === 11 ? formatPhoneDigits(full)
     : local.length === 7 ? `${local.slice(0, 3)}-${local.slice(3)}` : full;
 }
@@ -35,7 +35,7 @@ export const formatPhoneDigits = (d: string) => (d.length <= 7
 // Device Association name for a card number, or null when no range holds it.
 export function deviceFor(devices: DeviceRange[], num: string | number): string | null {
   const n = Number(num);
-  const d = devices.find((r) => n >= Number(r.from) && n <= Number(r.to));
+  const d = devices.find((device) => n >= Number(device.from) && n <= Number(device.to));
   return d ? d.name : null;
 }
 export const DEFAULT_DEVICES: DeviceRange[] = [{ name: 'Cards', from: '00001', to: '65407' }];
@@ -47,8 +47,8 @@ export const trackerOf = (prefs: GatePrefs): GateTracker => {
 };
 
 // Relays 0-2, plus 3-10 with Tracker 2 and 11-18 with Tracker 1.
-export const trackerRelays = (t: GateTracker): number[] => [0, 1, 2,
-  ...(t.tracker2 ? Array.from({ length: 8 }, (_, i) => 3 + i) : []), ...(t.tracker1 ? Array.from({ length: 8 }, (_, i) => 11 + i) : [])];
+export const trackerRelays = (tracker: GateTracker): number[] => [0, 1, 2,
+  ...(tracker.tracker2 ? Array.from({ length: 8 }, (_, i) => 3 + i) : []), ...(tracker.tracker1 ? Array.from({ length: 8 }, (_, i) => 11 + i) : [])];
 
 // The gate's Floors/Elevators switches (System Settings > Gate configuration); shown unless turned off.
 export const featuresOf = (prefs: GatePrefs): GateFeatures => ({
@@ -62,38 +62,38 @@ export const securityText = (level: unknown): string => {
 };
 
 // Text of a directory column (hidden flag, combined phone, security level, blank floor/elevator).
-export function dirCell(r: ResidentRow, key: string): string {
-  if (key === 'hidden') return r.hidden ? 'Hidden' : '';
-  if (key === 'phoneFull') return phoneFull(r);
-  if (key === 'securityLevel') return securityText(r.securityLevel);
-  return cell((r as unknown as Record<string, unknown>)[key]);
+export function dirCell(resident: ResidentRow, key: string): string {
+  if (key === 'hidden') return resident.hidden ? 'Hidden' : '';
+  if (key === 'phoneFull') return phoneFull(resident);
+  if (key === 'securityLevel') return securityText(resident.securityLevel);
+  return cell((resident as unknown as Record<string, unknown>)[key]);
 }
 
 // Transaction event types that are gate/system actions (uploads, downloads, hold schedule, APB maintenance).
 const TX_SYSTEM = new Set(['System', 'Hold Begin', 'Hold End', 'Modem-to-Modem', 'RS232', 'Modem', 'APB Re-Sync', 'APB Counter']);
 
 // Row colour of a transaction: denied red, system actions amber, admitted green.
-export function txTone(t: TransactionRow): 'red' | 'amber' | 'green' | null {
-  if (t.access === 'Deny') return 'red';
-  if (TX_SYSTEM.has(t.eventType) || (!t.eventType && !t.lookup && t.name)) return 'amber';
-  if (t.access === 'Admit') return 'green';
+export function txTone(transaction: TransactionRow): 'red' | 'amber' | 'green' | null {
+  if (transaction.access === 'Deny') return 'red';
+  if (TX_SYSTEM.has(transaction.eventType) || (!transaction.eventType && !transaction.lookup && transaction.name)) return 'amber';
+  if (transaction.access === 'Admit') return 'green';
   return null;
 }
 
 // Finds the resident/vendor a transaction refers to: by its resolved directory code, else by its Number,
 // matched as the transaction's lookup says (directory code, entry code or card).
-export function residentFinder(rows: ResidentRow[]): (t: TransactionRow) => ResidentRow | null {
+export function residentFinder(rows: ResidentRow[]): (transaction: TransactionRow) => ResidentRow | null {
   const by = { directory: new Map<unknown, ResidentRow>(), entryCode: new Map<unknown, ResidentRow>(), card: new Map<unknown, ResidentRow>() };
-  for (const r of rows) {
-    if (isEmptySlot(r)) continue;
-    by.directory.set(r.directoryCode, r);
-    if (r.entryCode) by.entryCode.set(r.entryCode, r);
-    for (const c of r.cards) by.card.set(Number(c), r);
+  for (const resident of rows) {
+    if (isEmptySlot(resident)) continue;
+    by.directory.set(resident.directoryCode, resident);
+    if (resident.entryCode) by.entryCode.set(resident.entryCode, resident);
+    for (const card of resident.cards) by.card.set(Number(card), resident);
   }
-  return (t) => {
-    if (t.directoryCode && by.directory.has(t.directoryCode)) return by.directory.get(t.directoryCode)!;
-    if (!t.lookup || !t.number) return null;
-    return by[t.lookup].get(t.lookup === 'card' ? Number(t.number) : t.number) || null;
+  return (transaction) => {
+    if (transaction.directoryCode && by.directory.has(transaction.directoryCode)) return by.directory.get(transaction.directoryCode)!;
+    if (!transaction.lookup || !transaction.number) return null;
+    return by[transaction.lookup].get(transaction.lookup === 'card' ? Number(transaction.number) : transaction.number) || null;
   };
 }
 
@@ -120,16 +120,16 @@ export function doorKingCsv(account: string, rows: ResidentRow[], unassignedCard
   const plain = (v: unknown) => String(v ?? '').replace(/[",\r\n]/g, ' ');
   const devices = [''].concat(Array.from({ length: 24 }, (_, i) => String(i + 2)));
   const header = ['ACCOUNT', 'Resident', 'H', 'AAC', 'PHONE', 'Dir', 'ENT', 'SL', 'Device', 'FL', 'ER', 'NOTES', 'Vendor',
-    ...devices.slice(1).flatMap((n) => [`DEVICE${n}`, `NOTES${n}`]), 'RESIDENTNOTES'];
+    ...devices.slice(1).flatMap((device) => [`DEVICE${device}`, `NOTES${device}`]), 'RESIDENTNOTES'];
   const ordered = [...rows].sort((a, b) => (a.entryOffset ?? Infinity) - (b.entryOffset ?? Infinity) || a.directoryCode.localeCompare(b.directoryCode));
-  const lines = ordered.map((r) => {
-    const vendor = r.type === 'Vendor';
-    const own = /^0+$/.test(r.directoryCode) ? [...r.cards, ...unassignedCards] : r.cards;
+  const lines = ordered.map((resident) => {
+    const vendor = resident.type === 'Vendor';
+    const own = /^0+$/.test(resident.directoryCode) ? [...resident.cards, ...unassignedCards] : resident.cards;
     const cards = [...new Set(own.map((c) => Number(c)))].filter((n) => n > 0).sort((x, y) => x - y).slice(0, 25).map((n) => String(n).padStart(5, '0'));
     const dev = (i: number) => plain(cards[i] || '');
-    return [q(account), q(r.name), r.hidden && !vendor ? 'Y' : 'N', plain(r.areaCode), plain(r.phone), plain(r.directoryCode), plain(r.entryCode),
-      plain(r.securityLevel), dev(0), plain(r.floor), plain(r.elevatorRef), q(''), vendor ? 'Y' : 'N',
-      ...devices.slice(1).flatMap((_, i) => [dev(i + 1), q('')]), q(r.note || '')].join(',');
+    return [q(account), q(resident.name), resident.hidden && !vendor ? 'Y' : 'N', plain(resident.areaCode), plain(resident.phone), plain(resident.directoryCode), plain(resident.entryCode),
+      plain(resident.securityLevel), dev(0), plain(resident.floor), plain(resident.elevatorRef), q(''), vendor ? 'Y' : 'N',
+      ...devices.slice(1).flatMap((_, i) => [dev(i + 1), q('')]), q(resident.note || '')].join(',');
   });
   return [header.join(','), ...lines].join('\r\n') + '\r\n';
 }
@@ -145,7 +145,7 @@ export function downloadText(name: string, text: string, type = 'text/csv') {
 
 // An account phone number (E.164) for display: +1 (214) 555-0100 for US/Canada, else as stored.
 export const fmtIntlPhone = (e164: string) => {
-  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164 || '');
-  return m ? `+1 (${m[1]}) ${m[2]}-${m[3]}` : e164 || '';
+  const match = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164 || '');
+  return match ? `+1 (${match[1]}) ${match[2]}-${match[3]}` : e164 || '';
 };
 export const fmtTime = (t: string | number | undefined | null) => (t ? new Date(t).toLocaleString('en-US') : '');

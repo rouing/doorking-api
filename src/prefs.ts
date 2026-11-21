@@ -1,14 +1,12 @@
 // Local, gate-scoped preferences — things the DoorKing app keeps in its own ACCOUNT.DAT (never on the gate),
 // such as relay labels. Keyed by the gate's system phone number so every account that manages the same
 // physical gate shares the same labels. Stored in the database's prefs table (see db.ts), one JSON row per gate.
-import { one, transaction, type Store } from './db.ts';
+import { one, phoneDigits, transaction, type Store } from './db.ts';
 import type { DeviceRange, GatePrefs } from './types.ts';
 
-// Normalise a phone number to digits so "214-555-0100" and "2145550100" share preferences.
-const key = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
-
+// Rows are keyed by the phone number's digits, so "214-555-0100" and "2145550100" share preferences.
 export async function getPrefs(store: Store, phone: unknown): Promise<GatePrefs> {
-  const row = await one<{ data: GatePrefs }>(store, 'SELECT data FROM prefs WHERE phone = $1', [key(phone)]);
+  const row = await one<{ data: GatePrefs }>(store, 'SELECT data FROM prefs WHERE phone = $1', [phoneDigits(phone)]);
   return row ? row.data : {};
 }
 
@@ -16,10 +14,10 @@ export async function getPrefs(store: Store, phone: unknown): Promise<GatePrefs>
 // Keys set to undefined are removed.
 export async function setPrefs(store: Store, phone: unknown, prefs: Record<string, unknown>): Promise<GatePrefs> {
   return transaction(store, async (tx) => {
-    const old = await one<{ data: GatePrefs }>(tx, 'SELECT data FROM prefs WHERE phone = $1 FOR UPDATE', [key(phone)]);
+    const old = await one<{ data: GatePrefs }>(tx, 'SELECT data FROM prefs WHERE phone = $1 FOR UPDATE', [phoneDigits(phone)]);
     const merged: GatePrefs = JSON.parse(JSON.stringify({ ...(old ? old.data : {}), ...prefs }));
     await one(tx, 'INSERT INTO prefs (phone, data) VALUES ($1, $2) ON CONFLICT (phone) DO UPDATE SET data = excluded.data',
-      [key(phone), JSON.stringify(merged)]);
+      [phoneDigits(phone), JSON.stringify(merged)]);
     return merged;
   });
 }

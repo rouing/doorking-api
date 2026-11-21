@@ -28,10 +28,10 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: {
     setBusy(true);
     setInfo('Asking the gate…');
     try {
-      const r = await gapi<{ checkedAt: string; relays: Relay[] }>('GET', '/relays');
-      setState(codes(r.relays));
-      setInfo(`Checked ${new Date(r.checkedAt).toLocaleTimeString()}`);
-    } catch (e) { setInfo(errorText(e)); }
+      const reply = await gapi<{ checkedAt: string; relays: Relay[] }>('GET', '/relays');
+      setState(codes(reply.relays));
+      setInfo(`Checked ${new Date(reply.checkedAt).toLocaleTimeString()}`);
+    } catch (err) { setInfo(errorText(err)); }
     setBusy(false);
   }, [gapi]);
   useEffect(() => { refresh(); }, [refresh]);
@@ -44,10 +44,10 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: {
     setBusy(true);
     setInfo(on ? 'Holding open…' : 'Releasing…');
     try {
-      const r = await gapi<{ after: Relay[]; reply: string }>('PUT', '/relays', { [i]: on });
-      setState(codes(r.after));
-      setInfo(`Done (${r.reply || 'ok'}) · ${new Date().toLocaleTimeString()}`);
-    } catch (e) { setInfo(errorText(e)); }
+      const reply = await gapi<{ after: Relay[]; reply: string }>('PUT', '/relays', { [i]: on });
+      setState(codes(reply.after));
+      setInfo(`Done (${reply.reply || 'ok'}) · ${new Date().toLocaleTimeString()}`);
+    } catch (err) { setInfo(errorText(err)); }
     setBusy(false);
   }
 
@@ -93,29 +93,29 @@ const TRACKERS = [
 // The Additional Relays boxes (shown when Tracker is on in Gate configuration). Ticking one sets its command relay's
 // strike time to 00 in the working copy, as DoorKing32 does; the boxes themselves are saved for this page only
 // (DoorKing32 keeps them in ACCOUNT.DAT).
-function TrackerRelays({ prefs, gs, gapi, onReload }: { prefs: GatePrefs; gs: GateSettings; gapi: GateApi; onReload: () => Promise<void> }) {
-  const t = trackerOf(prefs);
+function TrackerRelays({ prefs, gs: settings, gapi, onReload }: { prefs: GatePrefs; gs: GateSettings; gapi: GateApi; onReload: () => Promise<void> }) {
+  const tracker = trackerOf(prefs);
   const [info, setInfo] = useState('');
   // Ticking remembers the strike time, then sets it to 00; unticking puts the remembered time back (as DoorKing32 does).
   async function toggle(key: 'tracker1' | 'tracker2', relay: 1 | 2, on: boolean) {
     setInfo('Saving…');
     const prevKey = `prevTime${relay}` as const;
     try {
-      const time = gs.field(`relay${relay}Time`);
-      const now = time ? gs.current(time) : '';
+      const time = settings.field(`relay${relay}Time`);
+      const now = time ? settings.current(time) : '';
       const prev = on ? (now && now !== '0' ? now : prefs.tracker?.[prevKey]) : undefined;
       const want = on ? '0' : prefs.tracker?.[prevKey];
-      if (time && want !== undefined && (want !== time.value || time.key in gs.edits)) {
+      if (time && want !== undefined && (want !== time.value || time.key in settings.edits)) {
         await gapi('PUT', '/settings', { [time.key]: want });
-        gs.discard([time.key]);
-        await gs.load();
+        settings.discard([time.key]);
+        await settings.load();
       }
       await gapi('PUT', '/prefs', { tracker: { ...prefs.tracker, [key]: on, [prevKey]: prev } });
       setInfo(on ? `Saved. Relay ${relay} strike time is 00 in the working copy; Send to update the gate.`
         : want !== undefined ? `Saved. Relay ${relay} strike time is back to ${want} in the working copy; Send to update the gate.`
           : `Saved. Set relay ${relay}'s strike time below (its earlier time isn't known).`);
       await onReload();
-    } catch (e) { setInfo(`Save failed: ${errorText(e)}`); }
+    } catch (err) { setInfo(`Save failed: ${errorText(err)}`); }
   }
   return (
     <Card>
@@ -123,7 +123,7 @@ function TrackerRelays({ prefs, gs, gapi, onReload }: { prefs: GatePrefs; gs: Ga
         <Heading size="3">Tracker expansion<HelpTip of="trackerExpansion" /></Heading>
         {TRACKERS.map((x) => (
           <Text key={x.key} as="label" size="2"><Flex gap="2" align="center">
-            <Checkbox checked={t[x.key]} onCheckedChange={(v) => toggle(x.key, x.relay, v === true)} />
+            <Checkbox checked={tracker[x.key]} onCheckedChange={(v) => toggle(x.key, x.relay, v === true)} />
             {x.label}, commanded by relay {x.relay}
           </Flex></Text>
         ))}
@@ -135,20 +135,20 @@ function TrackerRelays({ prefs, gs, gapi, onReload }: { prefs: GatePrefs; gs: Ga
 }
 
 export function RelaysPage({ prefs, ...c }: Common & { prefs: GatePrefs }) {
-  const gs = useGateSettings(c.gapi);
-  const t = trackerOf(prefs);
-  const relays = trackerRelays(t);
+  const settings = useGateSettings(c.gapi);
+  const tracker = trackerOf(prefs);
+  const relays = trackerRelays(tracker);
   const labels = Object.fromEntries(relays.map((i) => [i, (prefs.relayLabels && prefs.relayLabels[String(i)]) || `Relay ${i}`]));
-  const lockedRelays = Object.fromEntries(TRACKERS.filter((x) => t[x.key]).map((x) => [x.relay, TRACKER_NOTE(x.range)]));
+  const lockedRelays = Object.fromEntries(TRACKERS.filter((x) => tracker[x.key]).map((x) => [x.relay, TRACKER_NOTE(x.range)]));
   return (
     <Flex direction="column" gap="4">
       <Heading>Relays</Heading>
       <LiveRelays gapi={c.gapi} labels={labels} relays={relays} commandRelays={Object.keys(lockedRelays).map(Number)} />
-      {t.enabled && <TrackerRelays prefs={prefs} gs={gs} gapi={c.gapi} onReload={c.onReload} />}
+      {tracker.enabled && <TrackerRelays prefs={prefs} gs={settings} gapi={c.gapi} onReload={c.onReload} />}
       <Card>
         <Flex direction="column" gap="3">
           <Heading size="3">Relay settings</Heading>
-          <GateSettingsEditor gs={gs} view="relays" relayLabels={labels} lockedRelays={lockedRelays} relays={relays}
+          <GateSettingsEditor gs={settings} view="relays" relayLabels={labels} lockedRelays={lockedRelays} relays={relays}
             nameCell={(r) => <RelayNameBox relay={r} prefs={prefs} gapi={c.gapi} onSaved={c.onReload} />} {...c} />
         </Flex>
       </Card>
@@ -159,7 +159,7 @@ export function RelaysPage({ prefs, ...c }: Common & { prefs: GatePrefs }) {
 // Display: LCD message settings. The layout choice only picks which Display group is shown (the gate stores both;
 // the active mode is set in the DoorKing app). Remembered in this browser.
 export function DisplayPage(c: Common) {
-  const gs = useGateSettings(c.gapi);
+  const settings = useGateSettings(c.gapi);
   // Stored as plain text (not JSON), so a saved choice from before the React page still reads back.
   const [mode, setMode] = useState<'single' | '8line'>(() => {
     try { return localStorage.getItem('dk-display-mode') === '8line' ? '8line' : 'single'; } catch { return 'single'; }
@@ -184,7 +184,7 @@ export function DisplayPage(c: Common) {
             stores both and the active mode is set in the DoorKing app.</Text>
         </Flex>
       </Card>
-      <GateSettingsEditor gs={gs} view="display" displayMode={mode} {...c} />
+      <GateSettingsEditor gs={settings} view="display" displayMode={mode} {...c} />
     </Flex>
   );
 }
