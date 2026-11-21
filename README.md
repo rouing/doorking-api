@@ -236,8 +236,8 @@ server (dahua-p2p tunnel, in process) ──Dahua P2P cloud──> recorder
   transaction time to match the recorder's clock.
 - Until 2026-11-15 the bridge was a separate program (blackjid/dahua-p2p at commit `345f724`, in `tools/bin`). The
   in-process tunnel replaced it after a trial: on the first test the program's live picture failed ("device
-  stopped consuming our data … closing tunnel") where the package's worked. `tools/licenses/` keeps ffmpeg's GPLv3
-  texts, for a local copy in `tools/bin/`.
+  stopped consuming our data … closing tunnel") where the package's worked. A local ffmpeg copy in `tools/bin/` should
+  keep its GPLv3 license texts beside it in `tools/licenses/` (not in git).
 
 ### Setting up
 **System Settings → Gate cameras** (shared by every account that manages the gate; the password is encrypted in
@@ -550,8 +550,8 @@ against changes observed on the gate. The database tests use the `doorking_test`
                          their texts)
     dist/                build output of ui/ (npm run build), served at /
   test/                  node --test suites
-  tools/                 bin/ (optionally ffmpeg.exe / ffmpeg-linux-<x64|arm64>, not in git), licenses/ (ffmpeg's;
-                         keep with the binaries)
+  tools/                 bin/ (optionally ffmpeg.exe / ffmpeg-linux-<x64|arm64>) and licenses/ (ffmpeg's; keep
+                         with the binaries); neither is in git
   media/<phone>/         per-gate camera pictures and videos (snapshots/)
   research/              reference material (local only, not in git: DoorKing's copyrighted files): decompiled
                          DoorKing32 (DoorKing32.exe.c / .h), the 1835 manual PDF

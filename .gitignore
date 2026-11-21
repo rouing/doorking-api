@@ -38,6 +38,7 @@ research/
 
 # ffmpeg builds are over GitHub's 100 MB file limit; the app falls back to ffmpeg on the PATH
 tools/bin/ffmpeg*
+tools/licenses/
 
 # Conversation exports
 Gate System JavaScript Rebuild_*.json
