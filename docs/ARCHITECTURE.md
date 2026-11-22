@@ -508,8 +508,8 @@ against changes observed on the gate. The database tests use the `doorking_test`
   running on the same PC can see in the process list. Tool output is masked before it is shown or stored.
 - The browser stores only the remembered user name, never the password or master code.
 - `GET /api/gates` never returns master codes; `GET .../settings` masks secret fields.
-- The page may only load scripts from this server (Content-Security-Policy `default-src 'self'`); inline styles
-  are allowed for the style element Radix dialogs add.
+- The page may only load scripts from this server (Content-Security-Policy `default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:` via `@fastify/helmet`); inline styles
+  are allowed for the style element Radix dialogs add, and `data:` images for Swagger UI icons.
 
 ## Project layout
 ```
@@ -566,14 +566,14 @@ against changes observed on the gate. The database tests use the `doorking_test`
     transactions.ts      reader for the desktop app's TRANSnnn.TRA files
     carchive.ts          MFC CArchive reader (used by transactions.ts)
     logging.ts           the server log (LogTape): console and logs/server.jsonl, levels, context, redaction
-    markdown.ts          renders docs/MANUAL.md as the /help page (small Markdown subset, all text escaped)
+    markdown.ts          renders docs/MANUAL.md as the /help page (marked + github-slugger, raw HTML escaped)
   web/
     server.ts            entry point: loads the settings, builds the log, camera runner and mailer, starts the Application
     app.ts               Application: start() (database, migrations, listen, background timers) and stop() (graceful)
     modules.ts           builds the modules below from those services ({ context, auth, mail, editing, snapshots, jobs }), and the route list
-    requests.ts          the request handler: host, origin, session or API key, role and step-up checks; the built page
+    requests.ts          Fastify server (@fastify/cookie, @fastify/helmet, @fastify/static): host, origin, session or API key, role and step-up checks; the built page
     migrations.ts        one-time data migrations run by start()
-    context.ts           shared state: settings, database, log, replies, gate access
+    context.ts           shared state: settings, database, log, gate access, per-gate serial queue
     auth.ts              sign-in helpers: rate limits, sessions, step-up, passkey relying party, single sign-on
     mail.ts              account emails and gate alerts (through the outbox)
     jobs.ts              gate connections (one per DKS login), pulls, sends, login checks, and scheduled transfers
