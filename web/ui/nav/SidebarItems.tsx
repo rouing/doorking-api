@@ -22,6 +22,7 @@ interface SidebarItemsProps {
   workingCopy: WorkingCopyState;
   hasWorkingCopy: boolean;
   onGo: (page: NavKey) => void;
+  onOpenSearch: () => void;
   onSwitchGate: (to: GateInfo) => void;
   onAllGates: () => void;
   onPull: (what: 'residents' | 'transactions') => void;
@@ -141,7 +142,7 @@ function GateConnection({ job, progressShown, gapi, readOnly, workingCopy, hasWo
  * @returns Rendered React element.
  */
 export function SidebarItems({ gate, user, page, phone, elevators, job, progressShown, gapi, readOnly, workingCopy, hasWorkingCopy, onGo,
-  onSwitchGate, onAllGates, onPull, onShowProgress, onReset, onJobStarted, onNotify, onSignOut }: SidebarItemsProps) {
+  onOpenSearch, onSwitchGate, onAllGates, onPull, onShowProgress, onReset, onJobStarted, onNotify, onSignOut }: SidebarItemsProps) {
   const listed = (key: NavKey) => pageShown(key, elevators) && !(phone && TAB_PAGES.includes(key));
   return (
     <>
@@ -152,6 +153,10 @@ export function SidebarItems({ gate, user, page, phone, elevators, job, progress
             <Text size="1" color={workingCopy.color}><span className="status-dot" />{workingCopy.label}</Text><HelpTip of="workingCopy" />
           </Flex>
         )}
+        <Button className="nav-item" variant="soft" color="gray" onClick={onOpenSearch}
+          title="Quick search across residents, cards, entry codes, transactions and pages">
+          Search… {!phone && <Text size="1" color="gray" style={{ marginLeft: 'auto' }}>Ctrl+K</Text>}
+        </Button>
         {NAV.map((item) => ('section' in item
           ? <Text key={item.section} size="1" color="gray" weight="bold" className="nav-section">{item.section}</Text>
           : listed(item.key) && <NavButton key={item.key} label={item.label} current={page === item.key} onClick={() => onGo(item.key)} />))}

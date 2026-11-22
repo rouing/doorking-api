@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { Flex, Select, Table, Text, TextField } from '@radix-ui/themes';
+import { useMemo, useState } from 'react';
+import { Button, Flex, Select, Table, Text, TextField } from '@radix-ui/themes';
+import { usHolidaysForYear } from '../../../src/holidays.ts';
 import type { GateSettingRow } from '../../../src/types.ts';
 import type { GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
@@ -93,23 +94,48 @@ interface HolidaysPageProps {
 }
 
 /**
- * Holidays: pick from the fixed-date list or enter a date. The gate stores only month/day.
+ * Holidays: pick from the US holiday list (fixed + floating for the selected year) or enter a date.
+ * The gate stores only month/day.
  *
  * @param props - Component props.
  * @param props.gapi - Gate-scoped API fetch helper.
- * @param props.holidays - Holidays.
+ * @param props.holidays - Fallback fixed holiday list from the session.
  * @returns Rendered React element.
  */
-export function HolidaysPage({ gapi, holidays }: HolidaysPageProps) {
+export function HolidaysPage({ gapi }: HolidaysPageProps) {
   const settings = useGateSettings(gapi);
+  const thisYear = new Date().getFullYear();
+  const [year, setYear] = useState(thisYear);
+  const yearHolidays = useMemo(() => usHolidaysForYear(year), [year]);
+  const holidayFields = settings.fields.filter((setting) => setting.group === 'Holidays' && setting.key !== HOL_FOR_SL);
+  const fillYear = () => {
+    holidayFields.forEach((setting, index) => {
+      const holiday = yearHolidays[index];
+      settings.edit(setting, holiday ? `${holiday.month}/${holiday.day}` : '');
+    });
+  };
   return (
     <GroupPage settings={settings} group="Holidays" title="Holidays" help="holidays" clearValue={(setting) => (setting.key === HOL_FOR_SL ? undefined : '')}
-      buttons={<HolidaysForSecurity settings={settings} />}
-      intro={`Pick a holiday from the list or enter a date. ${CLEAR_NOTE} Clear leaves Holidays for Security Levels as it is. Edits go to the working copy (blue = unsaved, green = saved but not on the gate yet). The gate stores only month/day; names come from the built-in list.`}>
+      buttons={(
+        <Flex align="center" gap="2" wrap="wrap">
+          <Select.Root size="2" value={String(year)} onValueChange={(value) => setYear(Number(value))}>
+            <Select.Trigger />
+            <Select.Content>
+              {[thisYear, thisYear + 1, thisYear + 2].map((optionYear) => (
+                <Select.Item key={optionYear} value={String(optionYear)}>{optionYear}</Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+          <Button variant="soft" onClick={fillYear} disabled={!holidayFields.length}>Fill {year} US holidays</Button>
+          <HolidaysForSecurity settings={settings} />
+        </Flex>
+      )}
+      intro={`Pick a holiday from the ${year} list (fixed and floating US holidays) or enter a date. ${CLEAR_NOTE} Clear leaves Holidays for Security Levels as it is. Edits go to the working copy (blue = unsaved, green = saved but not on the gate yet). The gate stores only month/day; names come from the built-in list.`}>
       <Head cols={['#', 'Holiday', 'Date (M/D)', 'Status']} />
       <Table.Body>
-        {settings.fields.filter((setting) => setting.group === 'Holidays' && setting.key !== HOL_FOR_SL)
-          .map((setting, i) => <HolidayRow key={setting.key} settings={settings} setting={setting} index={i} holidays={holidays} />)}
+        {holidayFields.map((setting, index) => (
+          <HolidayRow key={setting.key} settings={settings} setting={setting} index={index} holidays={yearHolidays} />
+        ))}
       </Table.Body>
     </GroupPage>
   );

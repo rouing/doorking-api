@@ -491,7 +491,19 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     if (out[0] < 300) await saveNote(session, gate, code, '', ' (entry deleted)');
     return out;
   }
-  return { PREF_LABELS, logChange, withHistory, pick, same, revertEvent, saveNote, dropNote };
+  /**
+   * Computes human-readable From -> To changes between the gate's base copy (last pull) and the current working copy.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @returns Promise resolving to the list of unsent `RecordChange[]` items.
+   */
+  async function workingCopyDiff(phone: string): Promise<RecordChange[]> {
+    const files = await dk.readCacheFiles(store, phone);
+    const base: BoardBuffers = { names: files['names.bin'].base, phone: files['phone.bin'].base, cards: files['cards.bin'].base };
+    const current: BoardBuffers = { names: files['names.bin'].data, phone: files['phone.bin'].data, cards: files['cards.bin'].data };
+    return changeDetails(base, current);
+  }
+  return { PREF_LABELS, logChange, withHistory, pick, same, revertEvent, saveNote, dropNote, workingCopyDiff };
 }
 
 /**
@@ -603,9 +615,9 @@ export function createEditing(deps: ContextModule) {
   const prefs = createPrefsEditor(deps, working);
   const { commandRelays, liveRelays } = relays;
   const { applyToCache, cameraTransactions, editOpts, editorResidents, gateData, gateSettings, refuseDuplicates, saveSettings, sendFile, TX_PAGE, TX_PAGE_MAX, workingBuffers } = working;
-  const { dropNote, logChange, pick, PREF_LABELS, revertEvent, same, saveNote, withHistory } = history;
+  const { dropNote, logChange, pick, PREF_LABELS, revertEvent, same, saveNote, withHistory, workingCopyDiff } = history;
   const { gateConfigFrom, savePrefs } = prefs;
-  return { gateData, cameraTransactions, TX_PAGE, TX_PAGE_MAX, gateSettings, saveSettings, commandRelays, liveRelays, refuseDuplicates, editorResidents, saveNote, dropNote, applyToCache, PREF_LABELS, workingBuffers, logChange, withHistory, pick, same, revertEvent, savePrefs, gateConfigFrom, editOpts, sendFile };
+  return { gateData, cameraTransactions, TX_PAGE, TX_PAGE_MAX, gateSettings, saveSettings, commandRelays, liveRelays, refuseDuplicates, editorResidents, saveNote, dropNote, applyToCache, PREF_LABELS, workingBuffers, logChange, withHistory, pick, same, revertEvent, savePrefs, gateConfigFrom, editOpts, sendFile, workingCopyDiff };
 }
 
 export type EditingModule = ReturnType<typeof createEditing>;

@@ -3,9 +3,9 @@
 Open work, unverified hardware tests, planned 10x features, and backlog items.
 
 ## Planned next (10x roadmap — active plan)
-- [ ] **#11 Human-readable diff in "Send to Gate" dialog:** show the exact From → To summary of every unsent resident, card, and setting change inside the Send confirmation dialog (`GET /send` + `SendSummary`).
-- [ ] **#14 Floating US holidays auto-fill (year-aware):** compute floating US holidays (MLK Day, Presidents' Day, Memorial Day, Labor Day, Columbus Day, Thanksgiving, Day after Thanksgiving) for a chosen year in `src/holidays.ts` with one-click fill on the Holidays page.
-- [ ] **#12 Global quick-jump search (`Cmd/Ctrl+K`):** instant search modal across residents, vendors, cards, entry codes, phone numbers, notes, and recent transactions from anywhere inside an open gate.
+- [x] **#11 Human-readable diff in "Send to Gate" dialog:** show the exact From → To summary of every unsent resident, card, and setting change inside the Send confirmation dialog (`GET /send` + `SendSummary`).
+- [x] **#14 Floating US holidays auto-fill (year-aware):** compute floating US holidays (MLK Day, Presidents' Day, Memorial Day, Labor Day, Columbus Day, Thanksgiving, Day after Thanksgiving) for a chosen year in `src/holidays.ts` with one-click fill on the Holidays page.
+- [x] **#12 Global quick-jump search (`Cmd/Ctrl+K`):** instant search modal across residents, vendors, cards, entry codes, phone numbers, notes, and recent transactions from anywhere inside an open gate.
 - [ ] **#6 Timed "Safe Hold-Open" relay auto-release:** "Hold open for 15m / 30m / 1h / Until time" option with persisted PostgreSQL timer (`relay_timers`), live countdown, automatic `SetRelays` release with retries, and failure alert.
 - [ ] **#15 Point-in-time pull archive & rollback:** keep the last N residents pulls in `gate_pull_archive` with compare and one-click restore to the working copy from History.
 - [ ] **#8 Access hygiene & "Ghost Card / Leaked Code" audit dashboard:** Insights/Audit page mining `tx_history` + `gate_residents` + `gate_cards` for dormant credentials (90/180/365d), active unassigned cards (with camera snapshots), high-frequency/leaked entry codes, and gate traffic/cycle counts.

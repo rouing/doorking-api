@@ -2664,6 +2664,29 @@
             "items": {
               "type": "integer"
             }
+          },
+          "changes": {
+            "type": "array",
+            "description": "Human-readable From -> To list of unsent resident, card, and setting changes",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": { "type": "string" },
+                "label": { "type": "string" },
+                "change": { "type": "string", "enum": ["added", "removed", "changed"] },
+                "fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "field": { "type": "string" },
+                      "from": { "type": "string" },
+                      "to": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },

@@ -118,8 +118,20 @@ export interface SettingsReply {
   fields: GateSettingRow[];
 }
 
+/** One unsent change in the Send preview (resident, vendor, card, or gate setting). */
+export interface SendChange {
+  key: string;
+  label: string;
+  change: 'added' | 'removed' | 'changed';
+  fields: { field: string; from: string; to: string }[];
+}
+
 /** GET G/send: what a send would change. */
-export interface SendPreview { changedBlocks: Record<string, number[]>; residentCounts: number[] }
+export interface SendPreview {
+  changedBlocks: Record<string, number[]>;
+  residentCounts: number[];
+  changes?: SendChange[];
+}
 
 /**
  * GET /api/gates (master codes are never sent). siteName is '' until the user has connected to the gate.

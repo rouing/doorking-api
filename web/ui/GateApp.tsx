@@ -18,6 +18,7 @@ import { Directory } from './panes/Directory.tsx';
 import { workingCopyState } from './panes/WorkingCopyBar.tsx';
 import { pageShown, type NavKey } from './nav/pages.ts';
 import { GateSheet, PhoneMenu, PhoneTabBar, PhoneTopBar } from './nav/PhoneNav.tsx';
+import { QuickJump } from './nav/QuickJump.tsx';
 import { SidebarItems } from './nav/SidebarItems.tsx';
 import { History } from './panes/History.tsx';
 import { Schedules } from './panes/Schedules.tsx';
@@ -67,6 +68,7 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
   const [dock, setDock] = useState<DockState>('closed');
   const [menu, setMenu] = useState(false); // the drawer (phones)
   const [gateSheet, setGateSheet] = useState(false); // the Gate tab's sheet (phones)
+  const [quickJump, setQuickJump] = useState(false); // global Cmd/Ctrl+K search dialog
   const [actionInfo, setActionInfo] = useState(''); // the outcome of Reset to gate / Send to gate (sidebar or Gate sheet)
   const [pageKey, setPageKey] = useState(0); // bumped to reload the open page (its settings) after Reset to gate
   const [error, setError] = useState('');
@@ -160,6 +162,7 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
   const sidebarItems = (
     <SidebarItems gate={gate} user={session.user} page={nav} phone={phone} elevators={features.elevators} job={job}
       progressShown={dock !== 'closed'} gapi={gapi} readOnly={readOnly} workingCopy={workingCopy} hasWorkingCopy={Boolean(residents)} onGo={go}
+      onOpenSearch={() => { setMenu(false); setQuickJump(true); }}
       onSwitchGate={switchGate} onAllGates={allGates} onPull={pull} onShowProgress={() => setDock('open')} onReset={afterReset}
       onJobStarted={jobStarted} onNotify={setActionInfo} onSignOut={signOut} />
   );
@@ -200,6 +203,9 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
             onReset={afterReset} onJobStarted={jobStarted} onNotify={setActionInfo} />
         </>
       )}
+      <QuickJump open={quickJump} onOpenChange={setQuickJump} residents={residents?.rows ?? []}
+        transactions={data?.transactions?.rows ?? []} elevators={features.elevators} onGoPage={go}
+        onOpenResident={openResident} onOpenTransaction={(tx) => { go('transactions'); if (cameras && tx.camera) setViewing(tx); }} />
       <JobDock job={job} state={dock} onState={setDock} />
       <SnapViewer transaction={viewing} snaps={snaps} onClose={() => setViewing(null)} />
       {cameras && <LiveView phone={gate.phoneNumber} settings={cameras} />}

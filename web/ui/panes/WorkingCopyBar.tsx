@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Callout, Flex, Text } from '@radix-ui/themes';
+import { Badge, Box, Button, Callout, Flex, Table, Text } from '@radix-ui/themes';
 import type { ConflictView, ResidentsReply, SendPreview } from '../../../src/types.ts';
 import { errorText, useReadOnly, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
@@ -109,7 +109,7 @@ export function useWorkingCopyActions({ gapi, onReload, onJobStarted, notify, on
   async function send() {
     let preview: SendPreview;
     try { preview = await gapi<SendPreview>('GET', '/send'); } catch (err) { onError(errorText(err)); return; }
-    if (!await confirm({ title: 'Send the working copy to the gate?', action: 'Send to gate', body: <SendSummary preview={preview} lines={sendLines} /> })) return;
+    if (!await confirm({ title: 'Send the working copy to the gate?', action: 'Send to gate', maxWidth: '680px', body: <SendSummary preview={preview} lines={sendLines} /> })) return;
     try {
       await gapi('POST', '/send', { confirm: true });
       notify('Sending to the gate; see the progress window.');
@@ -159,22 +159,58 @@ export function useGateActions({ gapi, workingCopy, hasWorkingCopy, running, onR
 interface SendSummaryProps { preview: SendPreview; lines: string[] }
 
 /**
- * What a send changes, for its confirmation.
+ * What a send changes, for its confirmation dialog: human-readable From -> To changes plus changed block summary.
  *
  * @param props - Component props.
- * @param props.preview - Preview.
- * @param props.lines - Lines.
+ * @param props.preview - Preview returned by `GET /send`.
+ * @param props.lines - Extra informational lines.
  * @returns Rendered React element.
  */
 function SendSummary({ preview, lines }: SendSummaryProps) {
   const blocks = Object.entries(preview.changedBlocks).filter(([, changed]) => changed.length);
+  const changes = preview.changes || [];
   return (
-    <Flex direction="column" gap="1">
-      <Text>This changes the gate.</Text>
-      {lines.map((line) => <Text key={line}>{line}</Text>)}
-      {blocks.map(([file, changed]) => <Text key={file}>{file}: block(s) {changed.join(', ')}</Text>)}
-      <Text>Resident / vendor counts (from names.bin): {preview.residentCounts.join(', ')}</Text>
-      <Text>A residents pull runs afterwards to check the gate.</Text>
+    <Flex direction="column" gap="2">
+      <Text>This changes the physical gate.</Text>
+      {lines.map((line) => <Text key={line} size="2" color="gray">{line}</Text>)}
+      {changes.length > 0 && (
+        <Box style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--gray-a5)', borderRadius: 'var(--radius-2)' }}>
+          <Table.Root size="1">
+            <Table.Header>
+              <Table.Row>
+                <Table.ColumnHeaderCell>Item</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Field</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Gate</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>New</Table.ColumnHeaderCell>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {changes.flatMap((item) => (item.fields.length ? item.fields : [{ field: '', from: '', to: '' }]).map((field, index) => (
+                <Table.Row key={`${item.key}-${field.field}-${index}`}>
+                  <Table.Cell>
+                    {index === 0 && (
+                      <Flex align="center" gap="1" wrap="wrap">
+                        <Text weight="medium">{item.label}</Text>
+                        {item.change !== 'changed' && (
+                          <Badge size="1" color={item.change === 'added' ? 'green' : 'red'}>{item.change}</Badge>
+                        )}
+                      </Flex>
+                    )}
+                  </Table.Cell>
+                  <Table.Cell>{field.field}</Table.Cell>
+                  <Table.Cell><Text color="gray">{field.from || '—'}</Text></Table.Cell>
+                  <Table.Cell>{field.to || '—'}</Table.Cell>
+                </Table.Row>
+              )))}
+            </Table.Body>
+          </Table.Root>
+        </Box>
+      )}
+      <Flex direction="column" gap="1">
+        {blocks.map(([file, changed]) => <Text key={file} size="1" color="gray">{file}: block(s) {changed.join(', ')}</Text>)}
+        <Text size="1" color="gray">Resident / vendor counts (from names.bin): {preview.residentCounts.join(', ')}</Text>
+        <Text size="1" color="gray">A residents pull runs afterwards to verify the gate holds these changes.</Text>
+      </Flex>
     </Flex>
   );
 }

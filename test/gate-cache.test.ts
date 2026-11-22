@@ -14,6 +14,7 @@ import { staticFile } from '../web/requests.ts';
 import { withContext } from '@logtape/logtape';
 import { helpPage, inline, markdownToHtml } from '../src/markdown.ts';
 import { loadData } from '../web/data.ts';
+import { searchGate } from '../web/ui/nav/quickJumpSearch.ts';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
 
 // What the tests read back from the database.
@@ -1984,6 +1985,57 @@ async function signIn(call, username, password) {
   assert.strictEqual(r.status, 200, JSON.stringify(r.body));
   return r.cookie;
 }
+
+test('usHolidaysForYear computes floating US holidays accurately and orders chronologically', () => {
+  const byName = (year) => Object.fromEntries(dk.usHolidaysForYear(year).map((h) => [h.name, `${h.month}/${h.day}`]));
+  const h2026 = byName(2026);
+  assert.strictEqual(h2026['Martin Luther King Jr. Day'], '1/19');
+  assert.strictEqual(h2026["Presidents' Day"], '2/16');
+  assert.strictEqual(h2026['Memorial Day'], '5/25');
+  assert.strictEqual(h2026['Labor Day'], '9/7');
+  assert.strictEqual(h2026['Columbus Day'], '10/12');
+  assert.strictEqual(h2026['Thanksgiving'], '11/26');
+  assert.strictEqual(h2026['Day after Thanksgiving'], '11/27');
+  const h2027 = byName(2027);
+  assert.strictEqual(h2027['Memorial Day'], '5/31');
+  assert.strictEqual(h2027['Thanksgiving'], '11/25');
+});
+
+test('searchGate ranks exact card/entry/directory code matches above names and pages', () => {
+  const residents = [
+    { directoryCode: '101', name: 'Smith, J', type: 'Resident', hidden: false, areaCode: '214', areaCodeIndex: 0, phone: '5550101', entryCode: '4821', securityLevel: 1, elevatorRef: 1, floor: '', cards: ['10234'], entryOffset: 0, recordOffset: 0, note: 'Front gate' },
+    { directoryCode: '102', name: 'Baker, L', type: 'Resident', hidden: false, areaCode: '214', areaCodeIndex: 0, phone: '5550102', entryCode: '', securityLevel: 1, elevatorRef: 1, floor: '', cards: ['20001'], entryOffset: 20, recordOffset: 10, note: '' },
+  ];
+  const transactions = [
+    { ts: 1, minute: '20261121-0900', date: '2026-11-21', time: '9:00 AM', eventType: 'Cards', number: '10234', lookup: 'card', name: 'Smith, J', access: 'Admit', relay: 'Entry', apb: '', directoryCode: '101', camera: true, raw: '00' },
+  ];
+  const cardHits = searchGate('10234', { residents, transactions, elevators: true });
+  assert.strictEqual(cardHits[0].kind, 'resident');
+  assert.strictEqual(cardHits[0].resident.directoryCode, '101');
+  const codeHits = searchGate('4821', { residents, transactions, elevators: true });
+  assert.strictEqual(codeHits[0].kind, 'resident');
+  assert.strictEqual(codeHits[0].resident.directoryCode, '101');
+  const pageHits = searchGate('holidays', { residents, transactions, elevators: true });
+  assert.strictEqual(pageHits[0].kind, 'page');
+  assert.strictEqual(pageHits[0].page, 'holidays');
+});
+
+test('server: GET /send returns human-readable From -> To changes for unsent edits', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  await pullInto(store);
+  await dk.ensureCache(store, GATE_A.phoneNumber);
+  const cookie = await signIn(call, 'alice', PW);
+  assert.strictEqual((await call('PUT', `/api/gates/${GATE_A.phoneNumber}/residents/101`, { cookie, body: { name: 'Smith, Jane' } })).status, 200);
+  assert.strictEqual((await call('PUT', `/api/gates/${GATE_A.phoneNumber}/settings`, { cookie, body: { talkTime: '2:00' } })).status, 200);
+  const preview = await call('GET', `/api/gates/${GATE_A.phoneNumber}/send`, { cookie });
+  assert.strictEqual(preview.status, 200);
+  assert.ok(Array.isArray(preview.body.changes) && preview.body.changes.length >= 2);
+  const resChange = preview.body.changes.find((c) => c.key === '101');
+  assert.ok(resChange && resChange.fields.some((f) => f.field === 'Name' && f.from === 'Smith, J' && f.to === 'Smith, Jane'));
+  const talkChange = preview.body.changes.find((c) => c.key === 'talkTime');
+  assert.ok(talkChange && talkChange.fields.some((f) => f.to === '2:00'));
+}));
 
 test('server: sign-in, wrong passwords limited, and pages need a session', withServer(async ({ store, call }) => {
   await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });

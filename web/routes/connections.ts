@@ -14,7 +14,7 @@ import { G, type Route, route } from '../routing.ts';
  * @returns Registered route definitions for this area.
  */
 export function connectionsRoutes(modules: Modules): Route[] {
-  const { gateData, TX_PAGE, TX_PAGE_MAX } = modules.editing;
+  const { gateData, TX_PAGE, TX_PAGE_MAX, workingCopyDiff } = modules.editing;
   const { accountBusy, busy, currentJob, prepareGateSend, startPull, startSend } = modules.jobs;
   return [
     // The gate's current or last connection (one at a time per DKS account). While another gate on the same DKS login
@@ -31,8 +31,8 @@ export function connectionsRoutes(modules: Modules): Route[] {
     }),
 
     route('GET', `${G}/send`, 'gate', async ({ gate }) => {
-      const { changedBlocks, counts } = await prepareGateSend(gate);
-      return [200, { changedBlocks, residentCounts: counts }];
+      const [{ changedBlocks, counts }, changes] = await Promise.all([prepareGateSend(gate), workingCopyDiff(gate.phoneNumber)]);
+      return [200, { changedBlocks, residentCounts: counts, changes }];
     }),
 
     route('POST', `${G}/send`, 'gate-admin', async ({ gate, body }) => {
