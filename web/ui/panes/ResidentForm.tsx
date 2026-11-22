@@ -6,18 +6,15 @@ import { useConfirm } from '../Confirm.tsx';
 import { phoneFull, securityText } from '../format.ts';
 import { CardsEditor, Choice, Field, PhoneField } from './fields.tsx';
 import { HelpTip } from '../HelpTip.tsx';
+import { NOTE_MAX } from '../../../src/shared.ts';
 
-const NOTE_MAX = 500; // src/notes.ts
 
 // Directory codes 0 and 1 (000, 001, ...) always get the maximum talk time; the DoorKing manual keeps them for the
 // manager's office or an emergency number, so new entries aren't offered them first.
-const reservedCode = (c: string) => /^\d+$/.test(c) && Number(c) <= 1;
+const reservedCode = (code: string) => /^\d+$/.test(code) && Number(code) <= 1;
 
-// Edits a resident (every field) or vendor (name, entry code, security level, cards) in the working copy, or adds a new one
-// (r null). Nothing goes to the gate until Send. Floor and elevator reference are hidden when the gate's features
-// turn them off; their values are kept.
-export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, features, gapi, onDone, onCancel }: {
-  r: ResidentRow | null;
+interface ResidentFormProps {
+  resident: ResidentRow | null;
   vendor: boolean;
   dirDigits: number;
   emptyCodes: string[];
@@ -26,16 +23,21 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
   gapi: GateApi;
   onDone: () => Promise<void>;
   onCancel?: () => void;
-}) {
-  const [code, setCode] = useState(r ? r.directoryCode : emptyCodes.find((emptyCode) => !reservedCode(emptyCode)) || '');
-  const [name, setName] = useState(r ? r.name : '');
-  const [phone, setPhone] = useState(r ? phoneFull(r) : '');
-  const [entryCode, setEntryCode] = useState(r ? r.entryCode : '');
-  const [securityLevel, setSecurity] = useState(r && r.securityLevel !== '' ? String(r.securityLevel) : '1');
-  const [floor, setFloor] = useState(r ? String(r.floor) : '');
-  const [elevatorRef, setElevator] = useState(String((r && r.elevatorRef) || 1));
-  const [cards, setCards] = useState((r ? r.cards : []).map((c) => String(Number(c))));
-  const [note, setNote] = useState(r ? r.note || '' : '');
+}
+
+// Edits a resident (every field) or vendor (name, entry code, security level, cards) in the working copy, or adds a new one
+// (r null). Nothing goes to the gate until Send. Floor and elevator reference are hidden when the gate's features
+// turn them off; their values are kept.
+export function ResidentForm({ resident, vendor, dirDigits, emptyCodes, devices, features, gapi, onDone, onCancel }: ResidentFormProps) {
+  const [code, setCode] = useState(resident ? resident.directoryCode : emptyCodes.find((emptyCode) => !reservedCode(emptyCode)) || '');
+  const [name, setName] = useState(resident ? resident.name : '');
+  const [phone, setPhone] = useState(resident ? phoneFull(resident) : '');
+  const [entryCode, setEntryCode] = useState(resident ? resident.entryCode : '');
+  const [securityLevel, setSecurity] = useState(resident && resident.securityLevel !== '' ? String(resident.securityLevel) : '1');
+  const [floor, setFloor] = useState(resident ? String(resident.floor) : '');
+  const [elevatorRef, setElevator] = useState(String((resident && resident.elevatorRef) || 1));
+  const [cards, setCards] = useState((resident ? resident.cards : []).map((card) => String(Number(card))));
+  const [note, setNote] = useState(resident ? resident.note || '' : '');
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState('');
   const [dialog, confirm] = useConfirm();
@@ -61,17 +63,17 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
   }
 
   // The note is local (not in the working copy), saved after the entry when it changed.
-  const saveNote = (dirCode: string) => (note.trim() === ((r && r.note) || '') ? Promise.resolve()
+  const saveNote = (dirCode: string) => (note.trim() === ((resident && resident.note) || '') ? Promise.resolve()
     : gapi('PUT', `/residents/${encodeURIComponent(dirCode)}/note`, { note }));
 
   function save() {
     const body = payload();
     if (!body) return;
     if (note.trim().length > NOTE_MAX) { setInfo(`A note is at most ${NOTE_MAX} characters.`); return; }
-    if (r) {
+    if (resident) {
       run('Saving…', async () => {
-        await gapi('PUT', `/residents/${encodeURIComponent(r.directoryCode)}`, { ...body, directoryCode: r.directoryCode });
-        await saveNote(r.directoryCode);
+        await gapi('PUT', `/residents/${encodeURIComponent(resident.directoryCode)}`, { ...body, directoryCode: resident.directoryCode });
+        await saveNote(resident.directoryCode);
       });
       return;
     }
@@ -83,30 +85,31 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
     });
   }
 
-  async function remove(whole: boolean) {
-    if (!r) return;
-    const who = `${r.name || '(no name)'} · code ${r.directoryCode}`;
-    const ok = await confirm(whole
-      ? { title: `Remove directory code ${r.directoryCode}?`, action: 'Remove code', color: 'red',
-        body: `"${who}": this deletes the entry, phone record and all cards, and takes code ${r.directoryCode} off the gate (it will no longer be a vacant slot). Nothing is sent to the gate until you Send.` }
-      : { title: `Delete ${noun} "${who}"?`, action: `Delete ${noun}`, color: 'red',
-        body: 'This clears the name, phone, entry code and all cards for this directory slot in the working copy. The slot (directory code) itself stays, matching how the gate marks an empty slot. Nothing is sent to the gate until you Send.' });
-    if (!ok) return;
-    run(whole ? 'Removing…' : 'Deleting…',
-      () => gapi('DELETE', `${whole ? '/directory-codes' : '/residents'}/${encodeURIComponent(r.directoryCode)}`));
+  const who = resident ? `${resident.name || '(no name)'} · code ${resident.directoryCode}` : '';
+  // Delete: empties the slot (the directory code stays, as the gate marks an empty slot).
+  async function clearSlot() {
+    if (!resident || !await confirm({ title: `Delete ${noun} "${who}"?`, action: `Delete ${noun}`, color: 'red',
+      body: 'This clears the name, phone, entry code and all cards for this directory slot in the working copy. The slot (directory code) itself stays, matching how the gate marks an empty slot. Nothing is sent to the gate until you Send.' })) return;
+    run('Deleting…', () => gapi('DELETE', `/residents/${encodeURIComponent(resident.directoryCode)}`));
+  }
+  // Remove code: takes the directory code itself off the gate.
+  async function removeCode() {
+    if (!resident || !await confirm({ title: `Remove directory code ${resident.directoryCode}?`, action: 'Remove code', color: 'red',
+      body: `"${who}": this deletes the entry, phone record and all cards, and takes code ${resident.directoryCode} off the gate (it will no longer be a vacant slot). Nothing is sent to the gate until you Send.` })) return;
+    run('Removing…', () => gapi('DELETE', `/directory-codes/${encodeURIComponent(resident.directoryCode)}`));
   }
 
   return (
     <Flex direction="column" gap="3" onClick={(event) => event.stopPropagation()}>
       {dialog}
-      {!r && <Heading size="3">Add {noun}</Heading>}
+      {!resident && <Heading size="3">Add {noun}</Heading>}
       <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
-        {!r && (
+        {!resident && (
           <Field label="Directory code (vacant or new)" help="directoryCode">
             <TextField.Root inputMode="numeric" maxLength={dirDigits} placeholder={`e.g. ${'5'.repeat(dirDigits)}`} list="dk-empty-codes"
               value={code} onChange={(event) => setCode(event.target.value)} />
             <datalist id="dk-empty-codes">
-              {[...emptyCodes.filter((emptyCode) => !reservedCode(emptyCode)), ...emptyCodes.filter(reservedCode)].map((c) => <option key={c} value={c} />)}
+              {[...emptyCodes.filter((emptyCode) => !reservedCode(emptyCode)), ...emptyCodes.filter(reservedCode)].map((code) => <option key={code} value={code} />)}
             </datalist>
             {reservedCode(code) && (
               <Text size="1" color="amber">Codes {'0'.padStart(dirDigits, '0')} and {'1'.padStart(dirDigits, '0')} always get the maximum talk time; best kept for the office or an emergency number.</Text>
@@ -147,11 +150,11 @@ export function ResidentForm({ r, vendor, dirDigits, emptyCodes, devices, featur
         <TextArea maxLength={NOTE_MAX} rows={2} value={note} onChange={(event) => setNote(event.target.value)} style={{ maxWidth: 640 }} />
       </Field>
       <Flex gap="3" align="center" wrap="wrap">
-        <Button onClick={save} disabled={busy}>{r ? 'Save to working copy' : `Create ${noun}`}</Button>
-        {r && <Button color="red" variant="soft" onClick={() => remove(false)} disabled={busy}>Delete {noun}</Button>}
-        {r && <Button color="red" variant="soft" onClick={() => remove(true)} disabled={busy}
+        <Button onClick={save} disabled={busy}>{resident ? 'Save to working copy' : `Create ${noun}`}</Button>
+        {resident && <Button color="red" variant="soft" onClick={clearSlot} disabled={busy}>Delete {noun}</Button>}
+        {resident && <Button color="red" variant="soft" onClick={removeCode} disabled={busy}
           title="Delete the entry and take the directory code off the gate">Remove code</Button>}
-        {onCancel && <Button variant="soft" color="gray" onClick={onCancel}>{r ? 'Close editor' : 'Cancel'}</Button>}
+        {onCancel && <Button variant="soft" color="gray" onClick={onCancel}>{resident ? 'Close editor' : 'Cancel'}</Button>}
         <Text size="2" color="gray">{info}</Text>
       </Flex>
     </Flex>

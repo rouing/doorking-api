@@ -7,13 +7,19 @@ export type DockState = 'closed' | 'min' | 'open';
 export const JOB_COLORS = { idle: 'gray', running: 'blue', done: 'green', failed: 'red' } as const;
 export const jobLabel = (job: Job | null) => (!job || job.state === 'idle' ? '' : `${job.what}: ${job.state}`);
 
+interface JobDockProps {
+  job: Job | null;
+  state: DockState;
+  onState: (state: DockState) => void;
+}
+
 // Gate connection progress: a window in the corner that can be minimized to its title bar or closed.
-export function JobDock({ job, state, onState }: { job: Job | null; state: DockState; onState: (s: DockState) => void }) {
+export function JobDock({ job, state, onState }: JobDockProps) {
   const log = useRef<HTMLPreElement>(null);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [job, state]);
   if (state === 'closed' || !job) return null;
   return (
-    <Card className="dock" style={{ position: 'fixed', right: 16, bottom: 16, width: 'min(560px, calc(100vw - 32px))', zIndex: 10 }}>
+    <Card className="dock">
       <Flex align="center" gap="2">
         <Text weight="bold">Gate connection</Text>
         {jobLabel(job) && <Badge color={JOB_COLORS[job.state]}>{jobLabel(job)}</Badge>}

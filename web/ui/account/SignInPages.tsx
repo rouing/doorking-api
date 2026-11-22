@@ -5,12 +5,20 @@ import type { SsoProviderInfo } from '../../../src/types.ts';
 import { api, errorText } from '../api.ts';
 import { Field } from '../panes/fields.tsx';
 import { startSso } from './SingleSignOn.tsx';
-import { MIN_PASSWORD_LENGTH, PasswordForm, passwordProblem } from './passwords.tsx';
+import { PasswordForm, passwordProblem } from './passwords.tsx';
+import { PASSWORD_MIN } from '../../../src/shared.ts';
+
+interface EmailLinkProps {
+  kind: 'verify' | 'reset' | 'invite';
+  token: string;
+  onDone: () => void;
+  sso?: SsoProviderInfo[];
+}
 
 // The page an email link opens (#verify=, #reset=, #invite= in the address): confirms the email, or asks for a new
 // password (reset) or the first one (invitation, which also signs in; or accept it with a single sign-on provider, sso).
 // onDone clears the link and reloads the session.
-export function EmailLink({ kind, token, onDone, sso = [] }: { kind: 'verify' | 'reset' | 'invite'; token: string; onDone: () => void; sso?: SsoProviderInfo[] }) {
+export function EmailLink({ kind, token, onDone, sso = [] }: EmailLinkProps) {
   const [password, setPassword] = useState('');
   const [again, setAgain] = useState('');
   const [username, setUsername] = useState('');
@@ -42,15 +50,15 @@ export function EmailLink({ kind, token, onDone, sso = [] }: { kind: 'verify' | 
   const title = kind === 'verify' ? 'Confirm your email' : kind === 'reset' ? 'Choose a new password' : 'Welcome';
   const asksPassword = !state.ok && (kind === 'reset' || (kind === 'invite' && username));
   return (
-    <Container size="1" p="6">
-      <Card size="3">
+    <Container size="1" p={{ initial: '3', sm: '6' }} pt={{ initial: '5', sm: '6' }}>
+      <Card size={{ initial: '2', sm: '3' }}>
         <form onSubmit={submit} autoComplete="off">
           <Flex direction="column" gap="3">
             <Heading>{title}</Heading>
             {kind === 'invite' && username && !state.ok && <Text color="gray">Your username is <strong>{username}</strong>. Choose a password to finish setting up your account.</Text>}
             {asksPassword && (
               <>
-                <Field label={`New password (at least ${MIN_PASSWORD_LENGTH} characters)`}>
+                <Field label={`New password (at least ${PASSWORD_MIN} characters)`}>
                   <TextField.Root type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="new-password" />
                 </Field>
                 <Field label="New password again">
@@ -81,9 +89,13 @@ export function EmailLink({ kind, token, onDone, sso = [] }: { kind: 'verify' | 
   );
 }
 
+interface ForgotPasswordProps {
+  onBack: () => void;
+}
+
 // "Forgot your password?": sends a reset link to the account's confirmed email. The reply never says whether the
 // account exists.
-export function ForgotPassword({ onBack }: { onBack: () => void }) {
+export function ForgotPassword({ onBack }: ForgotPasswordProps) {
   const [id, setId] = useState('');
   const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -105,8 +117,12 @@ export function ForgotPassword({ onBack }: { onBack: () => void }) {
   );
 }
 
+interface FirstSetupProps {
+  onDone: () => void;
+}
+
 // First start: no account exists yet. The first account becomes admin of every gate already on this server.
-export function FirstSetup({ onDone }: { onDone: () => void }) {
+export function FirstSetup({ onDone }: FirstSetupProps) {
   const [setupCode, setSetupCode] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -124,8 +140,8 @@ export function FirstSetup({ onDone }: { onDone: () => void }) {
     setBusy(false);
   }
   return (
-    <Container size="1" p="6">
-      <Card size="3">
+    <Container size="1" p={{ initial: '3', sm: '6' }} pt={{ initial: '5', sm: '6' }}>
+      <Card size={{ initial: '2', sm: '3' }}>
         <form onSubmit={submit} autoComplete="off">
           <Flex direction="column" gap="3">
             <Heading>Create the first account</Heading>
@@ -138,7 +154,7 @@ export function FirstSetup({ onDone }: { onDone: () => void }) {
             </Field>
             <Field label="Username"><TextField.Root value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username" /></Field>
             <Field label="Email (optional)"><TextField.Root type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
-            <Field label={`Password (at least ${MIN_PASSWORD_LENGTH} characters)`}>
+            <Field label={`Password (at least ${PASSWORD_MIN} characters)`}>
               <TextField.Root type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="new-password" />
             </Field>
             <Field label="Password again">
@@ -152,12 +168,17 @@ export function FirstSetup({ onDone }: { onDone: () => void }) {
     </Container>
   );
 }
+interface ForcedPasswordChangeProps {
+  user: string;
+  onDone: () => void;
+}
+
 // After a gate admin (or the server's operator) set this account's password: the user picks their own first.
-export function ForcedPasswordChange({ user, onDone }: { user: string; onDone: () => void }) {
+export function ForcedPasswordChange({ user, onDone }: ForcedPasswordChangeProps) {
   const signOut = async () => { await api('DELETE', '/api/session').catch(() => {}); onDone(); };
   return (
-    <Container size="1" p="6">
-      <Card size="3">
+    <Container size="1" p={{ initial: '3', sm: '6' }} pt={{ initial: '5', sm: '6' }}>
+      <Card size={{ initial: '2', sm: '3' }}>
         <Flex direction="column" gap="3">
           <Heading>Choose your password</Heading>
           <Text color="gray">

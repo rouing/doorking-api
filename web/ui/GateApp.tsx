@@ -1,16 +1,24 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Badge, Button, Callout, Flex, Link, Separator, Text } from '@radix-ui/themes';
-import type { CameraSettings, DataReply, GateInfo, GatePrefs, Job, ResidentRow, ResidentsReply, TransactionRow } from '../../src/types.ts';
-import { api, errorText, gateApi, ReadOnlyContext } from './api.ts';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Button, Callout, Flex } from '@radix-ui/themes';
+import type { GateInfo, ResidentRow, TransactionRow } from '../../src/types.ts';
+import { api, errorText, gateApi, ReadOnlyContext, WorkingCopySavedContext } from './api.ts';
+import { useGateData, useGateJob, useSidebarDensity } from './gateData.ts';
+import { useBackLayer } from './back.ts';
+import { usePhone } from './phone.ts';
 import { UserSettings } from './account/UserSettings.tsx';
-import { DEFAULT_DEVICES, featuresOf, trackerOf, trackerRelays } from './format.ts';
+import { featuresOf, trackerOf, trackerRelays } from './format.ts';
+import { DEFAULT_DEVICE_ASSOCIATION } from '../../src/shared.ts';
 import { LiveView } from './camera/LiveView.tsx';
 import { SnapViewer } from './camera/SnapViews.tsx';
 import { useSnapshots } from './camera/snapshots.ts';
 import { useConfirm } from './Confirm.tsx';
-import { gateLabel, roleLabel } from './Gates.tsx';
-import { JOB_COLORS, JobDock, jobLabel, type DockState } from './JobDock.tsx';
+import { gateLabel } from './Gates.tsx';
+import { JobDock, type DockState } from './JobDock.tsx';
 import { Directory } from './panes/Directory.tsx';
+import { workingCopyState } from './panes/WorkingCopyBar.tsx';
+import { pageShown, type NavKey } from './nav/pages.ts';
+import { GateSheet, PhoneMenu, PhoneTabBar, PhoneTopBar } from './nav/PhoneNav.tsx';
+import { SidebarItems } from './nav/SidebarItems.tsx';
 import { History } from './panes/History.tsx';
 import { Schedules } from './panes/Schedules.tsx';
 import { ApbPage } from './settings/ApbPage.tsx';
@@ -21,19 +29,6 @@ import { SystemSettings } from './settings/SystemSettings.tsx';
 import { Transactions } from './panes/Transactions.tsx';
 import type { SignedIn } from './App.tsx';
 
-const NAV = [
-  { key: 'residents', label: 'Residents' }, { key: 'vendors', label: 'Vendors' }, { key: 'transactions', label: 'Transactions' },
-  { section: 'System' },
-  { key: 'display', label: 'Display' }, { key: 'relays', label: 'Relays' }, { key: 'holdOpen', label: 'Hold Open' },
-  { key: 'holidays', label: 'Holidays' }, { key: 'security', label: 'Security Levels' }, { key: 'facility', label: 'Facility Codes' },
-  { key: 'elevator', label: 'Elevator Reference' }, { key: 'relayElevator', label: 'Relay / Elevator' }, { key: 'apb', label: 'Anti-Pass Back' },
-] as const;
-// Pinned at the bottom of the sidebar, above Gate connection.
-const PINNED_NAV = [
-  { key: 'history', label: 'History' }, { key: 'schedules', label: 'Scheduled Transfers' }, { key: 'prefs', label: 'System Settings' },
-] as const;
-type NavKey = Extract<(typeof NAV)[number], { key: string }>['key'] | (typeof PINNED_NAV)[number]['key'] | 'user';
-// Pages that only edit gate settings: shown with every control disabled for read-only users.
 const EDIT_PAGES: NavKey[] = ['display', 'relays', 'holdOpen', 'holidays', 'security', 'facility', 'elevator', 'relayElevator', 'apb', 'schedules'];
 
 const PULL_WARNING = {
@@ -41,124 +36,81 @@ const PULL_WARNING = {
   transactions: '',
 };
 
-// The open gate: sidebar navigation and gate connection, and the page for the chosen item. Read-only users see
+interface GateAppProps {
+  session: SignedIn;
+  gate: GateInfo;
+  onChange: () => void;
+}
+
+// The open gate: sidebar navigation and gate connection, and the page for the chosen item. On phones the sidebar is a
+// bottom tab bar (Residents, Vendors, Transactions, Gate: the connection sheet, More: the drawer with every other page). Back
+// closes the sheet or drawer, then goes from another page to Residents, then back to the gate list. Read-only users see
 // every page but can't change anything (they can pull and use the cameras).
-export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: GateInfo; onChange: () => void }) {
+export function GateApp({ session, gate, onChange }: GateAppProps) {
   const gapi = useMemo(() => gateApi(gate.phoneNumber), [gate.phoneNumber]);
   const readOnly = gate.role !== 'admin';
   const [nav, setNav] = useState<NavKey>('residents');
   const [highlight, setHighlight] = useState<string | null>(null);
-  const [data, setData] = useState<DataReply | null>(null);
-  const [residents, setResidents] = useState<ResidentsReply | null>(null);
-  const [prefs, setPrefs] = useState<GatePrefs>({});
-  const [cameras, setCameras] = useState<CameraSettings | null>(null);
   const [viewing, setViewing] = useState<TransactionRow | null>(null);
+  const loadSnaps = useRef<() => void>(() => {});
+  const { data, residents, prefs, cameras, loadError, loadData, loadOlder } = useGateData(gapi, () => loadSnaps.current());
   const snaps = useSnapshots(gate.phoneNumber, gapi, cameras);
-  const loadSnaps = useRef(snaps.load);
   loadSnaps.current = snaps.load;
-  const [job, setJob] = useState<Job | null>(null);
   const [dock, setDock] = useState<DockState>('closed');
+  const [menu, setMenu] = useState(false); // the drawer (phones)
+  const [gateSheet, setGateSheet] = useState(false); // the Gate tab's sheet (phones)
+  const [actionInfo, setActionInfo] = useState(''); // the outcome of Reset to gate / Send to gate (sidebar or Gate sheet)
+  const [pageKey, setPageKey] = useState(0); // bumped to reload the open page (its settings) after Reset to gate
   const [error, setError] = useState('');
   const [dialog, confirm] = useConfirm();
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const pollGen = useRef(0);
-  const jobRunning = useRef(false);
-  const lastFinished = useRef<string | undefined>(undefined);
-
-  useEffect(() => { document.title = `${gateLabel(gate)} · DoorKing Gate Data`; }, [gate]);
-
-  // Sidebar spacing: the roomiest density (0 normal, 1 compact, 2 tight) whose menu fits without scrolling.
-  // Rechecked after every render (items and the job badge come and go) and on window resize.
-  const sidebar = useRef<HTMLElement>(null);
-  useLayoutEffect(() => {
-    const fit = () => {
-      const el = sidebar.current;
-      const menu = el?.querySelector<HTMLElement>('.sidebar-nav');
-      if (!el || !menu) return;
-      for (let d = 0; d <= 2; d++) {
-        el.dataset.density = String(d);
-        if (menu.scrollHeight <= menu.clientHeight) break;
-      }
-    };
-    fit();
-    window.addEventListener('resize', fit);
-    return () => window.removeEventListener('resize', fit);
+  // When a pull or send finishes, the data reloads and its page shows.
+  const { job, start: watchJob, stop: stopWatching, started } = useGateJob(gapi, {
+    onRunning: () => setDock((current) => (current === 'closed' ? 'open' : current)),
+    onFinished: (finished) => { setNav(finished.what === 'transactions' ? 'transactions' : 'residents'); window.scrollTo(0, 0); loadData(); },
   });
 
-  const loadData = useCallback(async () => {
-    const [d, r, p, c] = await Promise.all([gapi<DataReply>('GET', '/data').catch(() => null),
-      gapi<ResidentsReply>('GET', '/residents').catch(() => null), gapi<GatePrefs>('GET', '/prefs').catch(() => ({})),
-      gapi<{ settings: CameraSettings | null }>('GET', '/cameras').catch(() => null)]);
-    setData(d);
-    setResidents(r && r.rows ? r : null);
-    setPrefs(p);
-    setCameras((prev) => (JSON.stringify(prev) === JSON.stringify(c ? c.settings : null) ? prev : c ? c.settings : null));
-    loadSnaps.current();
-  }, [gapi]);
-
-  // The next older page of transactions (GET /data returns the newest page), added at the end of the list.
-  const loadOlder = useCallback(async () => {
-    const next = data?.transactions?.next;
-    if (next == null) return;
-    const reply = await gapi<DataReply>('GET', `/data?before=${next}`);
-    setData((cur) => (cur?.transactions && reply.transactions
-      ? { ...cur, transactions: { ...cur.transactions, rows: [...cur.transactions.rows, ...reply.transactions.rows], next: reply.transactions.next } } : cur));
-  }, [gapi, data]);
-
-  // Polls the gate connection every 3 s while it runs (a failed check is tried again). When a pull or send finishes,
-  // reloads the data and shows its page (not for a connection that had already finished when the gate was opened).
-  // pollGen: bumped when the page closes, so a check still on its way doesn't start polling again.
-  const refreshJob = useCallback(async () => {
-    clearTimeout(timer.current);
-    const gen = pollGen.current;
-    const j = await gapi<Job>('GET', '/job').catch(() => null);
-    if (gen !== pollGen.current) return;
-    if (!j) {
-      if (jobRunning.current) timer.current = setTimeout(refreshJob, 3000);
-      return;
-    }
-    jobRunning.current = j.state === 'running';
-    setJob(j);
-    if (j.state === 'running') {
-      setDock((d) => (d === 'closed' ? 'open' : d));
-      timer.current = setTimeout(refreshJob, 3000);
-      return;
-    }
-    if (!j.finishedAt || j.finishedAt === lastFinished.current) return;
-    const first = lastFinished.current === undefined;
-    lastFinished.current = j.finishedAt;
-    if (!first && j.state === 'done') {
-      setNav(j.what === 'transactions' ? 'transactions' : 'residents');
-      loadData();
-    }
-  }, [gapi, loadData]);
+  useEffect(() => { document.title = `${gateLabel(gate)} · DoorKing Gate Data`; }, [gate]);
+  const phone = usePhone();
+  const sidebar = useSidebarDensity(phone);
 
   useEffect(() => {
     loadData();
-    refreshJob().then(() => { if (lastFinished.current === undefined) lastFinished.current = ''; });
-    return () => { pollGen.current++; clearTimeout(timer.current); };
-  }, [loadData, refreshJob]);
+    watchJob();
+    return stopWatching;
+  }, [loadData, watchJob, stopWatching]);
 
-  const jobStarted = () => { jobRunning.current = true; setDock('open'); refreshJob(); };
+  const jobStarted = () => { setDock('open'); started(); };
 
   async function pull(what: 'residents' | 'transactions') {
+    setMenu(false);
+    setGateSheet(false);
     if (!await confirm({ title: `Pull ${what} from the gate?`, body: PULL_WARNING[what] || undefined, action: `Pull ${what}` })) return;
     try { await gapi('POST', '/pull', { what }); jobStarted(); } catch (err) { setError(errorText(err)); }
   }
 
   const allGates = async () => { await api('DELETE', '/api/session/gate').catch(() => {}); document.title = 'DoorKing Gate Data'; onChange(); };
+  // Opens another of the user's gates (the server session keeps the open gate; App then shows it).
+  const switchGate = async (to: GateInfo) => {
+    setMenu(false);
+    try { await api('PUT', '/api/session/gate', { phoneNumber: to.phoneNumber }); onChange(); } catch (err) { setError(errorText(err)); }
+  };
   const signOut = async () => { await api('DELETE', '/api/session').catch(() => {}); onChange(); };
-  const go = (key: NavKey) => { setNav(key); setHighlight(null); };
+  // A new page starts at its top (a resident opened from Transactions scrolls itself into view instead).
+  const go = (key: NavKey) => { setNav(key); setHighlight(null); setMenu(false); setGateSheet(false); window.scrollTo(0, 0); };
+  useBackLayer(true, allGates);
+  useBackLayer(nav !== 'residents', () => go('residents'));
+  useBackLayer(menu, () => setMenu(false));
+  useBackLayer(gateSheet, () => setGateSheet(false));
+  useBackLayer(dock === 'open', () => setDock('min'));
   const openResident = (resident: ResidentRow) => { setNav(resident.type === 'Vendor' ? 'vendors' : 'residents'); setHighlight(resident.directoryCode); };
   const running = job?.state === 'running';
   const features = featuresOf(prefs);
   const relays = trackerRelays(trackerOf(prefs));
-  const shown = (key: string) => (key !== 'elevator' && key !== 'relayElevator') || features.elevators;
 
   const directory = (kind: 'residents' | 'vendors') => (
     <Directory key={kind} kind={kind} account={gate.siteName} list={residents} tx={data?.transactions?.rows ?? null} highlight={highlight}
-      devices={prefs.deviceAssociation || DEFAULT_DEVICES} features={features} snaps={snaps} onOpenSnap={setViewing}
-      gapi={gapi} onReload={loadData} onJobStarted={jobStarted} />
+      devices={prefs.deviceAssociation || DEFAULT_DEVICE_ASSOCIATION} features={features} snaps={snaps} onOpenSnap={setViewing}
+      gapi={gapi} onReload={loadData} />
   );
   const pages: Record<NavKey, () => ReactNode> = {
     residents: () => directory('residents'),
@@ -170,8 +122,8 @@ export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: 
     prefs: () => <SystemSettings phone={gate.phoneNumber} gapi={gapi} prefs={prefs} defaults={session.defaults} list={residents}
       cameras={cameras} user={session.user} emailEnabled={session.emailEnabled} onReload={loadData} onSessionChange={onChange} onJobStarted={jobStarted} />,
     user: () => <UserSettings session={session} onSaved={onChange} />,
-    relays: () => <RelaysPage gapi={gapi} prefs={prefs} onReload={loadData} onJobStarted={jobStarted} />,
-    display: () => <DisplayPage gapi={gapi} onReload={loadData} onJobStarted={jobStarted} />,
+    relays: () => <RelaysPage gapi={gapi} prefs={prefs} onReload={loadData} />,
+    display: () => <DisplayPage gapi={gapi} onReload={loadData} />,
     holdOpen: () => <HoldOpenPage gapi={gapi} relays={relays} />,
     holidays: () => <HolidaysPage gapi={gapi} holidays={session.holidayList || []} />,
     security: () => <SecurityPage gapi={gapi} floors={features.floors} relays={relays} />,
@@ -180,58 +132,58 @@ export function GateApp({ session, gate, onChange }: { session: SignedIn; gate: 
     relayElevator: () => <RelayElevatorPage gapi={gapi} prefs={prefs} />,
     apb: () => <ApbPage gapi={gapi} relayLabels={prefs.relayLabels || {}} relays={relays} />,
   };
-  const page = shown(nav) ? pages[nav]() : directory('residents');
+  const page = <Fragment key={pageKey}>{pageShown(nav, features.elevators) ? pages[nav]() : directory('residents')}</Fragment>;
+  // The working copy's state under the gate's name (phones: in the top bar), and Reset to gate / Send to gate in the
+  // sidebar's gate connection (phones: the Gate sheet); the pages leave them out.
+  const workingCopy = workingCopyState(residents ? residents.cache : null);
+  const afterReset = async () => { await loadData(); setPageKey((key) => key + 1); };
+  const openGateSheet = () => { setMenu(false); setGateSheet(true); };
+
+  const sidebarItems = (
+    <SidebarItems gate={gate} user={session.user} page={nav} phone={phone} elevators={features.elevators} job={job}
+      progressShown={dock !== 'closed'} gapi={gapi} readOnly={readOnly} workingCopy={workingCopy} hasWorkingCopy={Boolean(residents)} onGo={go}
+      onSwitchGate={switchGate} onAllGates={allGates} onPull={pull} onShowProgress={() => setDock('open')} onReset={afterReset}
+      onJobStarted={jobStarted} onNotify={setActionInfo} onSignOut={signOut} />
+  );
 
   return (
     <div className="app">
       {dialog}
-      <aside className="sidebar" ref={sidebar}>
-        <Flex direction="column" gap="1" p="3" className="sidebar-nav">
-          <Text size="4" weight="bold">{gateLabel(gate)}</Text>
-          <Link href="#" size="2" className="nav-gates" onClick={(event) => { event.preventDefault(); allGates(); }}>All gates</Link>
-          {NAV.filter((n) => 'section' in n || shown(n.key)).map((n, i) => ('section' in n
-            ? <Text key={i} size="1" color="gray" weight="bold" className="nav-section">{n.section}</Text>
-            : <Button key={n.key} className="nav-item" variant={nav === n.key ? 'soft' : 'ghost'} color={nav === n.key ? undefined : 'gray'}
-              onClick={() => go(n.key)}>{n.label}</Button>))}
-        </Flex>
-        <Flex direction="column" gap="1" p="3" className="sidebar-bottom">
-          {PINNED_NAV.map((n) => (
-            <Button key={n.key} className="nav-item" variant={nav === n.key ? 'soft' : 'ghost'} color={nav === n.key ? undefined : 'gray'}
-              onClick={() => go(n.key)}>{n.label}</Button>
-          ))}
-          <Button asChild className="nav-item" variant="ghost" color="gray">
-            <a href="/help" target="_blank" rel="noopener" title="Open the user guide in a new tab">Help ↗</a>
-          </Button>
-          <Separator size="4" />
-          <Text size="1" color="gray" weight="bold">Gate connection</Text>
-          <Button variant="soft" className="nav-action" disabled={running} onClick={() => pull('residents')}>Pull residents</Button>
-          <Button variant="soft" className="nav-action" disabled={running} onClick={() => pull('transactions')}>Pull transactions</Button>
-          <Flex direction="column" gap="1" align="stretch">
-            {jobLabel(job) && <Badge size="2" color={JOB_COLORS[job!.state]} className="nav-action"
-              style={{ justifyContent: 'center' }}>{jobLabel(job)}</Badge>}
-            {dock === 'closed' && job && job.log.length > 0 && <Link href="#" size="1" style={{ textAlign: 'center' }} onClick={(event) => { event.preventDefault(); setDock('open'); }}>Show progress</Link>}
-          </Flex>
-          <Separator size="4" />
-          <Text size="1" color="gray">{session.user} · {roleLabel(gate.role)}</Text>
-          <Flex gap="2" wrap="wrap">
-            <Button size="1" variant={nav === 'user' ? 'solid' : 'soft'} color="gray" onClick={() => go('user')}>User settings</Button>
-            <Button size="1" variant="soft" color="gray" onClick={signOut}>Sign out</Button>
-          </Flex>
-        </Flex>
-      </aside>
+      {phone && (
+        <PhoneTopBar gateName={gateLabel(gate)} workingCopy={workingCopy} job={job} hasCamera={Boolean(cameras)} onOpenGate={openGateSheet}
+          onShowProgress={() => setDock('open')} />
+      )}
+      {phone ? <PhoneMenu open={menu} onOpenChange={setMenu}>{sidebarItems}</PhoneMenu> : <aside className="sidebar" ref={sidebar}>{sidebarItems}</aside>}
       <main className="content">
         {readOnly && nav !== 'user' && (
           <Callout.Root color="gray" mb="4">
             <Callout.Text>Read only: you can look at everything, pull from the gate and use the cameras. Ask a gate admin to make changes.</Callout.Text>
           </Callout.Root>
         )}
-        {error && <Callout.Root color="red" mb="4"><Callout.Text>{error}</Callout.Text></Callout.Root>}
+        {[error, loadError].filter(Boolean).map((text) => <Callout.Root key={text} color="red" mb="4"><Callout.Text>{text}</Callout.Text></Callout.Root>)}
+        {actionInfo && (
+          <Callout.Root color="blue" mb="4">
+            <Flex align="center" gap="3"><Callout.Text>{actionInfo}</Callout.Text><Flex flexGrow="1" />
+              <Button size="1" variant="ghost" color="gray" aria-label="Dismiss" onClick={() => setActionInfo('')}>✕</Button></Flex>
+          </Callout.Root>
+        )}
         <ReadOnlyContext.Provider value={readOnly}>
-          {readOnly && EDIT_PAGES.includes(nav) ? <fieldset disabled className="readonly-page">{page}</fieldset> : page}
+          <WorkingCopySavedContext.Provider value={loadData}>
+            {readOnly && EDIT_PAGES.includes(nav) ? <fieldset disabled className="readonly-page">{page}</fieldset> : page}
+          </WorkingCopySavedContext.Provider>
         </ReadOnlyContext.Provider>
       </main>
+      {phone && (
+        <>
+          <PhoneTabBar page={nav} menuOpen={menu} gateOpen={gateSheet} running={running} onGo={go} onOpenGate={openGateSheet}
+            onOpenMore={() => { setGateSheet(false); setMenu(true); }} />
+          <GateSheet open={gateSheet} onOpenChange={setGateSheet} gapi={gapi} job={job} readOnly={readOnly} workingCopy={workingCopy}
+            hasWorkingCopy={Boolean(residents)} onPull={pull} onShowProgress={() => setDock('open')} onLiveRelays={() => go('relays')}
+            onReset={afterReset} onJobStarted={jobStarted} onNotify={setActionInfo} />
+        </>
+      )}
       <JobDock job={job} state={dock} onState={setDock} />
-      <SnapViewer t={viewing} snaps={snaps} onClose={() => setViewing(null)} />
+      <SnapViewer transaction={viewing} snaps={snaps} onClose={() => setViewing(null)} />
       {cameras && <LiveView phone={gate.phoneNumber} settings={cameras} />}
     </div>
   );

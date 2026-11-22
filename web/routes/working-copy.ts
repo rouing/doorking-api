@@ -2,15 +2,18 @@
 import fs from 'node:fs';
 import * as dk from '../../index.ts';
 import type { GatePrefs } from '../../src/types.ts';
+import type { Modules } from '../modules.ts';
 import { G, type Route, route, webOnly } from '../routing.ts';
-import type { ContextModule } from '../context.ts';
-import type { EditingModule } from '../editing.ts';
-import type { JobsModule } from '../jobs.ts';
-import type { SnapshotsModule } from '../snapshots.ts';
 import { logger } from '../../src/logging.ts';
 
-export function workingCopyRoutes(deps: ContextModule & EditingModule & JobsModule & SnapshotsModule): Route[] {
-  const { commandRelays, currentJob, dropQueuedSchedules, forgetJob, gateSettings, logChange, pick, PREF_LABELS, prefsOf, revertEvent, same, savePrefs, scheduleRunningFor, saveSettings, sendFile, serial, snapRuns, store, withHistory, workingBuffers } = deps;
+export function workingCopyRoutes(modules: Modules): Route[] {
+  const { prefsOf, serial, store } = modules.context;
+  const {
+    commandRelays, gateSettings, logChange, pick, PREF_LABELS, revertEvent, same, savePrefs, saveSettings,
+    sendFile, withHistory, workingBuffers
+  } = modules.editing;
+  const { forgetSnapRun, snapRunOf, snapshotWorkFor } = modules.snapshots;
+  const { busy, dropQueuedSchedules, forgetJob, scheduleRunningFor } = modules.jobs;
   return [
     // Gate settings in the working copy's names.bin. PUT body: { <field key>: value, ... }.
     route('GET', `${G}/settings`, 'gate', ({ gate }) => gateSettings(gate.phoneNumber)),
@@ -24,7 +27,7 @@ export function workingCopyRoutes(deps: ContextModule & EditingModule & JobsModu
       { summary: 'Reset the working copy to the gate (unsent changes dropped)' }, async () => [200, await dk.resetCache(store, gate.phoneNumber)])),
     route('POST', `${G}/working-copy/conflicts`, 'gate-admin', ({ session, gate, body }) => withHistory(session, gate,
       { summary: `${body.choice === 'gate' ? 'Took the gate\'s value' : 'Kept my change'} for a conflict (${String(body.kind)} ${String(body.key)})` },
-      async () => [200, await dk.resolveConflict(store, gate.phoneNumber, body.kind, body.key, body.choice)])),
+      async () => [200, await dk.resolveConflict(store, gate.phoneNumber, { kind: body.kind, key: body.key, choice: body.choice })])),
     route('GET', `${G}/files/:name`, 'gate-admin', async ({ gate, params, res }) => { await sendFile(res, gate.phoneNumber, params.name); }),
 
     // Gate-scoped local preferences (relay labels, Device Association, gate config), keyed by phone number.
@@ -54,20 +57,23 @@ export function workingCopyRoutes(deps: ContextModule & EditingModule & JobsModu
 
     // Deletes everything stored about the gate: its database rows (every user's gate-list entry, prefs, history,
     // schedules, camera settings, snapshot log, notes, transaction history) and its folder (pulled files, working
-    // copy, camera pictures). Nothing on the gate changes. Body: { confirm: true }.
-    webOnly(route('POST', `${G}/delete-data`, 'gate-admin', async ({ session, gate, body }) => {
+    // copy, camera pictures). Nothing on the gate changes. Body: { confirm: true }. Runs after the gate's queued edits,
+    // and is refused while anything else works on the gate (its connection or a relay call on its DKS login, snapshots).
+    webOnly(route('POST', `${G}/delete-data`, 'gate-admin', ({ session, gate, body }) => serial(gate.phoneNumber, async () => {
       if (body.confirm !== true) return [400, { error: 'Deleting the gate\'s data must be confirmed' }];
-      if (currentJob(gate.phoneNumber).state === 'running') return [409, { error: 'Wait for the gate connection to finish' }];
-      if (snapRuns.get(gate.phoneNumber)?.state === 'running') return [409, { error: 'Stop the snapshot run first' }];
+      const refused = busy(gate);
+      if (refused) return refused;
+      if (snapRunOf(gate.phoneNumber)?.state === 'running') return [409, { error: 'Stop the snapshot run first' }];
+      if (snapshotWorkFor(gate.phoneNumber)) return [409, { error: 'Wait for the camera pictures to finish updating' }];
       if (scheduleRunningFor(gate.phoneNumber)) return [409, { error: 'Wait for the scheduled transfer to finish' }];
       dropQueuedSchedules(gate.phoneNumber);
       const removed = await dk.deleteGateData(store, gate.phoneNumber);
-      snapRuns.delete(gate.phoneNumber);
+      forgetSnapRun(gate.phoneNumber);
       forgetJob(gate.phoneNumber);
       let files = '';
       try { fs.rmSync(gate.dir, { recursive: true, force: true }); } catch (err) { files = (err as Error).message; }
       logger('gates')[files ? 'warn' : 'info']`${session.user} deleted all stored data of gate ${gate.phoneNumber}: ${JSON.stringify(removed)}${files ? `; files not all deleted: ${files}` : ''}`;
       return [200, { removed, ...(files && { filesError: files }) }];
-    })),
+    }))),
   ];
 }

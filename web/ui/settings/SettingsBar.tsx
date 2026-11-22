@@ -1,8 +1,7 @@
-import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { Box, Button, Callout, Flex, Text, TextField } from '@radix-ui/themes';
-import type { GateSettingRow, SendPreview } from '../../../src/types.ts';
+import type { GateSettingRow } from '../../../src/types.ts';
 import { errorText, type GateApi } from '../api.ts';
-import { useConfirm } from '../Confirm.tsx';
 import { ConflictList } from '../panes/WorkingCopyBar.tsx';
 import { gsShow, type GateSettings } from './useGateSettings.ts';
 
@@ -46,10 +45,16 @@ function useFitWidth(input: RefObject<HTMLInputElement | null>, max: number | nu
   return width;
 }
 
+interface SettingInputProps {
+  settings: GateSettings;
+  setting: GateSettingRow;
+  invalid?: string;
+}
+
 // One input for a gate setting, coloured and with hover text as above. Text settings (display messages) are wide
 // enough for the most characters the gate accepts (in a fixed-width font, like the gate's LCD) and stop at it.
 // invalid: a reason the value can't be saved (red, and shown first in the hover text).
-export function SettingInput({ gs: settings, s: setting, invalid }: { gs: GateSettings; s: GateSettingRow; invalid?: string }) {
+export function SettingInput({ settings, setting, invalid }: SettingInputProps) {
   const max = setting.maxLength;
   const ref = useRef<HTMLInputElement>(null);
   const fit = useFitWidth(ref, max);
@@ -66,54 +71,33 @@ export function SettingInput({ gs: settings, s: setting, invalid }: { gs: GateSe
   );
 }
 
-// Save / Discard / Reset to gate / Send to gate for the gate settings, the working-copy file links and the
-// result of the last action. blocked: why the edits can't be saved yet (Save is disabled).
-export function SettingsBar({ gs: settings, gapi, onReload, onJobStarted, blocked }: {
-  gs: GateSettings; gapi: GateApi; onReload: () => Promise<void> | void; onJobStarted: () => void; blocked?: string;
-}) {
-  const [result, setResult] = useState<{ title: string; lines: string[] } | null>(null);
-  const [dialog, confirm] = useConfirm();
-  const n = Object.keys(settings.edits).length;
+// The outcome of the bar's last action.
+interface Result { title: string; lines: string[]; color: 'blue' | 'red' }
+
+interface SettingsBarProps {
+  settings: GateSettings;
+  gapi: GateApi;
+  onReload: () => Promise<void> | void;
+  blocked?: string;
+}
+
+// Save / Discard for the gate settings, the working copy's state and the result of the last action (Reset to gate and
+// Send to gate are in the sidebar's gate connection). blocked: why the edits can't be saved yet (Save is disabled).
+export function SettingsBar({ settings, gapi, onReload, blocked }: SettingsBarProps) {
+  const [result, setResult] = useState<Result | null>(null);
+  const unsaved = Object.keys(settings.edits).length;
   const loaded = Boolean(settings.reply);
 
   const save = async () => {
     try {
-      const r = await settings.save();
-      setResult({ title: `Saved to the working copy. Block(s) differing from the gate: ${r.changedBlocks.join(', ') || 'none'}`,
-        lines: r.changed.map((c) => `${c.name}: "${c.from}" → "${c.to}"`) });
-      await onReload();
-    } catch (err) { setResult({ title: 'Save failed', lines: [errorText(err)] }); }
-  };
-
-  const reset = async () => {
-    if (!await confirm({ title: 'Reset to gate?', action: 'Reset', color: 'red',
-      body: 'Throw away every change not sent to the gate (on every page), so the working copy matches what the gate holds?' })) return;
-    try {
-      await gapi('DELETE', '/working-copy');
-      settings.discard();
-      setResult({ title: 'Working copy reset to the gate', lines: [] });
-      await settings.load();
-      await onReload();
-    } catch (err) { setResult({ title: 'Reset failed', lines: [errorText(err)] }); }
-  };
-
-  const send = async () => {
-    let preview: SendPreview;
-    try { preview = await gapi<SendPreview>('GET', '/send'); } catch (err) { setResult({ title: 'Send not possible', lines: [errorText(err)] }); return; }
-    const blocks = Object.entries(preview.changedBlocks).filter(([, b]) => b.length);
-    const lines: ReactNode[] = ['This changes the gate.', ...settings.changes, ...blocks.map(([f, b]) => `${f}: block(s) ${b.join(', ')}`),
-      `Resident / vendor counts (from names.bin): ${preview.residentCounts.join(', ')}`, 'A residents pull runs afterwards to check the gate.'];
-    if (!await confirm({ title: 'Send the working copy to the gate?', action: 'Send to gate',
-      body: <Flex direction="column" gap="1">{lines.map((line, i) => <Text key={i}>{line}</Text>)}</Flex> })) return;
-    try {
-      await gapi('POST', '/send', { confirm: true });
-      setResult({ title: 'Sending to the gate; progress is shown in the gate connection window', lines: [] });
-      onJobStarted();
-    } catch (err) { setResult({ title: 'Send failed', lines: [errorText(err)] }); }
+      const saved = await settings.save();
+      setResult({ title: `Saved to the working copy. Block(s) differing from the gate: ${saved.changedBlocks.join(', ') || 'none'}`,
+        lines: saved.changed.map((change) => `${change.name}: "${change.from}" → "${change.to}"`), color: 'blue' });
+    } catch (err) { setResult({ title: 'Save failed', lines: [errorText(err)], color: 'red' }); }
   };
 
   const status = !loaded ? settings.error : [
-    n ? `${n} unsaved change(s)` : 'No unsaved changes',
+    unsaved ? `${unsaved} unsaved change(s)` : 'No unsaved changes',
     settings.pending.length ? `${settings.pending.length} setting(s) saved, not sent (block(s) ${settings.blocks.join(', ')})` : '',
     `gate pulled ${new Date(settings.reply!.pulled).toLocaleString()}`,
     settings.pending.length ? `working copy saved ${new Date(settings.reply!.saved).toLocaleString()}` : '',
@@ -121,23 +105,17 @@ export function SettingsBar({ gs: settings, gapi, onReload, onJobStarted, blocke
 
   return (
     <Flex direction="column" gap="2">
-      {dialog}
       <Text size="2" color="gray">
         Edits go to the working copy (blue = unsaved, green = saved but not sent to the gate). Hover a value to see the gate's value.
       </Text>
       <Flex gap="2" wrap="wrap" align="center">
-        <Button onClick={save} disabled={!loaded || !n || Boolean(blocked)} title={blocked}>Save to working copy</Button>
-        <Button variant="soft" color="gray" onClick={() => { settings.discard(); setResult(null); }} disabled={!loaded || !n}>Discard unsaved</Button>
-        <Button variant="soft" color="gray" onClick={reset} disabled={!loaded || (!settings.pending.length && !settings.blocks.length)}>Reset to gate</Button>
-        <Button variant="soft" onClick={send} disabled={!loaded || n > 0 || !settings.blocks.length || settings.conflicts.length > 0}
-          title={n ? 'Save or discard unsaved changes first' : settings.conflicts.length ? 'Decide the conflicts first' : 'Send the working copy to the gate'}>
-          Send to gate
-        </Button>
+        <Button onClick={save} disabled={!loaded || !unsaved || Boolean(blocked)} title={blocked}>Save to working copy</Button>
+        <Button variant="soft" color="gray" onClick={() => { settings.discard(); setResult(null); }} disabled={!loaded || !unsaved}>Discard unsaved</Button>
       </Flex>
       <Text size="2" color="gray">{status}</Text>
       <ConflictList conflicts={settings.conflicts} gapi={gapi} onDecided={async () => { await settings.load(); await onReload(); }} />
       {result && (
-        <Callout.Root color={result.title.includes('failed') || result.title.includes('not possible') ? 'red' : 'blue'}>
+        <Callout.Root color={result.color}>
           <Callout.Text><strong>{result.title}</strong></Callout.Text>
           {result.lines.length > 0 && <Box asChild><ul style={{ margin: 0 }}>{result.lines.map((line, i) => <li key={i}>{line}</li>)}</ul></Box>}
         </Callout.Root>

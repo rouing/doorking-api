@@ -4,13 +4,17 @@ import type { Schedule, ScheduleAction, SchedulesReply } from '../../../src/type
 import { errorText, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { fmtTime } from '../format.ts';
+import { SCHEDULE_ACTIONS } from '../../../src/shared.ts';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const ACTION_ORDER: ScheduleAction[] = ['send', 'residents', 'transactions', 'snapshots'];
 
-// This gate's scheduled transfers (days 0-6 = Sun-Sat, 24-hour time), run by the server with the DKS password of
-// the user who last saved each entry.
-export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
+interface SchedulesProps {
+  gapi: GateApi;
+  video: boolean;
+}
+
+// This gate's scheduled transfers (days 0-6 = Sun-Sat, 24-hour time), run by the server with the gate's DKS login.
+export function Schedules({ gapi, video }: SchedulesProps) {
   const NAMES: Record<ScheduleAction, string> = { send: 'Send to gate', residents: 'Pull residents', transactions: 'Pull transactions',
     snapshots: video ? 'Camera videos' : 'Camera snapshots' };
   const LABELS: Record<ScheduleAction, string> = { send: 'Send working copy to gate', residents: 'Pull residents',
@@ -34,25 +38,25 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
   }, [gapi]);
   useEffect(() => { load(); }, [load]);
 
-  const fill = (e: Schedule | null) => {
-    setEditing(e ? e.id : null);
-    setDays(e ? e.days : [0, 1, 2, 3, 4, 5, 6]);
-    setTime(e ? e.time : '02:00');
-    setActions(e ? e.actions : ['transactions']);
-    setEnabled(e ? e.enabled : true);
+  const fill = (schedule: Schedule | null) => {
+    setEditing(schedule ? schedule.id : null);
+    setDays(schedule ? schedule.days : [0, 1, 2, 3, 4, 5, 6]);
+    setTime(schedule ? schedule.time : '02:00');
+    setActions(schedule ? schedule.actions : ['transactions']);
+    setEnabled(schedule ? schedule.enabled : true);
     setFormInfo('');
   };
-  const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...list.filter((x) => x !== v), v] : list.filter((x) => x !== v));
+  const toggle = <T,>(list: T[], item: T, on: boolean) => (on ? [...list.filter((other) => other !== item), item] : list.filter((other) => other !== item));
 
   async function save() {
-    const body = { days: [...days].sort((a, b) => a - b), time, actions: ACTION_ORDER.filter((a) => actions.includes(a)), enabled };
+    const body = { days: [...days].sort((a, b) => a - b), time, actions: SCHEDULE_ACTIONS.filter((action) => actions.includes(action)), enabled };
     if (body.actions.includes('send') && !await confirm({ title: 'Save this schedule?', action: 'Save',
       body: 'This schedule sends the working copy to the gate without asking.' })) return;
     setFormInfo('Saving…');
     try {
       await (editing ? gapi('PUT', `/schedules/${encodeURIComponent(editing)}`, body) : gapi('POST', '/schedules', body));
       fill(null);
-      setFormInfo('Saved. Your DKS password is stored for scheduled transfers.');
+      setFormInfo('Saved. It runs with the gate\'s DKS login.');
       await load();
     } catch (err) { setFormInfo(`Save failed: ${errorText(err)}`); }
   }
@@ -84,9 +88,9 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
           <Heading size="3">{editing ? 'Edit schedule' : 'Add a schedule'}</Heading>
           <Flex gap="3" align="center" wrap="wrap">
             <Text size="2" weight="medium">Days:</Text>
-            {DAYS.map((d, i) => (
-              <Text key={d} as="label" size="2"><Flex gap="1" align="center">
-                <Checkbox checked={days.includes(i)} onCheckedChange={(v) => setDays(toggle(days, i, v === true))} />{d}
+            {DAYS.map((day, i) => (
+              <Text key={day} as="label" size="2"><Flex gap="1" align="center">
+                <Checkbox checked={days.includes(i)} onCheckedChange={(checked) => setDays(toggle(days, i, checked === true))} />{day}
               </Flex></Text>
             ))}
           </Flex>
@@ -94,16 +98,16 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
             <Text size="2" weight="medium">Time</Text>
             <TextField.Root type="time" value={time} onChange={(event) => setTime(event.target.value)} />
             <Text size="2" weight="medium">Transfers:</Text>
-            {ACTION_ORDER.map((a) => (
-              <Text key={a} as="label" size="2"><Flex gap="1" align="center">
-                <Checkbox checked={actions.includes(a)} onCheckedChange={(v) => setActions(toggle(actions, a, v === true))} />{LABELS[a]}
+            {SCHEDULE_ACTIONS.map((action) => (
+              <Text key={action} as="label" size="2"><Flex gap="1" align="center">
+                <Checkbox checked={actions.includes(action)} onCheckedChange={(checked) => setActions(toggle(actions, action, checked === true))} />{LABELS[action]}
               </Flex></Text>
             ))}
             <Text as="label" size="2"><Flex gap="1" align="center">
-              <Checkbox checked={enabled} onCheckedChange={(v) => setEnabled(v === true)} />Enabled
+              <Checkbox checked={enabled} onCheckedChange={(checked) => setEnabled(checked === true)} />Enabled
             </Flex></Text>
           </Flex>
-          <Flex gap="3" align="center">
+          <Flex gap="3" align="center" wrap="wrap">
             <Button onClick={save}>Save schedule</Button>
             {editing && <Button variant="soft" color="gray" onClick={() => fill(null)}>Cancel edit</Button>}
             <Text size="2" color="gray">{formInfo}</Text>
@@ -112,15 +116,15 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
       </Card>
       <Card>
         <Heading size="3" mb="2">Schedules for this gate</Heading>
-        <Flex gap="3" align="center" mb="2">
+        <Flex gap="3" align="center" wrap="wrap" mb="2">
           <Button variant="soft" color="gray" onClick={load}>Refresh</Button>
           <Text size="2" color="gray">{info}</Text>
         </Flex>
         <Table.Root size="1">
           <Table.Header>
             <Table.Row>
-              {['Days', 'Time', 'Transfers', 'Enabled', 'Saved by', 'Next run', 'Last run', 'Last result', ''].map((h, i) => (
-                <Table.ColumnHeaderCell key={i}>{h}</Table.ColumnHeaderCell>))}
+              {['Days', 'Time', 'Transfers', 'Enabled', 'Saved by', 'Next run', 'Last run', 'Last result', ''].map((header, i) => (
+                <Table.ColumnHeaderCell key={i}>{header}</Table.ColumnHeaderCell>))}
             </Table.Row>
           </Table.Header>
           <Table.Body>
@@ -132,7 +136,7 @@ export function Schedules({ gapi, video }: { gapi: GateApi; video: boolean }) {
                   color: schedule.enabled ? undefined : 'var(--gray-10)' }}>
                   <Table.Cell>{schedule.days.length === 7 ? 'Every day' : schedule.days.map((day) => DAYS[day]).join(', ')}</Table.Cell>
                   <Table.Cell>{schedule.time}</Table.Cell>
-                  <Table.Cell>{schedule.actions.map((a) => NAMES[a]).join(', ')}</Table.Cell>
+                  <Table.Cell>{schedule.actions.map((action) => NAMES[action]).join(', ')}</Table.Cell>
                   <Table.Cell>{schedule.enabled ? 'Yes' : 'No'}</Table.Cell>
                   <Table.Cell>{schedule.user}</Table.Cell>
                   <Table.Cell>{fmtTime(schedule.nextRun)}</Table.Cell>

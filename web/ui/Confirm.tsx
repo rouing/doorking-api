@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { AlertDialog, Box, Button, Flex, Text } from '@radix-ui/themes';
+import { useBackLayer } from './back.ts';
 
 interface Ask { title: string; body?: ReactNode; action: string; color?: 'red' | 'blue' }
 
@@ -8,8 +9,9 @@ interface Ask { title: string; body?: ReactNode; action: string; color?: 'red' |
 export function useConfirm(): [ReactNode, (ask: Ask) => Promise<boolean>] {
   const [ask, setAsk] = useState<Ask | null>(null);
   const resolve = useRef<(ok: boolean) => void>(() => {});
-  const confirm = useCallback((a: Ask) => new Promise<boolean>((res) => { resolve.current = res; setAsk(a); }), []);
+  const confirm = useCallback((ask: Ask) => new Promise<boolean>((res) => { resolve.current = res; setAsk(ask); }), []);
   const close = (ok: boolean) => { setAsk(null); resolve.current(ok); };
+  useBackLayer(ask !== null, () => close(false));
   const dialog = (
     <AlertDialog.Root open={ask !== null} onOpenChange={(open) => { if (!open) close(false); }}>
       <AlertDialog.Content maxWidth="520px" aria-describedby={undefined}>

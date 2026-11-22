@@ -9,6 +9,7 @@ export const HELP: Record<string, string> = {
   gateRole: 'Admin: can change everything, including the gate\'s users and DKS login. Read only: can look at everything, pull from the gate and watch the cameras, but can\'t change anything.',
 
   // Working copy
+  approvalCode: 'Adding a passkey here when your passkey is on another device: on that device, open User Settings → Passkeys, click Approve another device and type its code here (or scan its QR code with this device\'s camera). The code works once, for 10 minutes.',
   workingCopy: 'Your changes are kept on this computer (the working copy) until you click Send to gate. Each pull from the gate updates it, with your unsent changes kept on top; something changed both at the gate and here is listed to decide (Keep mine or Take the gate\'s). Reset to gate throws away every change you have not sent.',
 
   // Gate configuration

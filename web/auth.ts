@@ -1,4 +1,5 @@
 // Sign-in helpers: rate limits, sessions, step-up and re-confirmation, passkey relying party, single sign-on, allowed hosts.
+import crypto from 'node:crypto';
 import http from 'node:http';
 import type { IncomingMessage } from 'node:http';
 import * as dk from '../index.ts';
@@ -14,7 +15,7 @@ export function createAuth(deps: ContextModule) {
   const requestTimes = new Map<string, number[]>();
   const RESET_PER_ACCOUNT = 3;
   const PER_ADDRESS = 30;
-  const recentRequests = (key: string): number[] => (requestTimes.get(key) || []).filter((t) => Date.now() - t < SIGN_IN_WINDOW_MS);
+  const recentRequests = (key: string): number[] => (requestTimes.get(key) || []).filter((time) => Date.now() - time < SIGN_IN_WINDOW_MS);
   // Records a request; true when the key already had limit requests in the window (the request is refused).
   function overLimit(key: string, limit: number): boolean {
     const list = recentRequests(key);
@@ -25,12 +26,29 @@ export function createAuth(deps: ContextModule) {
   const clientIp = (req: IncomingMessage): string => dk.clientAddress(req.socket.remoteAddress, req.headers['x-forwarded-for']);
   // While no account exists, creating the first one needs this code, printed only to the server's console (journalctl),
   // so a stranger reaching a fresh public install can't claim it first.
-  const setup = { code: '' }; // the first-account setup code while no account exists
+  const setup = { code: '', running: false }; // the first-account setup code while no account exists; running: one being created
+  // A new setup code (printed to the console by Application while no account exists).
+  function newSetupCode(): string {
+    setup.code = crypto.randomBytes(5).toString('hex');
+    return setup.code;
+  }
+  const setupCodeMatches = (given: unknown): boolean => {
+    const code = Buffer.from(String(given || '').trim().toLowerCase());
+    return Boolean(setup.code) && code.length === Buffer.byteLength(setup.code) && crypto.timingSafeEqual(code, Buffer.from(setup.code));
+  };
+  const endSetup = () => { setup.code = ''; };
+  // Runs the first-account setup one request at a time (null: one is already running).
+  async function oneSetupAtATime<T>(fn: () => Promise<T>): Promise<T | null> {
+    if (setup.running) return null;
+    setup.running = true;
+    try { return await fn(); } finally { setup.running = false; }
+  }
+  const approvals = new dk.PasskeyApprovals(); // codes from a signed-in device that let another device add a passkey
   const failedSignIns = new Map<string, number[]>(); // key (see signInKeys) -> times of recent failed password tries
-  const recentFailures = (user: string): number[] => (failedSignIns.get(user) || []).filter((t) => Date.now() - t < SIGN_IN_WINDOW_MS);
+  const recentFailures = (user: string): number[] => (failedSignIns.get(user) || []).filter((time) => Date.now() - time < SIGN_IN_WINDOW_MS);
   // Failed sign-in limits (dk.signInKeys); "me:<user>" counts the signed-in user's own password checks (confirmOwnPassword).
   const signInKeys = (user: string, ip: string) => dk.signInKeys(user, ip, MAX_FAILED_SIGN_INS);
-  const blocked = (keys: [string, number][]) => keys.some(([k, n]) => recentFailures(k).length >= n);
+  const blocked = (keys: [string, number][]) => keys.some(([k, limit]) => recentFailures(k).length >= limit);
   // Counts a password try as failed before it is checked, so tries sent at the same moment can't all pass the limit.
   // Returns a function that takes the try back (the password was right, or the check failed with an error).
   function countTry(keys: [string, number][]): () => void {
@@ -44,6 +62,8 @@ export function createAuth(deps: ContextModule) {
       }
     };
   }
+  // Forgets the failed sign-ins of a user name from one address (after a sign-in that worked there).
+  const clearFailedSignIn = (user: string, ip: string) => { failedSignIns.delete(`${user}|${ip}`); };
   // Forgets an account's failed sign-ins (after a password reset).
   function clearFailures(user: string): void {
     for (const k of [...failedSignIns.keys()]) if (k === user || k.startsWith(`${user}|`) || k === `me:${user}`) failedSignIns.delete(k);
@@ -55,15 +75,22 @@ export function createAuth(deps: ContextModule) {
     } catch (err) { logger('session').error`Session sweep failed: ${(err as Error).message}`; }
     for (const k of failedSignIns.keys()) if (!recentFailures(k).length) failedSignIns.delete(k);
     for (const k of requestTimes.keys()) if (!recentRequests(k).length) requestTimes.delete(k);
+    approvals.sweep();
   }
   async function currentSession(req: IncomingMessage): Promise<Session | null> {
     const match = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '');
     if (!match) return null;
-    const s = await dk.findSession(store, match[1], IDLE_MS, MAX_AGE_MS);
-    if (!s) return null;
-    const user = await dk.getUser(store, s.username);
+    const found = await dk.findSession(store, match[1], IDLE_MS, MAX_AGE_MS);
+    if (!found) return null;
+    const user = await dk.getUser(store, found.username);
     if (!user) return null;
-    return { tokenHash: s.tokenHash, user: user.username, gate: s.gate, mustChangePassword: user.mustChangePassword, strongAt: s.strongAt, signedInAt: s.createdAt };
+    // A linked provider that turns passwords off: the password can't be changed there, so it isn't asked for.
+    let mustChangePassword = user.mustChangePassword;
+    if (mustChangePassword && await passwordOff(user.username)) {
+      await dk.clearMustChangePassword(store, user.username);
+      mustChangePassword = false;
+    }
+    return { tokenHash: found.tokenHash, user: user.username, gate: found.gate, mustChangePassword, strongAt: found.strongAt, signedInAt: found.createdAt };
   }
   // Until when the session's passkey confirmation covers the sensitive actions (ms), or null.
   const strongUntil = (session: Session): number | null => (session.strongAt && session.strongAt + STEP_UP_MS > Date.now() ? session.strongAt + STEP_UP_MS : null);
@@ -79,12 +106,15 @@ export function createAuth(deps: ContextModule) {
   // alone isn't enough; dk.reauthNeeded decides how. Returns the refusal, or null.
   const SIGN_IN_AGAIN = `For your security, sign out and sign in again, then make this change within ${STEP_UP_MS / 60000} minutes.`;
   const LOST_PASSKEY = ` Lost your passkey? Reset your password with the email link, sign in, and change your passkeys within ${STEP_UP_MS / 60000} minutes.`;
-  async function reauthRefusal(session: Session, change: dk.ReauthChange, given?: unknown): Promise<Reply | null> {
+  async function reauthNeed(session: Session, change: dk.ReauthChange): Promise<dk.Reauth> {
     const user = (await dk.getUser(store, session.user))!;
-    const need = dk.reauthNeeded({
+    return dk.reauthNeeded({
       strong: Boolean(strongUntil(session)), hasPassword: user.hasPassword, passkeys: (await dk.listPasskeys(store, session.user)).length,
       signedInAt: session.signedInAt, resetAt: user.resetAt ? new Date(user.resetAt).getTime() : null, now: Date.now(), windowMs: STEP_UP_MS,
     }, change);
+  }
+  async function reauthRefusal(session: Session, change: dk.ReauthChange, given?: unknown): Promise<Reply | null> {
+    const need = await reauthNeed(session, change);
     if (need === 'ok') return null;
     if (need === 'password') return confirmOwnPassword(session.user, given);
     if (need === 'step-up') return stepUpRefusal(session, change === 'email' ? '' : LOST_PASSKEY);
@@ -94,14 +124,16 @@ export function createAuth(deps: ContextModule) {
     notifyAccess: user.notifyAccess, notifyAlerts: user.notifyAlerts });
   // The site name passkeys are tied to for this request: the public name (over HTTPS), or localhost on the server
   // itself; null for any other host (such as 127.0.0.1, which WebAuthn doesn't accept).
+  const challenges = new dk.PasskeyChallenges(); // this server's passkey challenges
   function relyingParty(req: IncomingMessage): dk.RelyingParty | null {
     const host = (req.headers.host || '').toLowerCase();
-    if (PUBLIC_HOST && host === PUBLIC_HOST) return { rpID: PUBLIC_HOST, origin: `https://${PUBLIC_HOST}` };
-    if (host === `localhost:${PORT}`) return { rpID: 'localhost', origin: `http://localhost:${PORT}` };
+    if (PUBLIC_HOST && host === PUBLIC_HOST) return { rpID: PUBLIC_HOST, origin: `https://${PUBLIC_HOST}`, challenges };
+    if (host === `localhost:${PORT}`) return { rpID: 'localhost', origin: `http://localhost:${PORT}`, challenges };
     return null;
   }
   // Single sign-on providers (config.json sso.providers; src/sso.ts).
   const SSO = config.sso.providers;
+  const ssoFlows = new dk.SsoFlows(); // this server's sign-ins in progress
   const SSO_LIST = SSO.map((provider) => ({ id: provider.id, name: provider.name }));
   const providerOf = (id: unknown) => SSO.find((provider) => provider.id === id);
   // Where a provider sends the browser back: like passkeys, the public name over HTTPS, or localhost on the server.
@@ -140,7 +172,7 @@ export function createAuth(deps: ContextModule) {
   const isPublic = (req: http.IncomingMessage) => Boolean(PUBLIC_HOST) && (req.headers.host || '').toLowerCase() === PUBLIC_HOST;
   // Session cookie attributes; Secure when the page came through the public HTTPS name.
   const cookieAttrs = (req: http.IncomingMessage) => `; HttpOnly; SameSite=Strict; Path=/${isPublic(req) ? '; Secure' : ''}`;
-  return { RESET_PER_ACCOUNT, PER_ADDRESS, overLimit, clientIp, setup, failedSignIns, signInKeys, blocked, countTry, clearFailures, sweepSessions, currentSession, strongUntil, stepUpRefusal, reauthRefusal, meReply, relyingParty, SSO, SSO_LIST, providerOf, ssoRedirect, NO_SSO_SITE, ssoCookie, cookieValue, confirmOwnPassword, passwordOff, NO_PASSKEY_SITE, ALLOWED_HOSTS, ALLOWED_ORIGINS, cookieAttrs };
+  return { approvals, reauthNeed, RESET_PER_ACCOUNT, PER_ADDRESS, overLimit, clientIp, newSetupCode, setupCodeMatches, endSetup, oneSetupAtATime, clearFailedSignIn, signInKeys, blocked, countTry, clearFailures, sweepSessions, currentSession, strongUntil, stepUpRefusal, reauthRefusal, meReply, relyingParty, SSO, SSO_LIST, providerOf, ssoFlows, ssoRedirect, NO_SSO_SITE, ssoCookie, cookieValue, confirmOwnPassword, passwordOff, NO_PASSKEY_SITE, ALLOWED_HOSTS, ALLOWED_ORIGINS, cookieAttrs };
 }
 
 export type AuthModule = ReturnType<typeof createAuth>;

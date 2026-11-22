@@ -9,8 +9,13 @@ import { Passkeys } from './Passkeys.tsx';
 import { SingleSignOn } from './SingleSignOn.tsx';
 import { PasswordForm } from './passwords.tsx';
 
+interface UserSettingsProps {
+  session: SignedIn;
+  onSaved: () => void;
+}
+
 // The signed-in user's own settings: dark mode, email and password. onSaved reloads the session (dark mode).
-export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved: () => void }) {
+export function UserSettings({ session, onSaved }: UserSettingsProps) {
   const [email, setEmail] = useState(session.pendingEmail || session.email);
   const [emailPassword, setEmailPassword] = useState('');
   const [phone, setPhone] = useState(fmtIntlPhone(session.phone));
@@ -27,6 +32,7 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
   const save = async (body: Record<string, unknown>, done: string) => {
     try {
       const reply = await api<{ warning?: string }>('PUT', '/api/me', body);
+      setEmailPassword('');
       setInfo(reply.warning || done);
       onSaved();
     } catch (err) { setInfo(`Not saved: ${errorText(err)}`); }
@@ -44,7 +50,7 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
         <Flex direction="column" gap="3">
           <Heading size="3">Appearance</Heading>
           <Text as="label" size="2"><Flex gap="2" align="center">
-            <Checkbox checked={session.dark} onCheckedChange={(v) => save({ dark: v === true }, '')} /> Dark mode
+            <Checkbox checked={session.dark} onCheckedChange={(checked) => save({ dark: checked === true }, '')} /> Dark mode
           </Flex></Text>
         </Flex>
       </Card>
@@ -68,7 +74,7 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
             <Field label="Your current password"><TextField.Root type="password" value={emailPassword} autoComplete="current-password"
               onChange={(event) => setEmailPassword(event.target.value)} /></Field>
           )}
-          <Flex gap="3" align="center">
+          <Flex gap="3" align="center" wrap="wrap">
             <Button onClick={() => save({ email: next, ...(emailChanges && { password: emailPassword }) }, !next ? 'Email removed.' : next === session.email ? 'Saved.' : `Saved. Open the link we sent to ${next} to confirm it.`)}>Save email</Button>
             <Text size="2" color="gray">{info}</Text>
           </Flex>
@@ -82,7 +88,7 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
             with + and the country code.
           </Text>
           <TextField.Root type="tel" inputMode="tel" value={phone} placeholder="(214) 555-0100 or +44 20 7946 0958" onChange={(event) => setPhone(event.target.value)} />
-          <Flex gap="3" align="center"><Button onClick={savePhone}>Save phone</Button><Text size="2" color="gray">{phoneInfo}</Text></Flex>
+          <Flex gap="3" align="center" wrap="wrap"><Button onClick={savePhone}>Save phone</Button><Text size="2" color="gray">{phoneInfo}</Text></Flex>
         </Flex>
       </Card>
       <Card>
@@ -90,11 +96,11 @@ export function UserSettings({ session, onSaved }: { session: SignedIn; onSaved:
           <Heading size="3">Email notifications</Heading>
           <Text size="2" color="gray">Sent to your confirmed email. Security emails (password or passkey changes, password resets) are always sent.</Text>
           <Text as="label" size="2"><Flex gap="2" align="center">
-            <Checkbox checked={session.notifyAccess} onCheckedChange={(v) => save({ notifyAccess: v === true }, '')} />
+            <Checkbox checked={session.notifyAccess} onCheckedChange={(checked) => save({ notifyAccess: checked === true }, '')} />
             When I'm given access to a gate, removed from one, or my role changes
           </Flex></Text>
           <Text as="label" size="2"><Flex gap="2" align="center">
-            <Checkbox checked={session.notifyAlerts} onCheckedChange={(v) => save({ notifyAlerts: v === true }, '')} />
+            <Checkbox checked={session.notifyAlerts} onCheckedChange={(checked) => save({ notifyAlerts: checked === true }, '')} />
             Gate alerts for gates I'm admin of (a send or scheduled transfer failed)
           </Flex></Text>
         </Flex>

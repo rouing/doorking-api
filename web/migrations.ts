@@ -3,8 +3,9 @@ import * as dk from '../index.ts';
 import type { Modules } from './modules.ts';
 import { logger } from '../src/logging.ts';
 
-export async function runStartupMigrations(deps: Modules): Promise<void> {
-  const { recordGateState, ROOT, store } = deps;
+export async function runStartupMigrations(modules: Modules): Promise<void> {
+  const { ROOT, store } = modules.context;
+  const { recordGateState } = modules.jobs;
   // Once: emails saved before confirmation links existed must be confirmed.
   const unconfirmed = await dk.unconfirmOldEmails(store);
   if (unconfirmed) logger('server').info`${unconfirmed} account email(s) now need confirming (User Settings)`;

@@ -1,8 +1,8 @@
-import { allFF, bcd } from './board-files.ts';
+import { allFF, bcd, BLOCK_SIZE } from './board-files.ts';
+import { httpError } from './errors.ts';
 
 // Gate settings read directly from names.bin (positions from DoorKing32's send builder, FUN_004aad40).
 // Only fields whose position and encoding are confirmed are editable; the rest are shown read-only.
-const BLOCK_SIZE = 128;
 const DISPLAY_LINES_OFFSET = 0x190;
 const HOLIDAY_OFFSET = 0x9c3;
 const HOLIDAY_ROWS = 32;
@@ -17,8 +17,8 @@ export interface GateSetting {
   editable: boolean; secret: boolean; note: string | null; maxLength: number | null;
 }
 
-const toBcd = (n: number): number => ((Math.floor(n / 10) << 4) | (n % 10));
-const ft = (t: FieldType): FieldType => t;
+const toBcd = (value: number): number => ((Math.floor(value / 10) << 4) | (value % 10));
+const fieldType = (type: FieldType): FieldType => type;
 // The bytes of a "? (0x7)" or "? (005da0013491)" value (shown for bytes a type can't name), or null.
 function rawValue(v: string, size: number): Buffer | null {
   const match = /^\? \((0x)?([0-9a-f]+)\)$/i.exec(v);
@@ -32,62 +32,62 @@ const TYPES = {
   text: (size: number): FieldType => ({
     size,
     maxLength: size,
-    decode: (b) => b.toString('latin1').trimEnd(),
-    encode: (v) => {
-      if (v.length > size || !/^[\x20-\x7e]*$/.test(v)) throw new Error(`up to ${size} printable characters`);
-      return Buffer.from(v.padEnd(size), 'latin1');
+    decode: (buffer) => buffer.toString('latin1').trimEnd(),
+    encode: (value) => {
+      if (value.length > size || !/^[\x20-\x7e]*$/.test(value)) throw new Error(`up to ${size} printable characters`);
+      return Buffer.from(value.padEnd(size), 'latin1');
     },
   }),
-  tone: ft({
+  tone: fieldType({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? '' : b[0] >= 1 && b[0] <= 9 ? String(b[0]) : `? (0x${b[0].toString(16)})`),
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff]);
-      if (!/^[1-9]$/.test(v)) throw new Error('a digit 1-9, or blank for none');
-      return Buffer.from([Number(v)]);
+    decode: (buffer) => (buffer[0] === 0xff ? '' : buffer[0] >= 1 && buffer[0] <= 9 ? String(buffer[0]) : `? (0x${buffer[0].toString(16)})`),
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff]);
+      if (!/^[1-9]$/.test(value)) throw new Error('a digit 1-9, or blank for none');
+      return Buffer.from([Number(value)]);
     },
   }),
-  digit: ft({
+  digit: fieldType({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? '' : b[0] <= 9 ? String(b[0]) : `? (0x${b[0].toString(16)})`),
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff]);
-      if (!/^[0-9]$/.test(v)) throw new Error('a digit 0-9, or blank for none');
-      return Buffer.from([Number(v)]);
+    decode: (buffer) => (buffer[0] === 0xff ? '' : buffer[0] <= 9 ? String(buffer[0]) : `? (0x${buffer[0].toString(16)})`),
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff]);
+      if (!/^[0-9]$/.test(value)) throw new Error('a digit 0-9, or blank for none');
+      return Buffer.from([Number(value)]);
     },
   }),
-  code4: ft({
+  code4: fieldType({
     size: 2,
-    decode: (b) => (allFF(b) ? '' : bcd(b) ?? `? (${b.toString('hex')})`),
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff, 0xff]);
-      if (!/^\d{4}$/.test(v)) throw new Error('4 digits, or blank');
-      return Buffer.from(v, 'hex');
+    decode: (buffer) => (allFF(buffer) ? '' : bcd(buffer) ?? `? (${buffer.toString('hex')})`),
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff, 0xff]);
+      if (!/^\d{4}$/.test(value)) throw new Error('4 digits, or blank');
+      return Buffer.from(value, 'hex');
     },
   }),
-  holiday: ft({
+  holiday: fieldType({
     size: 2,
-    decode: (b) => {
-      if (allFF(b)) return '';
-      const m = bcd(b.subarray(0, 1));
-      const d = bcd(b.subarray(1, 2));
-      return m && d ? `${Number(m)}/${Number(d)}` : `? (${b.toString('hex')})`;
+    decode: (buffer) => {
+      if (allFF(buffer)) return '';
+      const month = bcd(buffer.subarray(0, 1));
+      const day = bcd(buffer.subarray(1, 2));
+      return month && day ? `${Number(month)}/${Number(day)}` : `? (${buffer.toString('hex')})`;
     },
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff, 0xff]);
-      const match = /^(\d{1,2})\/(\d{1,2})$/.exec(v);
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff, 0xff]);
+      const match = /^(\d{1,2})\/(\d{1,2})$/.exec(value);
       if (!match || +match[1] < 1 || +match[1] > 12 || +match[2] < 1 || +match[2] > 31) throw new Error('month/day such as 12/25, or blank');
       return Buffer.from([toBcd(+match[1]), toBcd(+match[2])]);
     },
   }),
-  digits: (size: number): FieldType => ({ size, decode: (b) => [...b].map((x) => (x <= 9 ? String(x) : x === 0x0a ? '0' : '')).join('') }),
+  digits: (size: number): FieldType => ({ size, decode: (buffer) => [...buffer].map((byte) => (byte <= 9 ? String(byte) : byte === 0x0a ? '0' : '')).join('') }),
   // Talk time: one byte of seconds (DoorKing32 writes minutes * 60 + seconds), shown as m:ss. 0xFF = unset.
-  seconds: ft({
+  seconds: fieldType({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? '' : `${Math.floor(b[0] / 60)}:${String(b[0] % 60).padStart(2, '0')}`),
-    encode: (v) => {
-      if (v.trim() === '') return Buffer.from([0xff]);
-      const match = /^(?:(\d{1,2}):)?(\d{1,3})$/.exec(v.trim());
+    decode: (buffer) => (buffer[0] === 0xff ? '' : `${Math.floor(buffer[0] / 60)}:${String(buffer[0] % 60).padStart(2, '0')}`),
+    encode: (value) => {
+      if (value.trim() === '') return Buffer.from([0xff]);
+      const match = /^(?:(\d{1,2}):)?(\d{1,3})$/.exec(value.trim());
       const secs = match ? Number(match[1] || 0) * 60 + Number(match[2]) : NaN;
       if (!match || (match[1] !== undefined && Number(match[2]) > 59) || !(secs >= 0 && secs <= 254)) {
         throw new Error('m:ss (or seconds) from 0:00 to 4:14');
@@ -95,80 +95,79 @@ const TYPES = {
       return Buffer.from([secs]);
     },
   }),
-  byte: ft({
+  byte: fieldType({
     size: 1,
-    decode: (b) => String(b[0]),
-    encode: (v) => {
-      if (!/^\d{1,3}$/.test(v) || Number(v) > 255) throw new Error('a number 0-255');
-      return Buffer.from([Number(v)]);
+    decode: (buffer) => String(buffer[0]),
+    encode: (value) => {
+      if (!/^\d{1,3}$/.test(value) || Number(value) > 255) throw new Error('a number 0-255');
+      return Buffer.from([Number(value)]);
     },
   }),
   // Facility code: 16-bit big-endian, 0xFFFF = blank.
-  code16: ft({
+  code16: fieldType({
     size: 2,
-    decode: (b) => (allFF(b) ? '' : String((b[0] << 8) | b[1])),
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff, 0xff]);
-      if (!/^\d{1,5}$/.test(v) || Number(v) > 65535) throw new Error('a number 0-65535, or blank');
-      return Buffer.from([(Number(v) >> 8) & 0xff, Number(v) & 0xff]);
+    decode: (buffer) => (allFF(buffer) ? '' : String((buffer[0] << 8) | buffer[1])),
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff, 0xff]);
+      if (!/^\d{1,5}$/.test(value) || Number(value) > 65535) throw new Error('a number 0-65535, or blank');
+      return Buffer.from([(Number(value) >> 8) & 0xff, Number(value) & 0xff]);
     },
   }),
   // Facility code: stored like code16, but valid codes are 000-255 (DoorKing manual 3.7.1).
-  facility: ft({
+  facility: fieldType({
     size: 2,
-    decode: (b) => (allFF(b) ? '' : String((b[0] << 8) | b[1])),
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff, 0xff]);
-      if (!/^\d{1,3}$/.test(v) || Number(v) > 255) throw new Error('a facility code 0-255, or blank');
-      return Buffer.from([0, Number(v)]);
+    decode: (buffer) => (allFF(buffer) ? '' : String((buffer[0] << 8) | buffer[1])),
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff, 0xff]);
+      if (!/^\d{1,3}$/.test(value) || Number(value) > 255) throw new Error('a facility code 0-255, or blank');
+      return Buffer.from([0, Number(value)]);
     },
   }),
   // On/off flag where 0x00 = on and 0xFF = off (facility codes enable).
-  onoff: ft({
+  onoff: fieldType({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? 'No' : 'Yes'),
-    encode: (v) => Buffer.from([/^(yes|on|1|true)$/i.test(v) ? 0x00 : 0xff]),
+    decode: (buffer) => (buffer[0] === 0xff ? 'No' : 'Yes'),
+    encode: (value) => Buffer.from([/^(yes|on|1|true)$/i.test(value) ? 0x00 : 0xff]),
   }),
   // Hold-open time: hour byte (0x80 set, 0x20 PM, low 5 = BCD hour 1-12) + BCD minute. Value is 24h "HH:MM".
-  holdTime: ft({
+  holdTime: fieldType({
     size: 2,
-    decode: (b) => {
-      if (b[0] === 0xff) return '';
-      const h12 = bcd(Buffer.from([b[0] & 0x1f]));
-      const min = bcd(b.subarray(1, 2));
+    decode: (buffer) => {
+      if (buffer[0] === 0xff) return '';
+      const h12 = bcd(Buffer.from([buffer[0] & 0x1f]));
+      const min = bcd(buffer.subarray(1, 2));
       if (h12 === null || min === null) return '';
-      const h24 = (Number(h12) % 12) + ((b[0] & 0x20) ? 12 : 0);
+      const h24 = (Number(h12) % 12) + ((buffer[0] & 0x20) ? 12 : 0);
       return `${String(h24).padStart(2, '0')}:${min.padStart(2, '0')}`;
     },
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff, 0xff]);
-      const match = /^(\d{1,2}):(\d{2})$/.exec(v);
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff, 0xff]);
+      const match = /^(\d{1,2}):(\d{2})$/.exec(value);
       if (!match || +match[1] > 23 || +match[2] > 59) throw new Error('time as HH:MM (24-hour), or blank');
       const h24 = +match[1];
       const h12 = (h24 % 12) || 12;
       return Buffer.from([0x80 | (h24 >= 12 ? 0x20 : 0) | toBcd(h12), toBcd(+match[2])]);
     },
   }),
-  // Day bitmap: day d (0=Sun..6=Sat) is bit (7-d). Value is a 7-char "0"/"1" string, Sun..Sat. 0xFF = none.
   // Day mask: bit 7 = Sun … bit 1 = Sat, as a 7-char "0"/"1" string. 0xFF = not set: '' (kept apart from 0x00, no days).
-  dayMask: ft({
+  dayMask: fieldType({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? ''
-      : Array.from({ length: 7 }, (_, d) => ((b[0] & (1 << (7 - d))) ? '1' : '0')).join('')),
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff]);
+    decode: (buffer) => (buffer[0] === 0xff ? ''
+      : Array.from({ length: 7 }, (_, day) => ((buffer[0] & (1 << (7 - day))) ? '1' : '0')).join('')),
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff]);
       let byte = 0;
-      for (let d = 0; d < 7; d++) if (v[d] === '1') byte |= 1 << (7 - d);
+      for (let d = 0; d < 7; d++) if (value[d] === '1') byte |= 1 << (7 - d);
       return Buffer.from([byte]);
     },
   }),
   // Elevator bitmap: elevator e (1-8) is bit (e-1). Value is an 8-char "0"/"1" string. 0x00 = none.
-  elevatorMask: ft({
+  elevatorMask: fieldType({
     size: 1,
-    decode: (b) => Array.from({ length: 8 }, (_, e) => ((b[0] & (1 << e)) ? '1' : '0')).join(''),
-    encode: (v) => {
+    decode: (buffer) => Array.from({ length: 8 }, (_, elevator) => ((buffer[0] & (1 << elevator)) ? '1' : '0')).join(''),
+    encode: (value) => {
       let byte = 0;
-      for (let e = 0; e < 8; e++) if (v[e] === '1') byte |= 1 << e;
+      for (let e = 0; e < 8; e++) if (value[e] === '1') byte |= 1 << e;
       return Buffer.from([byte]);
     },
   }),
@@ -178,53 +177,53 @@ const TYPES = {
   textMax: (size: number, max: number): FieldType => ({
     size,
     maxLength: max,
-    decode: (b) => b.toString('latin1').trimEnd(),
-    encode: (v) => {
-      if (v.length > max || !/^[\x20-\x7e]*$/.test(v)) throw new Error(`up to ${max} printable characters`);
-      return Buffer.from(v.padEnd(size), 'latin1');
+    decode: (buffer) => buffer.toString('latin1').trimEnd(),
+    encode: (value) => {
+      if (value.length > max || !/^[\x20-\x7e]*$/.test(value)) throw new Error(`up to ${max} printable characters`);
+      return Buffer.from(value.padEnd(size), 'latin1');
     },
   }),
   // Elevator hold time: one byte of seconds, 0xFF = unset.
-  elevatorSeconds: ft({
+  elevatorSeconds: fieldType({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? '' : String(b[0])),
-    encode: (v) => {
-      if (v === '') return Buffer.from([0xff]);
-      if (!/^\d{1,3}$/.test(v) || Number(v) > 254) throw new Error('seconds 0-254, or blank');
-      return Buffer.from([Number(v)]);
+    decode: (buffer) => (buffer[0] === 0xff ? '' : String(buffer[0])),
+    encode: (value) => {
+      if (value === '') return Buffer.from([0xff]);
+      if (!/^\d{1,3}$/.test(value) || Number(value) > 254) throw new Error('seconds 0-254, or blank');
+      return Buffer.from([Number(value)]);
     },
   }),
   // Security relays: 3 bytes (big-endian), relay r (0-18) at bit (r+5). Value is a 19-char "0"/"1" string.
   // All-0xFF is the unused-record filler (bits 0-4 can never be a real relay), so it reads as none.
-  relayMask: ft({
+  relayMask: fieldType({
     size: 3,
-    decode: (b) => {
-      if (b[0] === 0xff && b[1] === 0xff && b[2] === 0xff) return '0'.repeat(19);
-      const v = (b[0] << 16) | (b[1] << 8) | b[2];
-      return Array.from({ length: 19 }, (_, r) => ((v & (1 << (r + 5))) ? '1' : '0')).join('');
+    decode: (buffer) => {
+      if (buffer[0] === 0xff && buffer[1] === 0xff && buffer[2] === 0xff) return '0'.repeat(19);
+      const v = (buffer[0] << 16) | (buffer[1] << 8) | buffer[2];
+      return Array.from({ length: 19 }, (_, relay) => ((v & (1 << (relay + 5))) ? '1' : '0')).join('');
     },
-    encode: (v) => {
-      let x = 0;
-      for (let r = 0; r < 19; r++) if (v[r] === '1') x |= 1 << (r + 5);
-      return Buffer.from([(x >> 16) & 0xff, (x >> 8) & 0xff, x & 0xff]);
+    encode: (value) => {
+      let bits = 0;
+      for (let r = 0; r < 19; r++) if (value[r] === '1') bits |= 1 << (r + 5);
+      return Buffer.from([(bits >> 16) & 0xff, (bits >> 8) & 0xff, bits & 0xff]);
     },
   }),
   // Security floors: 8 bytes, floor f (1-64) at byte (7 - (f-1)>>3) of this field, bit (f-1)&7.
   // Value is a comma-separated list of floor numbers. All-0xFF is the unused-record filler (reads as none).
-  floorMask: ft({
+  floorMask: fieldType({
     size: 8,
-    decode: (b) => {
-      if (b.every((x) => x === 0xff)) return '';
+    decode: (buffer) => {
+      if (buffer.every((byte) => byte === 0xff)) return '';
       const floors: number[] = [];
-      for (let f = 1; f <= 64; f++) if (b[7 - ((f - 1) >> 3)] & (1 << ((f - 1) & 7))) floors.push(f);
+      for (let f = 1; f <= 64; f++) if (buffer[7 - ((f - 1) >> 3)] & (1 << ((f - 1) & 7))) floors.push(f);
       return floors.join(',');
     },
-    encode: (v) => {
+    encode: (value) => {
       const buf = Buffer.alloc(8, 0);
-      for (const s of v.split(',').map((x) => x.trim()).filter(Boolean)) {
-        const f = Number(s);
-        if (!Number.isInteger(f) || f < 1 || f > 64) throw new Error('floors 1-64, comma-separated');
-        buf[7 - ((f - 1) >> 3)] |= 1 << ((f - 1) & 7);
+      for (const part of value.split(',').map((piece) => piece.trim()).filter(Boolean)) {
+        const floor = Number(part);
+        if (!Number.isInteger(floor) || floor < 1 || floor > 64) throw new Error('floors 1-64, comma-separated');
+        buf[7 - ((floor - 1) >> 3)] |= 1 << ((floor - 1) & 7);
       }
       return buf;
     },
@@ -232,9 +231,9 @@ const TYPES = {
   // One choice stored as a byte: names[0] = 0xFF, names[i] = i.
   choice: (names: string[]): FieldType => ({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? names[0] : names[b[0]] ?? `? (0x${b[0].toString(16)})`),
-    encode: (v) => {
-      const i = names.indexOf(v);
+    decode: (buffer) => (buffer[0] === 0xff ? names[0] : names[buffer[0]] ?? `? (0x${buffer[0].toString(16)})`),
+    encode: (value) => {
+      const i = names.indexOf(value);
       if (i < 0) throw new Error(`one of ${names.join(', ')}`);
       return Buffer.from([i === 0 ? 0xff : i]);
     },
@@ -244,9 +243,9 @@ const TYPES = {
   // 0x01 = on, 0x0A (digit 0) = off.
   digitFlag: (on: string, off: string): FieldType => ({
     size: 1,
-    decode: (b) => (b[0] === 0x01 ? on : b[0] === 0x0a ? off : b[0] === 0xff ? '' : `? (0x${b[0].toString(16)})`),
-    encode: (v) => {
-      const b = v === on ? Buffer.from([0x01]) : v === off ? Buffer.from([0x0a]) : v === '' ? Buffer.from([0xff]) : rawValue(v, 1);
+    decode: (buffer) => (buffer[0] === 0x01 ? on : buffer[0] === 0x0a ? off : buffer[0] === 0xff ? '' : `? (0x${buffer[0].toString(16)})`),
+    encode: (value) => {
+      const b = value === on ? Buffer.from([0x01]) : value === off ? Buffer.from([0x0a]) : value === '' ? Buffer.from([0xff]) : rawValue(value, 1);
       if (!b) throw new Error(`${on}, ${off} or blank`);
       return b;
     },
@@ -254,103 +253,103 @@ const TYPES = {
   // Read-only. One byte naming a value (names[byte]); 0xFF = none.
   named: (names: Record<number, string>): FieldType => ({
     size: 1,
-    decode: (b) => (b[0] === 0xff ? '' : names[b[0]] ?? `? (0x${b[0].toString(16)})`),
-    encode: (v) => {
-      const i = Object.entries(names).find(([, n]) => n === v)?.[0];
-      const b = i !== undefined ? Buffer.from([Number(i)]) : v === '' ? Buffer.from([0xff]) : rawValue(v, 1);
+    decode: (buffer) => (buffer[0] === 0xff ? '' : names[buffer[0]] ?? `? (0x${buffer[0].toString(16)})`),
+    encode: (value) => {
+      const i = Object.entries(names).find(([, label]) => label === value)?.[0];
+      const b = i !== undefined ? Buffer.from([Number(i)]) : value === '' ? Buffer.from([0xff]) : rawValue(value, 1);
       if (!b) throw new Error(`one of ${Object.values(names).join(', ')}, or blank`);
       return b;
     },
   }),
   // Read-only. A Unix time, 4 bytes little-endian, shown as "YYYY-MM-DD HH:MM:SS UTC". All 0xFF = none.
-  unixTime: ft({
+  unixTime: fieldType({
     size: 4,
-    decode: (b) => {
-      if (allFF(b)) return '';
-      const t = b.readUInt32LE(0);
-      if (t < 946684800 || t >= 4102444800) return `? (${b.toString('hex')})`;
-      return `${new Date(t * 1000).toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+    decode: (buffer) => {
+      if (allFF(buffer)) return '';
+      const seconds = buffer.readUInt32LE(0);
+      if (seconds < 946684800 || seconds >= 4102444800) return `? (${buffer.toString('hex')})`;
+      return `${new Date(seconds * 1000).toISOString().slice(0, 19).replace('T', ' ')} UTC`;
     },
-    encode: (v) => {
-      if (v === '') return Buffer.alloc(4, 0xff);
-      const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC$/.exec(v);
-      const t = match ? Date.parse(`${match[1]}T${match[2]}Z`) / 1000 : NaN;
-      const b = Number.isInteger(t) && t >= 946684800 && t < 4102444800 ? Buffer.alloc(4) : rawValue(v, 4);
+    encode: (value) => {
+      if (value === '') return Buffer.alloc(4, 0xff);
+      const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC$/.exec(value);
+      const seconds = match ? Date.parse(`${match[1]}T${match[2]}Z`) / 1000 : NaN;
+      const b = Number.isInteger(seconds) && seconds >= 946684800 && seconds < 4102444800 ? Buffer.alloc(4) : rawValue(value, 4);
       if (!b) throw new Error('a time as YYYY-MM-DD HH:MM:SS UTC, or blank');
-      if (match) b.writeUInt32LE(t, 0);
+      if (match) b.writeUInt32LE(seconds, 0);
       return b;
     },
   }),
   // Read-only. The system memory (number of directory codes), from the two 24-bit big-endian end addresses
   // DoorKing32 writes: the directory area's (0xF80 + memory * 20), then phone.bin's (0x10D80 + memory * 10).
-  memorySize: ft({
+  memorySize: fieldType({
     size: 6,
-    decode: (b) => {
-      if (allFF(b)) return '';
-      const n = (b.readUIntBE(0, 3) - 0xf80) / 20;
-      return Number.isInteger(n) && n > 0 && b.readUIntBE(3, 3) === 0x10d80 + n * 10 ? String(n) : `? (${b.toString('hex')})`;
+    decode: (buffer) => {
+      if (allFF(buffer)) return '';
+      const index = (buffer.readUIntBE(0, 3) - 0xf80) / 20;
+      return Number.isInteger(index) && index > 0 && buffer.readUIntBE(3, 3) === 0x10d80 + index * 10 ? String(index) : `? (${buffer.toString('hex')})`;
     },
-    encode: (v) => {
-      if (v === '') return Buffer.alloc(6, 0xff);
-      if (/^\d{1,5}$/.test(v) && +v > 0) {
+    encode: (value) => {
+      if (value === '') return Buffer.alloc(6, 0xff);
+      if (/^\d{1,5}$/.test(value) && +value > 0) {
         const b = Buffer.alloc(6);
-        b.writeUIntBE(0xf80 + +v * 20, 0, 3);
-        b.writeUIntBE(0x10d80 + +v * 10, 3, 3);
+        b.writeUIntBE(0xf80 + +value * 20, 0, 3);
+        b.writeUIntBE(0x10d80 + +value * 10, 3, 3);
         return b;
       }
-      const b = rawValue(v, 6);
+      const b = rawValue(value, 6);
       if (!b) throw new Error('a memory size such as 3000, or blank');
       return b;
     },
   }),
   // Anti-pass back relay row: up to 10 relay numbers (0-18), sorted, 0xFF = empty. Value is a comma-separated list.
-  relayList: ft({
+  relayList: fieldType({
     size: 10,
-    decode: (b) => {
-      const list = [...b].filter((x) => x !== 0xff);
-      if (list.some((x) => x > 18)) return `? (${b.toString('hex')})`;
-      return [...new Set(list)].sort((a, c) => a - c).join(',');
+    decode: (buffer) => {
+      const list = [...buffer].filter((byte) => byte !== 0xff);
+      if (list.some((byte) => byte > 18)) return `? (${buffer.toString('hex')})`;
+      return [...new Set(list)].sort((a, b) => a - b).join(',');
     },
-    encode: (v) => {
-      const list = [...new Set(v.split(',').map((s) => s.trim()).filter(Boolean).map(Number))];
-      if (list.some((r) => !Number.isInteger(r) || r < 0 || r > 18)) throw new Error('relays 0-18, comma-separated');
+    encode: (value) => {
+      const list = [...new Set(value.split(',').map((part) => part.trim()).filter(Boolean).map(Number))];
+      if (list.some((relay) => !Number.isInteger(relay) || relay < 0 || relay > 18)) throw new Error('relays 0-18, comma-separated');
       if (list.length > 10) throw new Error('up to 10 relays');
       const buf = Buffer.alloc(10, 0xff);
-      list.sort((a, c) => a - c).forEach((r, i) => { buf[i] = r; });
+      list.sort((a, b) => a - b).forEach((relay, i) => { buf[i] = relay; });
       return buf;
     },
   }),
   // Re-Sync List: enable byte (0x00 = on) + 5 big-endian numbers (0x0000 = empty box); all 0xFF when off.
   // Value is '' when off, else the 5 boxes comma-separated (blank boxes allowed).
-  resyncList: ft({
+  resyncList: fieldType({
     size: 11,
-    decode: (b) => (b[0] === 0xff ? '' : Array.from({ length: 5 }, (_, i) => {
-      const n = (b[1 + i * 2] << 8) | b[2 + i * 2];
-      return n ? String(n) : '';
+    decode: (buffer) => (buffer[0] === 0xff ? '' : Array.from({ length: 5 }, (_, i) => {
+      const number = (buffer[1 + i * 2] << 8) | buffer[2 + i * 2];
+      return number ? String(number) : '';
     }).join(',')),
-    encode: (v) => {
+    encode: (value) => {
       const buf = Buffer.alloc(11, 0xff);
-      if (v === '') return buf;
-      const slots = v.split(',').map((s) => s.trim());
+      if (value === '') return buf;
+      const slots = value.split(',').map((part) => part.trim());
       if (slots.length !== 5) throw new Error('5 comma-separated boxes (blank allowed), or blank for off');
       buf[0] = 0;
       slots.forEach((slot, i) => {
         if (slot !== '' && (!/^\d{1,5}$/.test(slot) || +slot < 1 || +slot > 65535)) throw new Error('numbers 1-65535, or blank');
-        const n = slot === '' ? 0 : +slot;
-        buf[1 + i * 2] = n >> 8;
-        buf[2 + i * 2] = n & 0xff;
+        const number = slot === '' ? 0 : +slot;
+        buf[1 + i * 2] = number >> 8;
+        buf[2 + i * 2] = number & 0xff;
       });
       return buf;
     },
   }),
   // Scheduled re-sync days: 7 bytes Sat..Sun; day d (0=Sun..6=Sat) at byte (6-d) holds (7-d) when ticked,
   // 0xFF when not. Value is a 7-char "0"/"1" string, Sun..Sat.
-  dayList: ft({
+  dayList: fieldType({
     size: 7,
-    decode: (b) => Array.from({ length: 7 }, (_, d) => (b[6 - d] === 0xff ? '0' : '1')).join(''),
-    encode: (v) => {
+    decode: (buffer) => Array.from({ length: 7 }, (_, day) => (buffer[6 - day] === 0xff ? '0' : '1')).join(''),
+    encode: (value) => {
       const buf = Buffer.alloc(7, 0xff);
-      for (let d = 0; d < 7; d++) if (v[d] === '1') buf[6 - d] = 7 - d;
+      for (let d = 0; d < 7; d++) if (value[d] === '1') buf[6 - d] = 7 - d;
       return buf;
     },
   }),
@@ -384,11 +383,11 @@ const FIELDS: GateSettingField[] = [
   { key: 'downloadStamp2', group: 'System', name: 'Last download stamp 2', offset: 0x19, type: TYPES.unixTime },
   // Relay strike times (seconds). Confirmed by setting distinct values: relay 0 lives at 0x11 (after talk
   // time 0x10), relays 1 and 2 at 0x04/0x05.
-  ...[[0, 0x11], [1, 0x04], [2, 0x05]].map(([r, offset]) => ({
-    key: `relay${r}Time`, group: 'Relays', name: `Relay ${r} strike time (seconds)`, offset, type: TYPES.byte, editable: true,
+  ...[[0, 0x11], [1, 0x04], [2, 0x05]].map(([relay, offset]) => ({
+    key: `relay${relay}Time`, group: 'Relays', name: `Relay ${relay} strike time (seconds)`, offset, type: TYPES.byte, editable: true,
   })),
-  ...[0, 1, 2].flatMap((r) => TONES.map(([name, suffix], i) => ({
-    key: `relay${r}${suffix}`, group: 'Relays', name: `Relay ${r} tone open: ${name}`, offset: TONE_OFFSETS[r] + i,
+  ...[0, 1, 2].flatMap((relay) => TONES.map(([name, suffix], i) => ({
+    key: `relay${relay}${suffix}`, group: 'Relays', name: `Relay ${relay} tone open: ${name}`, offset: TONE_OFFSETS[relay] + i,
     type: TYPES.tone, editable: true,
   }))),
   // Postal switch and rotary dial 9: which relays they activate, a bitmask byte each (bit r = relay r), confirmed
@@ -397,8 +396,8 @@ const FIELDS: GateSettingField[] = [
   { key: 'relayRotaryDial9', group: 'Relays', name: 'Rotary dial 9 activates relays', offset: 0x42, type: TYPES.elevatorMask, editable: true },
   // Entry code ranges, one per relay, 4 bytes apart: relay 0 at 0xac, relay 1 at 0xb0, relay 2 at 0xb4 (From, then
   // To, 2-byte BCD each; confirmed by one-change diffs, BAK\ACCT0001_tracker7/8).
-  ...[[0, 0xac], [1, 0xb0], [2, 0xb4]].flatMap(([r, base]) => ['From', 'To'].map((end, i) => ({
-    key: `relay${r}EntryCodeRange${end}`, group: 'Relays', name: `Relay ${r} entry code range: ${end.toLowerCase()}`,
+  ...[[0, 0xac], [1, 0xb0], [2, 0xb4]].flatMap(([relay, base]) => ['From', 'To'].map((end, i) => ({
+    key: `relay${relay}EntryCodeRange${end}`, group: 'Relays', name: `Relay ${relay} entry code range: ${end.toLowerCase()}`,
     offset: base + i * 2, type: TYPES.code4, editable: true,
   }))),
   ...DISPLAY_LINE_NAMES.map((name, i) => ({
@@ -429,8 +428,8 @@ const FIELDS: GateSettingField[] = [
   ]),
   // Hold-open relays: one byte per relay 0-18 at 0x5c, bit i = row i (bit 7 = Holiday). Same 8-bit layout
   // as elevatorMask: value is an 8-char "0"/"1" string, rows 1-7 then Hol.
-  ...Array.from({ length: 19 }, (_, r) => ({
-    key: `holdOpenRelay${r}`, group: 'Hold Open', name: `Relay ${r} hold-open rows`, offset: 0x5c + r, type: TYPES.elevatorMask, editable: true,
+  ...Array.from({ length: 19 }, (_, relay) => ({
+    key: `holdOpenRelay${relay}`, group: 'Hold Open', name: `Relay ${relay} hold-open rows`, offset: 0x5c + relay, type: TYPES.elevatorMask, editable: true,
   })),
   // Elevator Reference table (ER1-ER8, the resident's "Elevator reference"): elevators a visitor may use (bitmap at
   // 0xc6) and how long the floor button stays active (seconds at 0x97). Keys keep their original elevatorN names.
@@ -441,8 +440,8 @@ const FIELDS: GateSettingField[] = [
   // Relay / Elevator table: which elevators (bit e-1 = elevator e) each relay 0-18 controls. Relay 0 at 0xf7, relays
   // 1-18 at 0x230 + relay (0x230 itself is not part of it). Confirmed for relays 0, 2 and 5 by one-change diffs
   // (BAK\ACCT0001_elev1-3); the other relays follow the spacing.
-  ...Array.from({ length: 19 }, (_, r) => ({
-    key: `relay${r}Elevators`, group: 'Relay Elevator', name: `Relay ${r} elevators`, offset: r === 0 ? 0xf7 : 0x230 + r,
+  ...Array.from({ length: 19 }, (_, relay) => ({
+    key: `relay${relay}Elevators`, group: 'Relay Elevator', name: `Relay ${relay} elevators`, offset: relay === 0 ? 0xf7 : 0x230 + relay,
     type: TYPES.elevatorMask, editable: true,
   })),
   // Security levels: 116 records (levels 2-30, TZ1-4) of 16 bytes at 0x243 — begin (2), end (2), days (1), relays (3), floors (8).
@@ -490,11 +489,6 @@ export function decodeGateSettings(buf: Buffer): GateSetting[] {
   }));
 }
 
-// names.bin -> { key: value } (plain JSON form of the settings).
-export function gateSettingsJson(buf: Buffer): Record<string, string> {
-  return Object.fromEntries(decodeGateSettings(buf).map((setting) => [setting.key, setting.value]));
-}
-
 // Returns a copy of names.bin with the changed settings written in place, the list of changed bytes and a
 // names.map (one byte per 128-byte block, 1 = block changed). All other bytes stay as pulled from the gate.
 export function applyGateSettings(buf: Buffer, changes: Record<string, unknown> | null | undefined) {
@@ -502,15 +496,15 @@ export function applyGateSettings(buf: Buffer, changes: Record<string, unknown> 
   const out = Buffer.from(buf);
   const changed: { key: string; name: string; from: string; to: string }[] = [];
   for (const [key, raw] of Object.entries(changes || {})) {
-    const f = BY_KEY.get(key);
-    if (!f) throw new Error(`Unknown setting ${key}`);
-    if (!f.editable) throw new Error(`${f.name} is read-only`);
+    const field = BY_KEY.get(key);
+    if (!field) throw httpError(`Unknown setting ${key}`);
+    if (!field.editable) throw httpError(`${field.name} is read-only`);
     const value = String(raw ?? '');
     let bytes: Buffer;
-    try { bytes = f.type.encode!(value); } catch (err) { throw new Error(`${f.name}: ${(err as Error).message}`); }
-    const from = f.type.decode(buf.subarray(f.offset, f.offset + f.type.size));
-    bytes.copy(out, f.offset);
-    if (!bytes.equals(buf.subarray(f.offset, f.offset + f.type.size))) changed.push({ key, name: f.name, from, to: value });
+    try { bytes = field.type.encode!(value); } catch (err) { throw httpError(`${field.name}: ${(err as Error).message}`); }
+    const from = field.type.decode(buf.subarray(field.offset, field.offset + field.type.size));
+    bytes.copy(out, field.offset);
+    if (!bytes.equals(buf.subarray(field.offset, field.offset + field.type.size))) changed.push({ key, name: field.name, from, to: value });
   }
   const bytes: { offset: number; from: number; to: number }[] = [];
   for (let i = 0; i < out.length; i++) if (out[i] !== buf[i]) bytes.push({ offset: i, from: buf[i], to: out[i] });

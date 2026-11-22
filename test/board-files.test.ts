@@ -3,6 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert';
 import * as dk from '../index.ts';
 
+// names.bin -> { key: value }.
+const gateSettingsJson = (buf: Buffer): Record<string, string> =>
+  Object.fromEntries(dk.decodeGateSettings(buf).map((setting) => [setting.key, setting.value]));
+
 const DIRECTORY_OFFSET = 0xf80;
 const ENTRY_SIZE = 20;
 
@@ -80,7 +84,7 @@ test('gate settings: hold-open relay fields encode one byte per relay, bit per r
   const { buffer: out } = dk.applyGateSettings(buf, { holdOpenRelay0: '10000001', holdOpenRelay2: '01000000' });
   assert.strictEqual(out[0x5c], 0x81);
   assert.strictEqual(out[0x5e], 0x02);
-  const s = dk.gateSettingsJson(out);
+  const s = gateSettingsJson(out);
   assert.strictEqual(s.holdOpenRelay0, '10000001');
   assert.strictEqual(s.holdOpenRelay1, '00000000');
 });
@@ -89,7 +93,7 @@ test('gate settings: hold-open relay fields encode one byte per relay, bit per r
 const apbBytes = (buf) => buf.subarray(0xa04, 0xa41).toString('hex');
 
 test('Anti-Pass Back: an all-0xFF block 20 reads as unset', () => {
-  const s = dk.gateSettingsJson(Buffer.alloc(64000, 0xff));
+  const s = gateSettingsJson(Buffer.alloc(64000, 0xff));
   assert.deepStrictEqual(
     [s.apbMode, s.apbRelaysIn, s.apbRelaysOut, s.apbCounterEvery, s.apbCounterReset, s.apbResyncAll,
       s.apbResyncList, s.apbScheduleEnabled, s.apbScheduleDays, s.apbScheduleTime],
@@ -118,7 +122,7 @@ test('Anti-Pass Back: settings encode to the bytes DoorKing32 writes', () => {
   assert.ok(buffer.subarray(0xa1a, 0xa29).every((x) => x === 0xff), 'unmapped bytes untouched');
   assert.deepStrictEqual([...map].flatMap((v, i) => (v ? [i] : [])), [20]);
   // Round trip.
-  const s = dk.gateSettingsJson(buffer);
+  const s = gateSettingsJson(buffer);
   assert.strictEqual(s.apbRelaysIn, '0,5,18');
   assert.strictEqual(s.apbResyncList, '11111,,,,55555');
   assert.strictEqual(s.apbScheduleDays, '1100011');
@@ -163,14 +167,14 @@ test('Outside line digit at 0x1D: 9 -> 09, 0 -> 00, blank -> FF (matches DoorKin
   assert.strictEqual(one('0').buffer[0x1d], 0x00);
   assert.strictEqual(dk.applyGateSettings(one('9').buffer, { outsideLineDigit: '' }).buffer[0x1d], 0xff);
   assert.deepStrictEqual(one('9').bytes, [{ offset: 0x1d, from: 0xff, to: 0x09 }]);
-  assert.strictEqual(dk.gateSettingsJson(one('0').buffer).outsideLineDigit, '0');
+  assert.strictEqual(gateSettingsJson(one('0').buffer).outsideLineDigit, '0');
   assert.throws(() => one('12'), /a digit 0-9/);
   assert.throws(() => one('*'), /a digit 0-9/);
 });
 
 test('Read-only System fields from the decompiled DoorKing32: dial type, multiple systems, memory, chips, download stamps', () => {
   const names = Buffer.alloc(64000, 0xff);
-  const get = () => dk.gateSettingsJson(names);
+  const get = () => gateSettingsJson(names);
   const keys = ['dialType', 'multipleSystems', 'systemMemory', 'memoryChips', 'downloadStamp1', 'downloadStamp2'];
   assert.deepStrictEqual(keys.map((k) => get()[k]), ['', '', '', '', '', '']); // all 0xFF: nothing recorded
   names[0x0f] = 0x0a; names[0x06] = 0x01; names[0xfb] = 0x05;
@@ -194,7 +198,7 @@ test('Talk time at 0x10 is seconds (minutes * 60 + seconds); facility codes are 
   const one = (changes) => dk.applyGateSettings(base, changes).buffer;
   assert.strictEqual(one({ talkTime: '1:30' })[0x10], 90);
   assert.strictEqual(one({ talkTime: '45' })[0x10], 45);
-  assert.strictEqual(dk.gateSettingsJson(one({ talkTime: '0:45' })).talkTime, '0:45');
+  assert.strictEqual(gateSettingsJson(one({ talkTime: '0:45' })).talkTime, '0:45');
   assert.strictEqual(one({ talkTime: '' })[0x10], 0xff);
   assert.throws(() => one({ talkTime: '4:15' }), /0:00 to 4:14/);
   assert.throws(() => one({ talkTime: '1:75' }), /0:00 to 4:14/);
@@ -207,13 +211,13 @@ test('Entry code ranges: relay 0 at 0xAC, relay 1 at 0xB0, relay 2 at 0xB4 (matc
     relay0EntryCodeRangeFrom: '1234', relay0EntryCodeRangeTo: '5678', relay2EntryCodeRangeFrom: '2345', relay2EntryCodeRangeTo: '6789',
   }).buffer;
   assert.strictEqual(r.subarray(0xac, 0xb8).toString('hex'), '12345678ffffffff23456789');
-  assert.strictEqual(dk.gateSettingsJson(r).relay2EntryCodeRangeTo, '6789');
+  assert.strictEqual(gateSettingsJson(r).relay2EntryCodeRangeTo, '6789');
 });
 
 test('Relay / Elevator table: relay 0 at 0xF7, relays 1-18 at 0x230 + relay (matches DoorKing32)', () => {
   const r = dk.applyGateSettings(Buffer.alloc(64000, 0), { relay0Elevators: '10000000', relay2Elevators: '00100000', relay5Elevators: '10000000' });
   assert.deepStrictEqual(r.bytes, [{ offset: 0xf7, from: 0, to: 0x01 }, { offset: 0x232, from: 0, to: 0x04 }, { offset: 0x235, from: 0, to: 0x01 }]);
-  const j = dk.gateSettingsJson(r.buffer);
+  const j = gateSettingsJson(r.buffer);
   assert.strictEqual(j.relay18Elevators, '00000000');
   assert.strictEqual(j.relay2Elevators, '00100000');
 });
@@ -221,14 +225,14 @@ test('Relay / Elevator table: relay 0 at 0xF7, relays 1-18 at 0x230 + relay (mat
 test('Holidays for Security Levels at 0xA03: on = 00, off = FF (matches DoorKing32)', () => {
   const on = dk.applyGateSettings(Buffer.alloc(64000, 0xff), { holidaysForSecurity: 'Yes' });
   assert.deepStrictEqual(on.bytes, [{ offset: 0xa03, from: 0xff, to: 0x00 }]);
-  assert.strictEqual(dk.gateSettingsJson(on.buffer).holidaysForSecurity, 'Yes');
+  assert.strictEqual(gateSettingsJson(on.buffer).holidaysForSecurity, 'Yes');
 });
 
 test('Postal switch (0x41) and rotary dial 9 (0x42) are relay bitmasks, bit r = relay r (matches DoorKing32)', () => {
   const base = Buffer.alloc(64000, 0xff);
   base[0x41] = 0x02; // postal on relay 1 (DoorKing32 snapshot tracker4)
   base[0x42] = 0x02; // rotary dial 9 on relay 1
-  assert.strictEqual(dk.gateSettingsJson(base).relayPostalSwitch, '01000000');
+  assert.strictEqual(gateSettingsJson(base).relayPostalSwitch, '01000000');
   const r = dk.applyGateSettings(base, { relayPostalSwitch: '11000000', relayRotaryDial9: '11000000' });
   assert.deepStrictEqual(r.bytes, [{ offset: 0x41, from: 0x02, to: 0x03 }, { offset: 0x42, from: 0x02, to: 0x03 }]);
 });

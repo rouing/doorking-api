@@ -2,12 +2,19 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes';
 import type { DeviceRange, GatePrefs } from '../../../src/types.ts';
 import { errorText, type GateApi } from '../api.ts';
-import { DEFAULT_DEVICES } from '../format.ts';
+import { DEFAULT_DEVICE_ASSOCIATION } from '../../../src/shared.ts';
 import { HelpTip } from '../HelpTip.tsx';
+
+interface RelayNameBoxProps {
+  relay: number;
+  prefs: GatePrefs;
+  gapi: GateApi;
+  onSaved: () => Promise<void>;
+}
 
 // The name of one relay (a box in the Relays page's relay settings table). Saved on its own when the box loses
 // focus or on Enter; blank goes back to "Relay N". Shared by every account that manages the gate; not sent to it.
-export function RelayNameBox({ relay, prefs, gapi, onSaved }: { relay: number; prefs: GatePrefs; gapi: GateApi; onSaved: () => Promise<void> }) {
+export function RelayNameBox({ relay, prefs, gapi, onSaved }: RelayNameBoxProps) {
   const k = String(relay);
   const saved = (prefs.relayLabels && prefs.relayLabels[k]) || `Relay ${k}`;
   const [value, setValue] = useState(saved);
@@ -32,13 +39,19 @@ export function RelayNameBox({ relay, prefs, gapi, onSaved }: { relay: number; p
   );
 }
 
+interface DeviceAssociationProps {
+  prefs: GatePrefs;
+  gapi: GateApi;
+  onSaved: () => Promise<void>;
+}
+
 // Device Association: names for ranges of device codes (00001-65407), up to 10 rows. The server checks names,
 // ranges and overlaps on save.
-export function DeviceAssociation({ prefs, gapi, onSaved }: { prefs: GatePrefs; gapi: GateApi; onSaved: () => Promise<void> }) {
+export function DeviceAssociation({ prefs, gapi, onSaved }: DeviceAssociationProps) {
   const fill = (list: DeviceRange[]) => Array.from({ length: 10 }, (_, i) => ({ ...(list[i] || { name: '', from: '', to: '' }) }));
-  const [rows, setRows] = useState(() => fill(prefs.deviceAssociation || DEFAULT_DEVICES));
+  const [rows, setRows] = useState(() => fill(prefs.deviceAssociation || DEFAULT_DEVICE_ASSOCIATION));
   const [info, setInfo] = useState('');
-  const set = (i: number, k: keyof DeviceRange, v: string) => setRows(rows.map((row, j) => (j === i ? { ...row, [k]: v } : row)));
+  const set = (i: number, key: keyof DeviceRange, value: string) => setRows(rows.map((row, j) => (j === i ? { ...row, [key]: value } : row)));
   const save = async () => {
     setInfo('Saving…');
     try {
@@ -58,7 +71,7 @@ export function DeviceAssociation({ prefs, gapi, onSaved }: { prefs: GatePrefs; 
         </Text>
         <Table.Root size="1" style={{ width: 'fit-content' }}>
           <Table.Header>
-            <Table.Row>{['#', 'Device Name', 'From', 'To'].map((h) => <Table.ColumnHeaderCell key={h}>{h}</Table.ColumnHeaderCell>)}</Table.Row>
+            <Table.Row>{['#', 'Device Name', 'From', 'To'].map((header) => <Table.ColumnHeaderCell key={header}>{header}</Table.ColumnHeaderCell>)}</Table.Row>
           </Table.Header>
           <Table.Body>
             {rows.map((row, i) => (
@@ -71,7 +84,7 @@ export function DeviceAssociation({ prefs, gapi, onSaved }: { prefs: GatePrefs; 
             ))}
           </Table.Body>
         </Table.Root>
-        <Flex gap="3" align="center"><Button onClick={save}>Save</Button><Text size="2" color="gray">{info}</Text></Flex>
+        <Flex gap="3" align="center" wrap="wrap"><Button onClick={save}>Save</Button><Text size="2" color="gray">{info}</Text></Flex>
       </Flex>
     </Card>
   );

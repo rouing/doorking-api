@@ -9,33 +9,41 @@ type LiveFrame = { channel: number; name?: string; file?: string; error?: string
 
 const nums = (list: number[]): string[] => list.map(String);
 
+interface CameraFormProps {
+  settings: CameraSettings | null;
+  phone: string;
+  gapi: GateApi;
+  onSaved: () => Promise<void>;
+}
+
 // Gate cameras: a Dahua/Amcrest recorder reached through Dahua's P2P cloud. Up to 4 channels. The password is
 // never sent back; leaving it blank keeps the saved one.
-export function CameraForm({ settings, phone, gapi, onSaved }: { settings: CameraSettings | null; phone: string; gapi: GateApi; onSaved: () => Promise<void> }) {
-  const c = settings;
-  const [f, setF] = useState(() => ({
-    serial: c?.serial || '', username: c?.username || '', password: '', clockOffset: String(c?.clockOffset ?? 0), mode: c?.mode || 'snapshots',
-    frames: String(c?.frames ?? 3), framesAfter: String(c?.framesAfter ?? 0), clipTries: String(c?.clipTries ?? 2), events: c?.events || 'access',
-    backfillHours: String(c?.backfillHours ?? 24), keepDays: String(c?.keepDays ?? 0), enabled: c ? c.enabled !== false : true,
+export function CameraForm({ settings, phone, gapi, onSaved }: CameraFormProps) {
+  const saved = settings;
+  const [form, setForm] = useState(() => ({
+    serial: saved?.serial || '', username: saved?.username || '', password: '', clockOffset: String(saved?.clockOffset ?? 0), mode: saved?.mode || 'snapshots',
+    frames: String(saved?.frames ?? 3), framesAfter: String(saved?.framesAfter ?? 0), clipTries: String(saved?.clipTries ?? 2), events: saved?.events || 'access',
+    backfillHours: String(saved?.backfillHours ?? 24), keepDays: String(saved?.keepDays ?? 0), enabled: saved ? saved.enabled !== false : true,
   }));
-  const [channels, setChannels] = useState(() => Array.from({ length: 4 }, (_, i) => {
-    const channel = (c?.channels || [{ channel: 1, name: '' }])[i];
+  // Four rows, or as many as are saved (up to 8 through the API), so saving keeps every channel.
+  const [channels, setChannels] = useState(() => Array.from({ length: Math.max(4, saved?.channels?.length || 0) }, (_, i) => {
+    const channel = (saved?.channels || [{ channel: 1, name: '' }])[i];
     return { channel: channel ? String(channel.channel) : '', name: channel ? channel.name : '' };
   }));
   const [info, setInfo] = useState('');
   const [live, setLive] = useState<{ frames: LiveFrame[]; stamp: number } | null>(null);
   const [testing, setTesting] = useState(false);
   const [dialog, confirm] = useConfirm();
-  const set = (k: keyof typeof f, v: string | boolean) => setF({ ...f, [k]: v });
-  const video = f.mode === 'video';
+  const set = (key: keyof typeof form, value: string | boolean) => setForm({ ...form, [key]: value });
+  const video = form.mode === 'video';
 
   const run = async (fn: () => Promise<void>) => { try { await fn(); } catch (err) { setInfo(errorText(err)); } };
   const save = () => run(async () => {
-    const keep = Number(f.keepDays);
+    const keep = Number(form.keepDays);
     if (keep && keep !== (settings?.keepDays || 0) && !await confirm({ title: `Keep pictures for ${keep} days?`, action: 'Save', color: 'red',
       body: `Pictures and videos older than ${keep} days are deleted now, and each day from then on. This cannot be undone.` })) return;
     setInfo('Saving…');
-    try { await gapi('PUT', '/cameras', { ...f, channels: channels.map((channel) => ({ channel: channel.channel.trim(), name: channel.name })) }); } catch (err) {
+    try { await gapi('PUT', '/cameras', { ...form, channels: channels.map((channel) => ({ channel: channel.channel.trim(), name: channel.name })) }); } catch (err) {
       setInfo(`Save failed: ${errorText(err)}`); return;
     }
     set('password', '');
@@ -82,19 +90,19 @@ export function CameraForm({ settings, phone, gapi, onSaved }: { settings: Camer
           encrypted in the local database.
         </Text>
         <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
-          <Field label="Recorder serial" help="cameraSerial"><TextField.Root autoComplete="off" value={f.serial} onChange={(event) => set('serial', event.target.value)} /></Field>
-          <Field label="Username"><TextField.Root autoComplete="off" value={f.username} onChange={(event) => set('username', event.target.value)} /></Field>
-          <Field label="Password"><TextField.Root type="password" autoComplete="new-password" value={f.password}
+          <Field label="Recorder serial" help="cameraSerial"><TextField.Root autoComplete="off" value={form.serial} onChange={(event) => set('serial', event.target.value)} /></Field>
+          <Field label="Username"><TextField.Root autoComplete="off" value={form.username} onChange={(event) => set('username', event.target.value)} /></Field>
+          <Field label="Password"><TextField.Root type="password" autoComplete="new-password" value={form.password}
             placeholder={settings ? 'saved (leave blank to keep)' : ''} onChange={(event) => set('password', event.target.value)} /></Field>
-          <Field label="Clock offset (seconds)" help="clockOffset"><TextField.Root type="number" step="1" value={f.clockOffset} onChange={(event) => set('clockOffset', event.target.value)} /></Field>
-          <Field label="Save" help="cameraMode"><Choice value={f.mode} onChange={(v) => set('mode', v)} options={[['snapshots', 'Snapshots (pictures)'], ['video', '2-minute video clips']]} /></Field>
-          <Field label="Frames per transaction" help="cameraFrames"><Choice value={f.frames} onChange={(v) => set('frames', v)} options={nums([1, 2, 3, 4, 6])} disabled={video} /></Field>
-          <Field label="Frames after the minute" help="cameraFramesAfter"><Choice value={f.framesAfter} onChange={(v) => set('framesAfter', v)} options={nums([0, 1, 2, 3, 4, 6])} disabled={video} /></Field>
-          <Field label="Video tries"><Choice value={f.clipTries} onChange={(v) => set('clipTries', v)} options={nums([1, 2, 3, 4, 5])} disabled={!video} /></Field>
-          <Field label="Transactions" help="cameraEvents"><Choice value={f.events} onChange={(v) => set('events', v)} options={[['access', 'Admitted and denied entries'], ['all', 'All']]} /></Field>
-          <Field label="Keep pictures" help="cameraKeep"><Choice value={f.keepDays} onChange={(v) => set('keepDays', v)}
+          <Field label="Clock offset (seconds)" help="clockOffset"><TextField.Root type="number" step="1" value={form.clockOffset} onChange={(event) => set('clockOffset', event.target.value)} /></Field>
+          <Field label="Save" help="cameraMode"><Choice value={form.mode} onChange={(value) => set('mode', value)} options={[['snapshots', 'Snapshots (pictures)'], ['video', '2-minute video clips']]} /></Field>
+          <Field label="Frames per transaction" help="cameraFrames"><Choice value={form.frames} onChange={(value) => set('frames', value)} options={nums([1, 2, 3, 4, 6])} disabled={video} /></Field>
+          <Field label="Frames after the minute" help="cameraFramesAfter"><Choice value={form.framesAfter} onChange={(value) => set('framesAfter', value)} options={nums([0, 1, 2, 3, 4, 6])} disabled={video} /></Field>
+          <Field label="Video tries"><Choice value={form.clipTries} onChange={(value) => set('clipTries', value)} options={nums([1, 2, 3, 4, 5])} disabled={!video} /></Field>
+          <Field label="Transactions" help="cameraEvents"><Choice value={form.events} onChange={(value) => set('events', value)} options={[['access', 'Admitted and denied entries'], ['all', 'All']]} /></Field>
+          <Field label="Keep pictures" help="cameraKeep"><Choice value={form.keepDays} onChange={(value) => set('keepDays', value)}
             options={[['15', '15 days'], ['30', '30 days'], ['60', '60 days'], ['90', '90 days'], ['0', 'Forever']]} /></Field>
-          <Field label="Look back (hours)" help="cameraLookBack"><TextField.Root type="number" min={0} max={720} step="1" value={f.backfillHours} onChange={(event) => set('backfillHours', event.target.value)} /></Field>
+          <Field label="Look back (hours)" help="cameraLookBack"><TextField.Root type="number" min={0} max={720} step="1" value={form.backfillHours} onChange={(event) => set('backfillHours', event.target.value)} /></Field>
         </Grid>
         <Table.Root size="1" style={{ width: 'fit-content' }}>
           <Table.Header><Table.Row><Table.ColumnHeaderCell>Channel</Table.ColumnHeaderCell><Table.ColumnHeaderCell>Name</Table.ColumnHeaderCell></Table.Row></Table.Header>
@@ -102,15 +110,15 @@ export function CameraForm({ settings, phone, gapi, onSaved }: { settings: Camer
             {channels.map((channel, i) => (
               <Table.Row key={i}>
                 <Table.Cell><TextField.Root size="1" inputMode="numeric" style={{ width: '6ch' }} value={channel.channel}
-                  onChange={(event) => setChannels(channels.map((x, j) => (j === i ? { ...x, channel: event.target.value } : x)))} /></Table.Cell>
+                  onChange={(event) => setChannels(channels.map((entry, j) => (j === i ? { ...entry, channel: event.target.value } : entry)))} /></Table.Cell>
                 <Table.Cell><TextField.Root size="1" maxLength={40} value={channel.name}
-                  onChange={(event) => setChannels(channels.map((x, j) => (j === i ? { ...x, name: event.target.value } : x)))} /></Table.Cell>
+                  onChange={(event) => setChannels(channels.map((entry, j) => (j === i ? { ...entry, name: event.target.value } : entry)))} /></Table.Cell>
               </Table.Row>
             ))}
           </Table.Body>
         </Table.Root>
         <Text as="label" size="2"><Flex gap="2" align="center">
-          <Checkbox checked={f.enabled} onCheckedChange={(v) => set('enabled', v === true)} /> Save snapshots after transaction pulls
+          <Checkbox checked={form.enabled} onCheckedChange={(checked) => set('enabled', checked === true)} /> Save snapshots after transaction pulls
         </Flex></Text>
         <Text size="2" color="gray">
           Clock offset is added to the gate's transaction time to match the recorder's clock. Look back limits which transactions get

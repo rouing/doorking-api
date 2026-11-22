@@ -17,8 +17,8 @@
 import crypto from 'node:crypto';
 import * as oidc from 'openid-client';
 import type { SsoProvider } from './config.ts';
-import { all, one, run, type Store } from './db.ts';
-import { useToken } from './email.ts';
+import { all, one, run, transaction, type Store } from './db.ts';
+import { peekToken, useToken } from './email.ts';
 import { acceptInviteWithSso, createSsoUser, getUser, recordSignIn, userKey } from './users.ts';
 import { httpError } from './errors.ts';
 
@@ -33,9 +33,15 @@ const FLOW_MS = 10 * 60000;
 const SKEW_MS = 2 * 60000;
 const MAX_FLOWS = 500;
 
+const CONFIG_MS = 24 * 3600000; // a provider's discovered configuration is fetched again after this
+
 interface Flow { provider: string; nonce: string; verifier: string; binding: string; redirectUri: string; mode: SsoMode; username?: string; inviteToken?: string; at: number }
-const flows = new Map<string, Flow>(); // by state
-const configs = new Map<string, Promise<oidc.Configuration>>();
+
+// The sign-ins in progress (by state) and the providers' discovered configurations; each server keeps its own.
+export class SsoFlows {
+  readonly flows = new Map<string, Flow>();
+  readonly configs = new Map<string, { config: Promise<oidc.Configuration>; at: number }>();
+}
 
 const isGoogle = (provider: SsoProvider): boolean => new URL(provider.issuer).hostname === 'accounts.google.com';
 const isEntra = (provider: SsoProvider): boolean => new URL(provider.issuer).hostname === 'login.microsoftonline.com';
@@ -47,37 +53,37 @@ function freshSignIn(provider: SsoProvider, mode: SsoMode): Record<string, strin
   return {};
 }
 
-// The provider's OpenID configuration, discovered once (a failed discovery is tried again next time). Plain http is
-// allowed for localhost issuers only (config.ts refuses others).
-function configOf(provider: SsoProvider): Promise<oidc.Configuration> {
+// The provider's OpenID configuration, discovered once a day (a failed discovery is tried again next time). Plain
+// http is allowed for localhost issuers only (config.ts refuses others).
+function configOf(sso: SsoFlows, provider: SsoProvider, now = Date.now()): Promise<oidc.Configuration> {
   const key = `${provider.id}|${provider.issuer}|${provider.clientId}|${provider.clientSecret}`;
-  let c = configs.get(key);
-  if (!c) {
-    const local = /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(provider.issuer);
-    c = oidc.discovery(new URL(provider.issuer), provider.clientId, undefined, provider.clientSecret ? oidc.ClientSecretPost(provider.clientSecret) : oidc.None(),
-      local ? { execute: [oidc.allowInsecureRequests] } : undefined);
-    c.catch(() => configs.delete(key));
-    configs.set(key, c);
-  }
-  return c;
+  const cached = sso.configs.get(key);
+  if (cached && now - cached.at < CONFIG_MS) return cached.config;
+  const local = /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(provider.issuer);
+  const config = oidc.discovery(new URL(provider.issuer), provider.clientId, undefined, provider.clientSecret ? oidc.ClientSecretPost(provider.clientSecret) : oidc.None(),
+    local ? { execute: [oidc.allowInsecureRequests] } : undefined);
+  config.catch(() => { if (sso.configs.get(key)?.config === config) sso.configs.delete(key); });
+  sso.configs.set(key, { config, at: now });
+  return config;
 }
 
 // Checks that the provider can be reached and returns its endpoints (for the CLI's sso-check).
 // authTime: whether the discovery document lists auth_time among its claims (null when it lists none).
-export async function discoverProvider(provider: SsoProvider): Promise<{ issuer: string; authorization: string; token: string; authTime: boolean | null }> {
-  const m = (await configOf(provider)).serverMetadata();
-  const claims = Array.isArray(m.claims_supported) ? m.claims_supported : null;
-  return { issuer: m.issuer, authorization: String(m.authorization_endpoint || ''), token: String(m.token_endpoint || ''),
+export async function discoverProvider(sso: SsoFlows, provider: SsoProvider): Promise<{ issuer: string; authorization: string; token: string; authTime: boolean | null }> {
+  const metadata = (await configOf(sso, provider)).serverMetadata();
+  const claims = Array.isArray(metadata.claims_supported) ? metadata.claims_supported : null;
+  return { issuer: metadata.issuer, authorization: String(metadata.authorization_endpoint || ''), token: String(metadata.token_endpoint || ''),
     authTime: claims ? claims.includes('auth_time') : null };
 }
 
 // Starts a sign-in: returns the provider's URL to send the browser to, and the binding the browser must keep (a
 // cookie) for the callback. redirectUri: <public address>/api/sso/<id>/callback, registered at the provider. mode:
 // signin, link (username: the signed-in account) or invite (inviteToken: the invitation link's token).
-export async function startSso(provider: SsoProvider, { mode, redirectUri, username, inviteToken, now = Date.now() }:
+export async function startSso(sso: SsoFlows, provider: SsoProvider, { mode, redirectUri, username, inviteToken, now = Date.now() }:
   { mode: SsoMode; redirectUri: string; username?: string; inviteToken?: string; now?: number }): Promise<{ url: string; binding: string }> {
-  const config = await configOf(provider);
-  for (const [k, f] of flows) if (now - f.at > FLOW_MS) flows.delete(k);
+  const config = await configOf(sso, provider, now);
+  const { flows } = sso;
+  for (const [k, flow] of flows) if (now - flow.at > FLOW_MS) flows.delete(k);
   if (flows.size >= MAX_FLOWS) throw httpError('Too many sign-ins are in progress. Try again in a few minutes.', 429);
   const verifier = oidc.randomPKCECodeVerifier();
   const state = oidc.randomState();
@@ -100,28 +106,28 @@ const sameText = (a: string, b: string): boolean => {
 
 // The identity in checked ID token claims. The email is the email claim, else (Entra) preferred_username when it is
 // an address.
-export function claimsOf(c: Record<string, unknown>): SsoClaims {
-  const address = (v: unknown) => (typeof v === 'string' && v.includes('@') ? v : '');
-  const email = address(c.email) || address(c.preferred_username);
-  const v = c.email_verified;
+export function claimsOf(claims: Record<string, unknown>): SsoClaims {
+  const address = (value: unknown) => (typeof value === 'string' && value.includes('@') ? value : '');
+  const email = address(claims.email) || address(claims.preferred_username);
+  const v = claims.email_verified;
   return {
-    subject: String(c.sub ?? ''), email: userKey(email),
-    emailVerified: !address(c.email) || v === undefined ? null : v === true || v === 'true',
-    name: typeof c.name === 'string' ? c.name : '', hd: typeof c.hd === 'string' ? c.hd.toLowerCase() : '',
+    subject: String(claims.sub ?? ''), email: userKey(email),
+    emailVerified: !address(claims.email) || v === undefined ? null : v === true || v === 'true',
+    name: typeof claims.name === 'string' ? claims.name : '', hd: typeof claims.hd === 'string' ? claims.hd.toLowerCase() : '',
   };
 }
 
 // Checks the session age (see the top): link needs an authentication made after the attempt started; otherwise
 // maxAgeHours, when set, bounds it. A small clock skew is allowed.
-function checkAuthTime(provider: SsoProvider, authTime: unknown, f: Flow, now: number): void {
-  if (f.mode !== 'link' && !provider.maxAgeHours) return;
+function checkAuthTime(provider: SsoProvider, authTime: unknown, flow: Flow, now: number): void {
+  if (flow.mode !== 'link' && !provider.maxAgeHours) return;
   if (typeof authTime !== 'number') {
     throw httpError(`${provider.name} didn't say when you signed in (auth_time), which this server requires.${isEntra(provider)
       ? ' An administrator must add the auth_time optional claim to the ID token in the Entra app registration.' : ''}`);
   }
   const ms = authTime * 1000;
-  if (f.mode === 'link' && ms < f.at - SKEW_MS) throw httpError(`Sign in to ${provider.name} again to link it: linking needs a fresh sign-in. Try again.`);
-  if (f.mode !== 'link' && ms < now - provider.maxAgeHours * 3600000 - SKEW_MS) {
+  if (flow.mode === 'link' && ms < flow.at - SKEW_MS) throw httpError(`Sign in to ${provider.name} again to link it: linking needs a fresh sign-in. Try again.`);
+  if (flow.mode !== 'link' && ms < now - provider.maxAgeHours * 3600000 - SKEW_MS) {
     throw httpError(`Your ${provider.name} sign-in is more than ${provider.maxAgeHours} hours old. Sign out of ${provider.name}, then sign in again.`);
   }
 }
@@ -129,22 +135,22 @@ function checkAuthTime(provider: SsoProvider, authTime: unknown, f: Flow, now: n
 // Finishes a sign-in from the provider's answer (query: the callback's query string; binding: from the browser's
 // cookie). The attempt must exist, be unexpired, belong to this provider and browser, and is used up either way; the
 // code is exchanged with the PKCE verifier and the ID token checked against the nonce.
-export async function finishSso(provider: SsoProvider, query: URLSearchParams, binding: string, now = Date.now()): Promise<SsoResult> {
+export async function finishSso(sso: SsoFlows, provider: SsoProvider, query: URLSearchParams, binding: string, now = Date.now()): Promise<SsoResult> {
   const state = query.get('state') || '';
-  const f = flows.get(state);
-  if (f) flows.delete(state);
+  const flow = sso.flows.get(state);
+  if (flow) sso.flows.delete(state);
   const error = query.get('error');
   if (error) throw httpError(`${provider.name} didn't sign you in: ${(query.get('error_description') || error).slice(0, 200)}`);
-  if (!f || f.provider !== provider.id || now - f.at > FLOW_MS) throw httpError('This sign-in has expired or was already used. Try again.');
-  if (!binding || !sameText(binding, f.binding)) throw httpError('This sign-in was started in another browser or tab. Try again.');
-  const url = new URL(f.redirectUri);
+  if (!flow || flow.provider !== provider.id || now - flow.at > FLOW_MS) throw httpError('This sign-in has expired or was already used. Try again.');
+  if (!binding || !sameText(binding, flow.binding)) throw httpError('This sign-in was started in another browser or tab. Try again.');
+  const url = new URL(flow.redirectUri);
   url.search = query.toString();
-  const tokens = await oidc.authorizationCodeGrant(await configOf(provider), url,
-    { pkceCodeVerifier: f.verifier, expectedState: state, expectedNonce: f.nonce, idTokenExpected: true });
+  const tokens = await oidc.authorizationCodeGrant(await configOf(sso, provider, now), url,
+    { pkceCodeVerifier: flow.verifier, expectedState: state, expectedNonce: flow.nonce, idTokenExpected: true });
   const claims = tokens.claims();
   if (!claims || !claims.sub) throw httpError(`${provider.name} didn't say who you are`);
-  checkAuthTime(provider, claims.auth_time, f, now);
-  return { mode: f.mode, username: f.username, inviteToken: f.inviteToken, identity: claimsOf(claims as Record<string, unknown>) };
+  checkAuthTime(provider, claims.auth_time, flow, now);
+  return { mode: flow.mode, username: flow.username, inviteToken: flow.inviteToken, identity: claimsOf(claims as Record<string, unknown>) };
 }
 
 // The identity's email when it can be matched to accounts for this provider: not marked unverified and, when the
@@ -169,8 +175,8 @@ function untrustedReason(provider: SsoProvider, id: SsoClaims): string {
 
 // The account an identity is linked to, or null.
 async function linkedUser(store: Store, provider: string, subject: string): Promise<string | null> {
-  const r = await one<{ username: string }>(store, 'SELECT username FROM user_identities WHERE provider = $1 AND subject = $2', [provider, subject]);
-  return r ? r.username : null;
+  const row = await one<{ username: string }>(store, 'SELECT username FROM user_identities WHERE provider = $1 AND subject = $2', [provider, subject]);
+  return row ? row.username : null;
 }
 
 // Links an identity to an account (409 when it belongs to another one).
@@ -188,40 +194,43 @@ const checkTrusted = (provider: SsoProvider, id: SsoClaims): void => {
 };
 
 // Linking a provider account to the signed-in account (from User Settings).
-async function completeLink(store: Store, provider: SsoProvider, r: SsoResult): Promise<{ username: string; outcome: SsoOutcome }> {
-  const name = userKey(r.username);
+async function completeLink(store: Store, provider: SsoProvider, result: SsoResult): Promise<{ username: string; outcome: SsoOutcome }> {
+  const name = userKey(result.username);
   if (!name || !await getUser(store, name)) throw httpError('Sign in again, then link the account from User Settings', 401);
-  checkTrusted(provider, r.identity);
-  await link(store, provider, name, r.identity);
+  checkTrusted(provider, result.identity);
+  await link(store, provider, name, result.identity);
   return { username: name, outcome: 'linked' };
 }
 
 // Accepting an invitation link with the provider: the invited account gets the provider account linked.
-async function completeInvite(store: Store, provider: SsoProvider, r: SsoResult, touch: (username: string) => Promise<unknown>):
+async function completeInvite(store: Store, provider: SsoProvider, result: SsoResult, touch: (username: string) => Promise<unknown>):
   Promise<{ username: string; outcome: SsoOutcome }> {
-  const id = r.identity;
+  const id = result.identity;
   const invalid = 'This invitation link is invalid, used or expired. Ask the gate admin to send a new one.';
-  const token = await useToken(store, 'invite', r.inviteToken, { peek: true });
+  const token = await peekToken(store, 'invite', result.inviteToken);
   if (!token) throw httpError(invalid);
   const user = await getUser(store, token.username);
   if (!user || !user.invited) throw httpError('This invitation was already used. Sign in instead.', 409);
   checkTrusted(provider, id);
   if (await linkedUser(store, provider.id, id.subject)) throw httpError(`This ${provider.name} account is already linked to another user`, 409);
-  if (!await useToken(store, 'invite', r.inviteToken)) throw httpError(invalid);
-  await acceptInviteWithSso(store, user.username);
-  await link(store, provider, user.username, id);
+  // One transaction: if linking fails, the invitation stays unused (the account would otherwise be left with no way in).
+  await transaction(store, async (tx) => {
+    if (!await useToken(tx, 'invite', result.inviteToken)) throw httpError(invalid);
+    await acceptInviteWithSso(tx, user.username);
+    await link(tx, provider, user.username, id);
+  });
   await touch(user.username);
   return { username: user.username, outcome: 'invite-accepted' };
 }
 
 // What a finished sign-in means for the accounts (see the module comment). Sign-ins and accepted invitations are
 // recorded as sign-ins. Returns the account and what happened; throws (403/409) with a message for the user.
-export async function completeSso(store: Store, provider: SsoProvider, r: SsoResult): Promise<{ username: string; outcome: SsoOutcome }> {
-  const id = r.identity;
+export async function completeSso(store: Store, provider: SsoProvider, result: SsoResult): Promise<{ username: string; outcome: SsoOutcome }> {
+  const id = result.identity;
   const touch = (username: string) => run(store, 'UPDATE user_identities SET last_used_at = $3, email = $4 WHERE provider = $1 AND subject = $2',
     [provider.id, id.subject, new Date().toISOString(), id.email || '']).then(() => recordSignIn(store, username));
-  if (r.mode === 'link') return completeLink(store, provider, r);
-  if (r.mode === 'invite') return completeInvite(store, provider, r, touch);
+  if (result.mode === 'link') return completeLink(store, provider, result);
+  if (result.mode === 'invite') return completeInvite(store, provider, result, touch);
   const linked = await linkedUser(store, provider.id, id.subject);
   if (linked) {
     await touch(linked);
@@ -233,8 +242,10 @@ export async function completeSso(store: Store, provider: SsoProvider, r: SsoRes
   }
   const invited = await one<{ username: string }>(store, "SELECT username FROM users WHERE pending_email = $1 AND password_hash = '!'", [email]);
   if (invited) {
-    await acceptInviteWithSso(store, invited.username);
-    await link(store, provider, invited.username, id);
+    await transaction(store, async (tx) => {
+      await acceptInviteWithSso(tx, invited.username);
+      await link(tx, provider, invited.username, id);
+    });
     await touch(invited.username);
     return { username: invited.username, outcome: 'invite-accepted' };
   }
@@ -245,8 +256,11 @@ export async function completeSso(store: Store, provider: SsoProvider, r: SsoRes
     return { username: owner.username, outcome: 'linked' };
   }
   if (provider.autoCreate) {
-    const user = await createSsoUser(store, { email, createdBy: `sso:${provider.id}` });
-    await link(store, provider, user.username, id);
+    const user = await transaction(store, async (tx) => {
+      const created = await createSsoUser(tx, { email, createdBy: `sso:${provider.id}` });
+      await link(tx, provider, created.username, id);
+      return created;
+    });
     await touch(user.username);
     return { username: user.username, outcome: 'created' };
   }
@@ -254,38 +268,42 @@ export async function completeSso(store: Store, provider: SsoProvider, r: SsoRes
 }
 
 // The account's linked identities (providerName: the configured name, or the id when the provider was removed).
-export async function listIdentities(store: Store, username: unknown, providers: SsoProvider[]): Promise<SsoIdentity[]> {
+export async function listIdentities(store: Store, username: string, providers: SsoProvider[]): Promise<SsoIdentity[]> {
   return (await all<{ provider: string; subject: string; email: string; linked_at: string; last_used_at: string | null }>(store,
     'SELECT provider, subject, email, linked_at, last_used_at FROM user_identities WHERE username = $1 ORDER BY linked_at', [userKey(username)]))
-    .map((r) => ({ provider: r.provider, providerName: providers.find((provider) => provider.id === r.provider)?.name || r.provider, subject: r.subject,
-      email: r.email, linkedAt: r.linked_at, lastUsedAt: r.last_used_at }));
+    .map((row) => ({ provider: row.provider, providerName: providers.find((provider) => provider.id === row.provider)?.name || row.provider, subject: row.subject,
+      email: row.email, linkedAt: row.linked_at, lastUsedAt: row.last_used_at }));
 }
 
 // False when the account is linked to a provider set to passwords: false (it must sign in with that provider).
-export async function passwordAllowed(store: Store, username: unknown, providers: SsoProvider[]): Promise<boolean> {
-  const off = providers.filter((provider) => !provider.passwords).map((provider) => provider.id);
-  if (!off.length) return true;
-  return !await one(store, 'SELECT 1 AS x FROM user_identities WHERE username = $1 AND provider = ANY($2)', [userKey(username), off]);
+// Whether the account keeps a way to sign in once passkey `passkeyId` is removed: another passkey, a linked provider
+// that is configured, or a password (a provider that turns passwords off is linked, so that counts already).
+export async function signInLeftWithoutPasskey(store: Store, username: string, passkeyId: string, providers: SsoProvider[]): Promise<boolean> {
+  const name = userKey(username);
+  if (await one(store, 'SELECT 1 AS x FROM passkeys WHERE username = $1 AND id <> $2', [name, String(passkeyId)])) return true;
+  const linked = await all<{ provider: string }>(store, 'SELECT provider FROM user_identities WHERE username = $1', [name]);
+  if (linked.some((row) => providers.some((provider) => provider.id === row.provider))) return true;
+  return Boolean((await getUser(store, name))?.hasPassword);
 }
 
 // The providers that keep the account from using a password (their names), [] when none.
-export async function passwordBlockers(store: Store, username: unknown, providers: SsoProvider[]): Promise<string[]> {
-  const ids = new Set((await all<{ provider: string }>(store, 'SELECT provider FROM user_identities WHERE username = $1', [userKey(username)])).map((r) => r.provider));
+export async function passwordBlockers(store: Store, username: string, providers: SsoProvider[]): Promise<string[]> {
+  const ids = new Set((await all<{ provider: string }>(store, 'SELECT provider FROM user_identities WHERE username = $1', [userKey(username)])).map((row) => row.provider));
   return providers.filter((provider) => !provider.passwords && ids.has(provider.id)).map((provider) => provider.name);
 }
 
 // Unlinks one identity; refused (409) when the account would be left with no way to sign in: another identity of a
 // configured provider, a passkey, or a usable password (one it has and may still use).
-export async function unlinkIdentity(store: Store, username: unknown, provider: unknown, subject: unknown, providers: SsoProvider[]): Promise<void> {
+export async function unlinkIdentity(store: Store, username: string, { provider, subject }: { provider: unknown; subject: unknown }, providers: SsoProvider[]): Promise<void> {
   const name = userKey(username);
   const rest = (await all<{ provider: string; subject: string }>(store, 'SELECT provider, subject FROM user_identities WHERE username = $1', [name]));
-  if (!rest.some((r) => r.provider === provider && r.subject === subject)) throw httpError('That sign-in is not linked to your account', 404);
-  const others = rest.filter((r) => !(r.provider === provider && r.subject === subject));
+  if (!rest.some((row) => row.provider === provider && row.subject === subject)) throw httpError('That sign-in is not linked to your account', 404);
+  const others = rest.filter((row) => !(row.provider === provider && row.subject === subject));
   const user = (await getUser(store, name))!;
-  const passwordsOff = new Set(providers.filter((p) => !p.passwords).map((p) => p.id));
+  const passwordsOff = new Set(providers.filter((configured) => !configured.passwords).map((configured) => configured.id));
   const canPassword = user.hasPassword && !others.some((other) => passwordsOff.has(other.provider));
   const passkeys = await one(store, 'SELECT 1 AS x FROM passkeys WHERE username = $1', [name]);
-  if (!canPassword && !passkeys && !others.some((other) => providers.some((p) => p.id === other.provider))) {
+  if (!canPassword && !passkeys && !others.some((other) => providers.some((configured) => configured.id === other.provider))) {
     throw httpError('This is your only way to sign in. Add a passkey, set a password or link another account first.', 409);
   }
   await run(store, 'DELETE FROM user_identities WHERE username = $1 AND provider = $2 AND subject = $3', [name, provider, subject]);

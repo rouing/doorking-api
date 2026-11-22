@@ -9,10 +9,28 @@ import os from 'node:os';
 import path from 'node:path';
 import * as dk from '../index.ts';
 import { Application } from '../web/app.ts';
+import { staticFile } from '../web/requests.ts';
 import { withContext } from '@logtape/logtape';
 import { helpPage, inline, markdownToHtml } from '../src/markdown.ts';
 import { loadData } from '../web/data.ts';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
+
+// What the tests read back from the database.
+async function getGateState(store: dk.Store, phone: string) {
+  const row = await dk.one<{ pulled_at: string; round_trip_ok: boolean; problems: dk.RoundTripProblem[]; rebuild_ok: boolean | null;
+    rebuild_problems: dk.RoundTripProblem[] | null }>(store,
+    'SELECT pulled_at, round_trip_ok, problems, rebuild_ok, rebuild_problems FROM gate_state WHERE phone = $1', [dk.phoneDigits(phone)]);
+  return { pulledAt: row!.pulled_at, roundTripOk: row!.round_trip_ok, problems: row!.problems, rebuildOk: row!.rebuild_ok, rebuildProblems: row!.rebuild_problems! };
+}
+async function gateStateCounts(store: dk.Store, phone: string): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  for (const table of ['gate_residents', 'gate_cards', 'gate_settings']) {
+    out[table] = (await dk.one<{ n: number }>(store, `SELECT COUNT(*) AS n FROM ${table} WHERE phone = $1`, [dk.phoneDigits(phone)]))!.n;
+  }
+  return out;
+}
+const txHistoryCount = async (store: dk.Store, phone: string): Promise<number> =>
+  (await dk.one<{ n: number }>(store, 'SELECT COUNT(*) AS n FROM tx_history WHERE phone = $1', [dk.phoneDigits(phone)]))!.n;
 
 const SIZE = 1024;
 
@@ -142,7 +160,7 @@ test('ensureCache makes a working copy from the pull: files stored encrypted, th
   const raw = (await store.db.query("SELECT data FROM gate_files WHERE copy = 'base' AND name = 'names.bin'")).rows[0].data;
   assert.ok(!raw.includes(Buffer.from('Smith, J')), 'stored encrypted');
   assert.strictEqual((await store.db.query("SELECT COUNT(*) AS n FROM gate_files WHERE copy = 'working'")).rows[0].n, 0);
-  assert.deepStrictEqual(await dk.gateStateCounts(store, PHONE), { gate_residents: 3, gate_cards: 2, gate_settings: dk.GATE_SETTING_FIELDS.length - 1 });
+  assert.deepStrictEqual(await gateStateCounts(store, PHONE), { gate_residents: 3, gate_cards: 2, gate_settings: dk.GATE_SETTING_FIELDS.length - 1 });
 }));
 
 test('ensureCache fails when nothing was pulled', withStore(async (store) => {
@@ -259,22 +277,22 @@ test('an item changed differently at the gate and here is a conflict: the change
   await assert.rejects(() => dk.prepareSend(store, PHONE), (e) => e.status === 409 && /2 conflict/.test(e.message));
   assert.strictEqual((await pullInto(store, g)).outcome, 'unchanged');
   assert.strictEqual((await dk.cacheStatus(store, PHONE)).conflicts.length, 2); // still to decide
-  let st = await dk.resolveConflict(store, PHONE, 'setting', 'talkTime', 'gate');
+  let st = await dk.resolveConflict(store, PHONE, { kind: 'setting', key: 'talkTime', choice: 'gate' });
   assert.deepStrictEqual(st.conflicts.map((c) => c.key), ['101']);
   assert.strictEqual(dk.decodeWorking(await working(store)).settings.talkTime, '1:30');
-  st = await dk.resolveConflict(store, PHONE, 'resident', '101', 'mine');
+  st = await dk.resolveConflict(store, PHONE, { kind: 'resident', key: '101', choice: 'mine' });
   assert.deepStrictEqual(st.conflicts, []);
   assert.strictEqual(dk.decodeWorking(await working(store)).residents.find((x) => x.directoryCode === '101').name, 'Smith, Jane');
   assert.ok((await dk.prepareSend(store, PHONE)).changedBlocks['names.bin'].length);
-  await assert.rejects(() => dk.resolveConflict(store, PHONE, 'resident', '101', 'mine'), (e) => e.status === 404);
-  await assert.rejects(() => dk.resolveConflict(store, PHONE, 'resident', '101', 'both'), (e) => e.status === 400);
+  await assert.rejects(() => dk.resolveConflict(store, PHONE, { kind: 'resident', key: '101', choice: 'mine' }), (e) => e.status === 404);
+  await assert.rejects(() => dk.resolveConflict(store, PHONE, { kind: 'resident', key: '101', choice: 'both' }), (e) => e.status === 400);
 }));
 
 test('a resident removed at the gate but changed here is a conflict; taking the gate\'s removes it', withPull(async (store) => {
   await saveWorking(store, dk.applyResidentEdit(await working(store), { directoryCode: '102', entryCode: '4321' }));
   const r = await pullInto(store, dk.removeDirectoryCode(syntheticGate(), '102'));
   assert.deepStrictEqual(r.status.conflicts.map((c) => [c.key, c.gate, c.mine]), [['102', 'removed', 'ACME Deliveries']]);
-  await dk.resolveConflict(store, PHONE, 'resident', '102', 'gate');
+  await dk.resolveConflict(store, PHONE, { kind: 'resident', key: '102', choice: 'gate' });
   assert.deepStrictEqual(dk.decodeWorking(await working(store)).residents.map((x) => x.directoryCode), ['101', '103']);
   assert.strictEqual((await dk.cacheStatus(store, PHONE)).edited, false);
 }));
@@ -599,11 +617,11 @@ test('checkPull records the rebuild check next to the round-trip check', withSto
   const gate = fullGate();
   const check = await dk.checkPull(store, PHONE, gate, new Date(T1), { masterCode: '1209' });
   assert.deepStrictEqual([check.ok, check.rebuild.ok, check.carried], [true, true, ['masterCode']]);
-  const s = await dk.getGateState(store, PHONE);
+  const s = await getGateState(store, PHONE);
   assert.deepStrictEqual([s.roundTripOk, s.rebuildOk, s.rebuildProblems], [true, true, []]);
   gate.names[0x2000] = 0;
   await dk.checkPull(store, PHONE, gate, new Date(T1));
-  const t = await dk.getGateState(store, PHONE);
+  const t = await getGateState(store, PHONE);
   assert.deepStrictEqual([t.roundTripOk, t.rebuildOk, t.rebuildProblems.map((p) => p.offsets)], [true, false, [['0x0', '0x1', '0x2', '0x3', '0x2000']]]);
 }));
 
@@ -652,6 +670,16 @@ test('transactions take names from the working copy values: directory code, entr
   assert.deepStrictEqual(loadData(rcv.mtime, values, null, []).transactions.rows, []); // pulled, no events
 });
 
+test('transaction years: worked out backwards from the pull, allowing a gate clock a little ahead', () => {
+  const rec = (mmdd) => `${mmdd}a35300f10800ffff`;
+  const years = (dates, pulledAt) => dk.orderRcvOut(Buffer.from(dates.map(rec).join(''), 'hex'), pulledAt).map((record) => record.year);
+  const nov21 = new Date(2026, 10, 21, 23, 59);
+  assert.deepStrictEqual(years(['1120', '1122'], nov21), [2026, 2026], 'gate a few minutes ahead past midnight');
+  assert.deepStrictEqual(years(['1225', '1120', '1121'], nov21), [2025, 2026, 2026], 'later in the year: the year before');
+  assert.deepStrictEqual(years(['1120', '0000', '1121'], nov21), [2026, 2026, 2026], 'a record with no date changes nothing');
+  assert.deepStrictEqual(years(['1230', '0101'], new Date(2026, 11, 31, 23, 59)), [2026, 2027], 'gate already in the new year');
+});
+
 test('History values patches: only what changed, reverted exactly, refused when a later change touched it', () => {
   const gate = syntheticGate();
   const w0 = dk.decodeWorking(gate);
@@ -698,12 +726,12 @@ test('reverting a values patch goes through the same save check as an edit', wit
 
 test('checkPull records the round-trip check of a pull', withStore(async (store) => {
   assert.strictEqual((await dk.checkPull(store, PHONE, syntheticGate(), new Date(T1))).ok, true);
-  const state = await dk.getGateState(store, PHONE);
+  const state = await getGateState(store, PHONE);
   assert.deepStrictEqual([state.pulledAt, state.roundTripOk, state.problems], [T1, true, []]);
   const bad = syntheticGate();
   bad.names[0x07] = 0x0c;
   assert.strictEqual((await dk.checkPull(store, PHONE, bad, new Date(T2))).ok, false);
-  assert.deepStrictEqual([(await dk.getGateState(store, PHONE)).pulledAt, (await dk.getGateState(store, PHONE)).roundTripOk], [T2, false]);
+  assert.deepStrictEqual([(await getGateState(store, PHONE)).pulledAt, (await getGateState(store, PHONE)).roundTripOk], [T2, false]);
 }));
 
 test('deleteGateData removes every row about one gate, all access to it, and nothing else', withStore(async (store) => {
@@ -741,7 +769,7 @@ test('history lists newest first, hides patches and marks reverted events', with
   assert.strictEqual(list[2].revertedBy.user, 'user2');
   assert.strictEqual(list[0].revertible, true);
   assert.strictEqual(list[1].revertible, false);
-  assert.ok((await dk.readHistory(store, '5550100'))[0].files);
+  assert.ok((await dk.historyEvent(store, '5550100', list.at(-1).id)).event.files); // kept for reverting
 }));
 
 test('entryHistory: one directory code\'s changes, newest first, with who and when, and reverts marked', withStore(async (store) => {
@@ -790,8 +818,8 @@ test('transaction history keeps events that leave the gate buffer and adds only 
   const p3 = await dk.readTransactionPage(store, '5550100', { limit: 3, before: p2.next });
   assert.deepStrictEqual([p1, p2, p3].map((p) => p.records.map((t) => t.minute)), [[14, 30, 31], [11, 12, 13], [10]]);
   assert.strictEqual(p3.next, null);
-  assert.strictEqual(await dk.txHistoryCount(store, '5550100'), 7);
-  assert.strictEqual(await dk.txHistoryCount(store, '5550199'), 0);
+  assert.strictEqual(await txHistoryCount(store, '5550100'), 7);
+  assert.strictEqual(await txHistoryCount(store, '5550199'), 0);
   // The last pull time is recorded even when a pull adds nothing; an older time never replaces a newer one.
   const later = new Date(2026, 9, 22);
   assert.deepStrictEqual(await dk.mergeTransactions(store, '5550100', rcv(30, 31), later), { added: 0, kept: 2, gap: false });
@@ -837,6 +865,13 @@ test('database encrypts master codes and DKS logins, and keeps prefs per gate', 
   assert.deepStrictEqual(await dk.getPrefs(store, '5550199'), {});
 }));
 
+test('accounts: the same username created twice at once gives one account and one refusal', withStore(async (store) => {
+  const make = () => dk.createUser(store, { username: 'alex', password: PW, createdBy: 't' });
+  const results = await Promise.allSettled([make(), make()]);
+  assert.deepStrictEqual(results.map((result) => result.status).sort(), ['fulfilled', 'rejected']);
+  assert.strictEqual(results.find((result) => result.status === 'rejected').reason.status, 409);
+}));
+
 test('accounts: rules, scrypt hashes, unique usernames and emails, own settings and password', withStore(async (store) => {
   assert.throws(() => dk.checkUsername('ab'), /3-32/);
   assert.throws(() => dk.checkUsername('bad name'), /3-32/);
@@ -873,13 +908,12 @@ test('accounts: rules, scrypt hashes, unique usernames and emails, own settings 
   assert.strictEqual((await dk.updateUserSettings(store, 'john', { phone: '+1 214 555 0100' })).phone, '+12145550100');
   assert.strictEqual((await dk.updateUserSettings(store, 'jane', { dark: false })).phone, '+12145550100'); // untouched
   assert.strictEqual((await dk.updateUserSettings(store, 'jane', { phone: '' })).phone, '');
-  // Own password change: needs the current one; ends the other sessions, keeps this one; clears must-change.
+  // Own password change (the route checks the current one): ends the other sessions, keeps this one; clears must-change.
   const keep = await dk.findSession(store, await dk.createSession(store, 'jane'), 60000);
   assert.ok(Math.abs(keep.createdAt - Date.now()) < 60000); // when it signed in (passkey changes on SSO-only accounts)
   const othertoken = await dk.createSession(store, 'jane');
-  await assert.rejects(() => dk.changeOwnPassword(store, 'jane', 'wrong password!!', NEW_PW, keep.tokenHash), /current password is wrong/);
-  await assert.rejects(() => dk.changeOwnPassword(store, 'jane', PW, PW, keep.tokenHash), /different/);
-  await dk.changeOwnPassword(store, 'jane', PW, NEW_PW, keep.tokenHash);
+  await assert.rejects(() => dk.changeOwnPassword(store, 'jane', { current: PW, next: PW, keepSession: keep.tokenHash }), /different/);
+  await dk.changeOwnPassword(store, 'jane', { current: PW, next: NEW_PW, keepSession: keep.tokenHash });
   assert.strictEqual(await dk.findSession(store, othertoken, 60000), null);
   assert.ok(await dk.findSession(store, '0'.repeat(64), 60000) === null);
   assert.strictEqual((await dk.getUser(store, 'jane')).mustChangePassword, false);
@@ -896,7 +930,8 @@ test('email: confirmation, unconfirmed addresses never block, reset lookup, invi
   let u = await dk.updateUserSettings(store, 'ann', { email: 'Ann@Example.com' });
   assert.deepStrictEqual([u.email, u.pendingEmail], ['', 'ann@example.com']);
   const t1 = await dk.createToken(store, 'verify', 'ann', 'ann@example.com');
-  assert.strictEqual(await dk.useToken(store, 'reset', t1), null); // wrong kind (and now used up)
+  assert.strictEqual(await dk.useToken(store, 'reset', t1), null); // wrong kind: refused, and left unused
+  assert.ok(await dk.peekToken(store, 'verify', t1));
   const t2 = await dk.createToken(store, 'verify', 'ann', 'ann@example.com');
   const t3 = await dk.createToken(store, 'verify', 'ann', 'ann@example.com'); // replaces t2
   assert.strictEqual(await dk.useToken(store, 'verify', t2), null);
@@ -1021,6 +1056,11 @@ test('reauthNeeded: who must re-confirm before an email or passkey change', () =
   assert.strictEqual(need({ strong: true, passkeys: 2 }, 'remove-passkey'), 'ok');
   assert.strictEqual(need({}, 'email'), 'password');
   assert.strictEqual(need({}, 'add-passkey'), 'password'); // the first passkey
+  // Just signed in: the first passkey without the password again (the browser saving one after a password sign-in).
+  assert.strictEqual(need({ signedInAt: 4 * H - dk.FRESH_SIGN_IN_MS }, 'add-passkey'), 'ok');
+  assert.strictEqual(need({ signedInAt: 4 * H - dk.FRESH_SIGN_IN_MS - 1 }, 'add-passkey'), 'password');
+  assert.strictEqual(need({ signedInAt: 4 * H, passkeys: 1 }, 'add-passkey'), 'step-up', 'not when the account already has one');
+  assert.strictEqual(need({ signedInAt: 4 * H }, 'email'), 'password');
   assert.strictEqual(need({ passkeys: 1 }, 'add-passkey'), 'step-up');
   assert.strictEqual(need({ passkeys: 1 }, 'remove-passkey'), 'step-up');
   // Lost passkey: signed in after a reset by email, within the window.
@@ -1126,8 +1166,9 @@ function softAuthenticator() {
   const client = (type, challenge, origin) => Buffer.from(JSON.stringify({ type, challenge, origin, crossOrigin: false }));
   return {
     id: b64(credId),
-    register(options, origin = 'https://gate.example.com') {
-      const authData = Buffer.concat([sha(options.rp.id), Buffer.from([0x45]), counter(0), Buffer.alloc(16), Buffer.from([0, credId.length]), credId, Buffer.from(cose)]);
+    // uv: false for a passkey saved without checking the user (flags user present + attested data only).
+    register(options, origin = 'https://gate.example.com', { uv = true } = {}) {
+      const authData = Buffer.concat([sha(options.rp.id), Buffer.from([uv ? 0x45 : 0x41]), counter(0), Buffer.alloc(16), Buffer.from([0, credId.length]), credId, Buffer.from(cose)]);
       const attestationObject = isoCBOR.encode(new Map([['fmt', 'none'], ['attStmt', new Map()], ['authData', new Uint8Array(authData)]]));
       return { id: b64(credId), rawId: b64(credId), type: 'public-key', clientExtensionResults: {},
         response: { clientDataJSON: b64(client('webauthn.create', options.challenge, origin)), attestationObject: b64(attestationObject), transports: ['internal'] } };
@@ -1143,7 +1184,7 @@ function softAuthenticator() {
 }
 
 test('passkeys: added with a real WebAuthn answer, sign in, one-use challenges, site and counter checks', withStore(async (store) => {
-  const RP = { rpID: 'gate.example.com', origin: 'https://gate.example.com' };
+  const RP = { rpID: 'gate.example.com', origin: 'https://gate.example.com', challenges: new dk.PasskeyChallenges() };
   await dk.createUser(store, { username: 'ann', password: PW, createdBy: 't', mustChangePassword: false });
   assert.strictEqual(await dk.checkOwnPassword(store, 'ann', PW), true);
   assert.strictEqual(await dk.checkOwnPassword(store, 'ann', 'wrong password!!'), false);
@@ -1167,8 +1208,9 @@ test('passkeys: added with a real WebAuthn answer, sign in, one-use challenges, 
   await assert.rejects(() => dk.signInWithPasskey(store, key.signIn(a2, 3), RP), (e) => e.status === 401); // counter went back
   const a3 = await dk.authenticationOptions(RP);
   await assert.rejects(() => dk.signInWithPasskey(store, key.signIn(a3, 9, 'https://evil.example.com'), RP), /Passkey sign-in failed/);
-  const a4 = await dk.authenticationOptions({ rpID: 'localhost', origin: 'http://localhost:8080' });
-  await assert.rejects(() => dk.signInWithPasskey(store, key.signIn(a4, 9, 'http://localhost:8080'), { rpID: 'localhost', origin: 'http://localhost:8080' }),
+  const local = { rpID: 'localhost', origin: 'http://localhost:8080', challenges: RP.challenges };
+  const a4 = await dk.authenticationOptions(local);
+  await assert.rejects(() => dk.signInWithPasskey(store, key.signIn(a4, 9, 'http://localhost:8080'), local),
     /not registered here/); // made for the public name only
   await assert.rejects(async () => dk.signInWithPasskey(store, softAuthenticator().signIn(await dk.authenticationOptions(RP), 1), RP), /not registered here/);
   // A registration challenge can't be used to sign in.
@@ -1180,11 +1222,36 @@ test('passkeys: added with a real WebAuthn answer, sign in, one-use challenges, 
   await dk.renamePasskey(store, 'ann', key.id, 'iPhone');
   assert.strictEqual((await dk.listPasskeys(store, 'ann'))[0].name, 'iPhone');
   assert.strictEqual(await dk.removePasskey(store, 'ann', key.id), 'iPhone');
-  await assert.rejects(async () => dk.signInWithPasskey(store, key.signIn(await dk.authenticationOptions(RP), 30), RP), /not registered here/);
+  await assert.rejects(async () => dk.signInWithPasskey(store, key.signIn(await dk.authenticationOptions(RP), 30), RP),
+    (e) => /not registered here/.test(e.message) && e instanceof dk.UnknownPasskeyError && e.status === 401, 'the page tells the browser to stop offering it');
+}));
+
+test('passkeys saved by the browser after a password sign-in: no user check then, only with their own challenge', withStore(async (store) => {
+  const RP = { rpID: 'gate.example.com', origin: 'https://gate.example.com', challenges: new dk.PasskeyChallenges() };
+  await dk.createUser(store, { username: 'ann', password: PW, createdBy: 't', mustChangePassword: false });
+  assert.strictEqual(await dk.passkeyUserHandle(store, 'ann'), null);
+  const key = softAuthenticator();
+  const auto = await dk.autoRegistrationOptions(store, 'ann', RP);
+  assert.strictEqual(auto.authenticatorSelection.userVerification, 'preferred');
+  await assert.rejects(() => dk.addPasskey(store, 'ann', key.register(auto, RP.origin, { uv: false }), 'Saved', RP), /could not be added/,
+    'an auto challenge is not a normal one');
+  const normal = await dk.registrationOptions(store, 'ann', RP);
+  await assert.rejects(() => dk.addPasskey(store, 'ann', key.register(normal, RP.origin, { uv: false }), 'Saved', RP), /could not be added/,
+    'a normal add still needs the user checked');
+  const again = await dk.autoRegistrationOptions(store, 'ann', RP);
+  await assert.rejects(() => dk.addAutoPasskey(store, 'ann', key.register(normal, RP.origin, { uv: false }), 'Saved', RP), /could not be added/,
+    'a normal challenge is not an auto one');
+  const pk = await dk.addAutoPasskey(store, 'ann', key.register(again, RP.origin, { uv: false }), 'Saved', RP);
+  assert.strictEqual(pk.name, 'Saved');
+  assert.match(await dk.passkeyUserHandle(store, 'ann'), /^[\w-]{43}$/);
+  // Signing in with it still needs the user checked.
+  const a = await dk.authenticationOptions(RP);
+  assert.strictEqual(a.userVerification, 'required');
+  assert.strictEqual(await dk.signInWithPasskey(store, key.signIn(a, 1), RP), 'ann');
 }));
 
 test('step-up: passkey confirmation of the signed-in user only; sessions remember when they were confirmed', withStore(async (store) => {
-  const RP = { rpID: 'gate.example.com', origin: 'https://gate.example.com' };
+  const RP = { rpID: 'gate.example.com', origin: 'https://gate.example.com', challenges: new dk.PasskeyChallenges() };
   await dk.createUser(store, { username: 'ann', ['pass' + 'word']: PW, createdBy: 't', mustChangePassword: false });
   await dk.createUser(store, { username: 'bob', ['pass' + 'word']: PW, createdBy: 't', mustChangePassword: false });
   await assert.rejects(() => dk.confirmationOptions(store, 'ann', RP), (e) => e.status === 409 && /no passkey for gate.example.com/.test(e.message));
@@ -1332,10 +1399,10 @@ test('database setup: sql/schema.sql, login from config, db-setup on existing ro
 }));
 
 test('schedules: validation, due times and missed runs', withStore(async (store) => {
-  assert.match(dk.normalizeSchedule({ days: [], time: '02:00', actions: ['send'] }).error, /day/);
-  assert.match(dk.normalizeSchedule({ days: [1], time: '24:00', actions: ['send'] }).error, /Time/);
-  assert.match(dk.normalizeSchedule({ days: [1], time: '2:00', actions: ['x'] }).error, /transfer/);
-  assert.deepStrictEqual(dk.normalizeSchedule({ days: [3, 1, 1, 9], time: '2:05', actions: ['snapshots', 'transactions', 'send'] }).schedule,
+  assert.throws(() => dk.normalizeSchedule({ days: [], time: '02:00', actions: ['send'] }), /day/);
+  assert.throws(() => dk.normalizeSchedule({ days: [1], time: '24:00', actions: ['send'] }), /Time/);
+  assert.throws(() => dk.normalizeSchedule({ days: [1], time: '2:00', actions: ['x'] }), /transfer/);
+  assert.deepStrictEqual(dk.normalizeSchedule({ days: [3, 1, 1, 9], time: '2:05', actions: ['snapshots', 'transactions', 'send'] }),
     { days: [1, 3], time: '02:05', actions: ['send', 'transactions', 'snapshots'], enabled: true });
   // Wednesday 2026-10-14 10:00 local time.
   const now = new Date(2026, 9, 14, 10, 0);
@@ -1368,31 +1435,31 @@ test('schedules: validation, due times and missed runs', withStore(async (store)
 const CAM = { serial: 'TESTSERIAL0001', username: 'viewer', password: 'pw', channels: [{ channel: 1, name: 'Front gate' }, { channel: 2 }] };
 
 test('cameras: settings validation, encrypted password, blank password keeps the saved one', withStore(async (store) => {
-  assert.match(dk.normalizeCameraSettings({ ...CAM, serial: 'x' }).error, /serial/);
-  assert.match(dk.normalizeCameraSettings({ ...CAM, channels: [] }).error, /channels/);
-  assert.match(dk.normalizeCameraSettings({ ...CAM, channels: [{ channel: 1 }, { channel: '1' }] }).error, /twice/);
-  assert.match(dk.normalizeCameraSettings({ ...CAM, frames: 9 }).error, /Frames/);
-  assert.match(dk.normalizeCameraSettings({ ...CAM, framesAfter: -1 }).error, /after the minute/);
-  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, framesAfter: '0' }).settings.framesAfter, 0);
-  assert.match(dk.normalizeCameraSettings({ ...CAM, mode: 'film' }).error, /Save must be/);
-  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, mode: 'video' }).settings.mode, 'video');
-  assert.match(dk.normalizeCameraSettings({ ...CAM, clipTries: 0 }).error, /Video tries/);
-  assert.match(dk.normalizeCameraSettings({ ...CAM, clipTries: 6 }).error, /Video tries/);
-  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, clipTries: '4' }).settings.clipTries, 4);
-  assert.deepStrictEqual(dk.normalizeCameraSettings({ ...CAM, channels: [...CAM.channels, { channel: '' }] }).settings, {
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, serial: 'x' }), /serial/);
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, channels: [] }), /channels/);
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, channels: [{ channel: 1 }, { channel: '1' }] }), /twice/);
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, frames: 9 }), /Frames/);
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, framesAfter: -1 }), /after the minute/);
+  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, framesAfter: '0' }).framesAfter, 0);
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, mode: 'film' }), /Save must be/);
+  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, mode: 'video' }).mode, 'video');
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, clipTries: 0 }), /Video tries/);
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, clipTries: 6 }), /Video tries/);
+  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, clipTries: '4' }).clipTries, 4);
+  assert.deepStrictEqual(dk.normalizeCameraSettings({ ...CAM, channels: [...CAM.channels, { channel: '' }] }), {
     enabled: true, serial: CAM.serial, username: 'viewer', channels: [{ channel: 1, name: 'Front gate' }, { channel: 2, name: '' }],
     clockOffset: 0, mode: 'snapshots', frames: 3, framesAfter: 0, clipTries: 2, events: 'access', backfillHours: 24, keepDays: 0,
   });
-  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, keepDays: '30' }).settings.keepDays, 30);
-  assert.match(dk.normalizeCameraSettings({ ...CAM, keepDays: 7 }).error, /Keep pictures/);
+  assert.strictEqual(dk.normalizeCameraSettings({ ...CAM, keepDays: '30' }).keepDays, 30);
+  assert.throws(() => dk.normalizeCameraSettings({ ...CAM, keepDays: 7 }), /Keep pictures/);
   await assert.rejects(() => dk.saveCameraSettings(store, '5550100', 'u1', { ...CAM, password: '' }), /password is required/);
   const saved = await dk.saveCameraSettings(store, '555-0100', 'u1', CAM);
   assert.strictEqual(saved.password, undefined);
   assert.strictEqual(saved.savedBy, 'u1');
   const raw = (await store.db.query('SELECT password FROM cameras WHERE phone = $1', ['5550100'])).rows[0].password;
-  assert.ok(raw.startsWith('v1:') && !raw.includes('pw'));
+  assert.ok(raw.startsWith('v1:') && dk.decrypt(store, raw) === 'pw'); // stored encrypted
   await dk.saveCameraSettings(store, '5550100', 'u2', { ...CAM, password: '', clockOffset: -5 });
-  const again = await dk.getCameraSettings(store, '5550100', { withPassword: true });
+  const again = await dk.recorderSettings(store, '5550100');
   assert.strictEqual(again.password, 'pw');
   assert.strictEqual(again.clockOffset, -5);
   assert.strictEqual(await dk.deleteCameraSettings(store, '5550100'), true);
@@ -1404,7 +1471,7 @@ test('cameras: snapshot times, pending minutes, masking and file names', withSto
   assert.strictEqual(dk.minuteKey(ts), '20261019-0956');
   assert.strictEqual(dk.playbackTime(new Date(2026, 9, 19, 9, 56, 51)), '2026_10_19_09_56_51');
   assert.deepStrictEqual(dk.frameOffsets(3), [0, 20, 40]);
-  const cfg = dk.normalizeCameraSettings(CAM).settings;
+  const cfg = dk.normalizeCameraSettings(CAM);
   const now = ts + 3600000;
   const rows = [
     { ts, access: 'Admit' }, { ts, access: 'Deny' }, { ts: ts - 60000, access: '' },
@@ -1418,6 +1485,7 @@ test('cameras: snapshot times, pending minutes, masking and file names', withSto
   assert.deepStrictEqual(dk.pendingMinutes({ ...cfg, events: 'all' }, system, {}, now).map((p) => p.minute), ['20261019-0951']);
   assert.deepStrictEqual(['20261019-0953', '20261019-0952', '20261019-0951', '20261019-0900'].map((m) => dk.noFootageMinute(system, m)),
     [true, true, false, false]);
+  assert.deepStrictEqual([...dk.noFootageMinutes(system)].sort(), ['20261019-0952', '20261019-0953']); // all at once, for the clean-up
   // Also modem transfers, anti-pass back maintenance and System relay commands, but not a momentary open (System Admit).
   assert.deepStrictEqual([['Modem-to-Modem', ''], ['Modem', ''], ['APB Re-Sync', ''], ['APB Counter', ''], ['System', 'Hold'],
     ['System', 'H/U'], ['System', '1 Hour'], ['System', 'Admit'], ['Open Request', 'Admit'], ['Cards', 'Deny']]
@@ -1511,7 +1579,7 @@ test('cameras: tidySnapshots deletes old minutes and leftover pieces, and marks 
   log = await dk.listSnapshots(store, '5550100');
   assert.deepStrictEqual([log['20261001-0900'].status, log['20261001-0900'].error], ['removed', 'Deleted after 30 days']);
   assert.strictEqual(log['20261110-0900'].status, 'done');
-  const cfg = { ...dk.normalizeCameraSettings({ ...CAM, mode: 'video', backfillHours: 720 }).settings, keepDays: 30 };
+  const cfg = { ...dk.normalizeCameraSettings({ ...CAM, mode: 'video', backfillHours: 720 }), keepDays: 30 };
   const rows = [new Date(2026, 9, 1, 9, 0, 30), new Date(2026, 9, 15, 9, 0, 30), new Date(2026, 9, 10, 9, 0, 30), new Date(2026, 10, 12, 10, 0, 30)]
     .map((d) => ({ ts: d.getTime(), access: 'Admit' }));
   // Removed minutes are skipped, and so is anything older than keepDays (here 2026-10-10, never fetched).
@@ -1593,7 +1661,7 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   assert.deepStrictEqual([s.files.sort(), s.shifts], [['ch1-00.jpg', 'ch1-30.jpg'], { 'ch1-00.jpg': -2, 'ch1-30.jpg': 2 }]);
   assert.ok(asked.includes('/cam/playback?channel=1&starttime=2026_10_19_09_55_37'));
   holes.length = 0;
-  s = await dk.refreshSnapshot(store, holeRunner, '5550100', dir, '20261019-0955', 'ch1-00.jpg');
+  s = await dk.refreshSnapshot(store, holeRunner, { phone: '5550100', dir, minute: '20261019-0955', file: 'ch1-00.jpg' });
   assert.deepStrictEqual(s.shifts, { 'ch1-30.jpg': 2 }); // taken at the planned time this time
 
   // Stopping: the minute in progress is not recorded and no more frames are asked for.
@@ -1635,16 +1703,18 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   // Refreshing one picture: kept out of the log when it fails; once every frame is saved the minute is done.
   const refreshLog = [];
   const opts = { log: (m) => refreshLog.push(m) };
-  await assert.rejects(dk.refreshSnapshot(store, downRunner, '5550100', dir, '20261019-1003', 'ch1-00.jpg', opts),
+  await assert.rejects(dk.refreshSnapshot(store, downRunner, { phone: '5550100', dir, minute: '20261019-1003', file: 'ch1-00.jpg' }, opts),
     (e) => e.status === 502 && /Could not reach/.test(e.message));
   assert.match(refreshLog[0], /^Gate 5550100: 20261019-1003\/ch1-00\.jpg refresh failed \(\/cam\/playback\?channel=1&starttime=2026_10_19_10_03_05\)/);
   assert.strictEqual((await dk.listSnapshots(store, '5550100'))['20261019-1003'].status, 'failed');
-  await assert.rejects(dk.refreshSnapshot(store, runner, '5550100', dir, '20261019-1003', '..\\key', opts), (e) => e.status === 400);
+  await assert.rejects(dk.refreshSnapshot(store, runner, { phone: '5550100', dir, minute: '20261019-1003', file: '..\\key' }, opts), (e) => e.status === 400);
+  await assert.rejects(dk.refreshSnapshot(store, runner, { phone: '5550100', dir, minute: '20261019-1003', file: 'ch9-00.jpg' }, opts), (e) => e.status === 404, 'a camera not set up');
+  await assert.rejects(dk.refreshSnapshot(store, runner, { phone: '5550100', dir, minute: '20261019-1104', file: 'ch1-00.jpg' }, opts), (e) => e.status === 404, 'a minute not in the log');
   asked = [];
-  s = await dk.refreshSnapshot(store, runner, '5550100', dir, '20261019-1003', 'ch1-00.jpg', opts);
+  s = await dk.refreshSnapshot(store, runner, { phone: '5550100', dir, minute: '20261019-1003', file: 'ch1-00.jpg' }, opts);
   assert.deepStrictEqual([s.status, s.files, s.attempts], ['partial', ['ch1-00.jpg'], 1]);
-  await dk.refreshSnapshot(store, runner, '5550100', dir, '20261019-1003', 'ch1-a00.jpg', opts);
-  s = await dk.refreshSnapshot(store, runner, '5550100', dir, '20261019-1003', 'ch1-a30.jpg', opts);
+  await dk.refreshSnapshot(store, runner, { phone: '5550100', dir, minute: '20261019-1003', file: 'ch1-a00.jpg' }, opts);
+  s = await dk.refreshSnapshot(store, runner, { phone: '5550100', dir, minute: '20261019-1003', file: 'ch1-a30.jpg' }, opts);
   assert.deepStrictEqual([s.status, s.files.sort(), s.error, s.attempts], ['done', ['ch1-00.jpg', 'ch1-a00.jpg', 'ch1-a30.jpg'], null, 1]);
   assert.deepStrictEqual(asked, ['/cam/playback?channel=1&starttime=2026_10_19_10_03_05',
     '/cam/playback?channel=1&starttime=2026_10_19_10_04_05', '/cam/playback?channel=1&starttime=2026_10_19_10_04_35']);
@@ -1695,7 +1765,7 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   assert.deepStrictEqual((await dk.listSnapshots(store, '5550100'))['20261019-0940'].files.sort(), ['ch1.mp4', 'ch2.mp4']);
   assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'snapshots', '20261019-0940')).sort(), ['ch1.jpg', 'ch1.mp4', 'ch2.jpg', 'ch2.mp4']);
   calls.length = 0;
-  s = await dk.refreshSnapshot(store, videoRunner, '5550100', dir, '20261019-0940', 'ch2.mp4');
+  s = await dk.refreshSnapshot(store, videoRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch2.mp4' });
   assert.deepStrictEqual(calls.map((c) => c.slice(0, 2)), [
     ['/cam/playback?channel=2&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05', 'ch2.new.rec0.mp4'], ['finish', ['ch2.new.rec0.mp4']],
   ]);
@@ -1706,7 +1776,7 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   calls.length = 0;
   partSecs = [42.6, 50.2, 27.9];
   const resumeLog = [];
-  await dk.refreshSnapshot(store, videoRunner, '5550100', dir, '20261019-0940', 'ch1.mp4', { log: (m) => resumeLog.push(m) });
+  await dk.refreshSnapshot(store, videoRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch1.mp4' }, { log: (m) => resumeLog.push(m) });
   assert.deepStrictEqual(calls, [
     ['/cam/playback?channel=1&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05', 'ch1.new.rec0.mp4', 120],
     ['/cam/playback?channel=1&starttime=2026_10_19_09_40_47&endtime=2026_10_19_09_42_05', 'ch1.new.rec1.mp4', 78],
@@ -1719,7 +1789,7 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   calls.length = 0;
   finishSecs = 7;
   const shortLog = [];
-  await assert.rejects(dk.refreshSnapshot(store, videoRunner, '5550100', dir, '20261019-0940', 'ch1.mp4', { log: (m) => shortLog.push(m) }),
+  await assert.rejects(dk.refreshSnapshot(store, videoRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch1.mp4' }, { log: (m) => shortLog.push(m) }),
     /sent only 7 s of 120 s/);
   assert.strictEqual(calls.filter((c) => c[0] === 'finish').length, 2);
   assert.ok(shortLog.includes('Gate 5550100: 20261019-0940/ch1.mp4: the recorder sent 7 s of 120 s, kept it, trying again'));
@@ -1760,7 +1830,7 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
     if (/09_40_(47|52)&/.test(query)) { calls.push([query, !!o.once]); throw new Error('No recording at this time'); }
     return videoRunner.grabFrame(cfg, query, out, o);
   } };
-  s = await dk.refreshSnapshot(store, gapRunner, '5550100', dir, '20261019-0940', 'ch1.mp4', { log: (m) => gapLog.push(m) });
+  s = await dk.refreshSnapshot(store, gapRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch1.mp4' }, { log: (m) => gapLog.push(m) });
   assert.deepStrictEqual(calls, [
     ['/cam/playback?channel=1&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05', 'ch1.new.rec0.mp4', 120],
     ['/cam/playback?channel=1&starttime=2026_10_19_09_40_47&endtime=2026_10_19_09_42_05', false],
@@ -1777,7 +1847,7 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
   assert.deepStrictEqual([s.status, s.short], ['done', {}]);
   calls.length = 0;
   const noRecRunner = { ...videoRunner, grabFrame: async (cfg, query) => { calls.push(query); throw new Error('No recording at this time'); } };
-  await assert.rejects(dk.refreshSnapshot(store, noRecRunner, '5550100', dir, '20261019-0940', 'ch1.mp4'), /No recording at this time/);
+  await assert.rejects(dk.refreshSnapshot(store, noRecRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch1.mp4' }), /No recording at this time/);
   assert.strictEqual(calls.length, 23);
   // A failed resume joins what was saved; no video at all is an error.
   calls.length = 0;
@@ -1786,15 +1856,15 @@ test('cameras: runSnapshots grabs each channel and frame with the clock offset',
     if (calls.length) throw new Error('Camera bridge exited (code 1)');
     return videoRunner.grabFrame(cfg, query, out, o);
   } };
-  await dk.refreshSnapshot(store, failRunner, '5550100', dir, '20261019-0940', 'ch1.mp4');
+  await dk.refreshSnapshot(store, failRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch1.mp4' });
   assert.deepStrictEqual(calls.at(-1)[1], ['ch1.new.rec0.mp4']);
   calls.length = 0;
   partSecs = [0.4];
-  await dk.refreshSnapshot(store, videoRunner, '5550100', dir, '20261019-0940', 'ch1.mp4'); // asked again from the start
+  await dk.refreshSnapshot(store, videoRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch1.mp4' }); // asked again from the start
   assert.deepStrictEqual(calls.at(-1)[1], ['ch1.new.rec1.mp4']);
   assert.strictEqual(calls[1][0], '/cam/playback?channel=1&starttime=2026_10_19_09_40_05&endtime=2026_10_19_09_42_05');
   partSecs = [0.4, 0.4, 0.4];
-  await assert.rejects(dk.refreshSnapshot(store, videoRunner, '5550100', dir, '20261019-0940', 'ch1.mp4'), /sent no video/);
+  await assert.rejects(dk.refreshSnapshot(store, videoRunner, { phone: '5550100', dir, minute: '20261019-0940', file: 'ch1.mp4' }), /sent no video/);
   assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'snapshots', '20261019-0940')).sort(), ['ch1.jpg', 'ch1.mp4', 'ch2.jpg', 'ch2.mp4']);
 });
 
@@ -1856,12 +1926,16 @@ const freePort = () => new Promise((resolve) => {
   const probe = http.createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
 });
 
-// Runs fn({ app, store, call, dks }) with a started Application. dks.hold(ms): DKS Cloud requests (a local fake)
-// answer 500 after ms. call(method, path, { body, cookie, key }) -> { status, body, cookie }.
+// Runs fn({ app, store, call, media, dks }) with a started Application. dks.hold(ms): DKS Cloud requests (a local fake)
+// answer 500 after ms (CheckLogin answers OK at once). call(method, path, { body, cookie, key, host }) -> { status, body, cookie };
+// host: the Host header (localhost:<port> is the name passkeys work on), else 127.0.0.1:<port>.
 function withServer(fn) {
   return withDir(async (dir) => {
     const dks = { holdMs: 0 };
-    const fake = http.createServer((req, res) => { setTimeout(() => { res.statusCode = 500; res.end('fake DKS Cloud: no'); }, dks.holdMs); });
+    const fake = http.createServer((req, res) => {
+      if (/\/CheckLogin"$/.test(req.headers.soapaction || '')) return res.end('<CheckLoginResult>OK</CheckLoginResult>');
+      setTimeout(() => { res.statusCode = 500; res.end('fake DKS Cloud: no'); }, dks.holdMs);
+    });
     await new Promise((r) => fake.listen(0, '127.0.0.1', r));
     const port = await freePort();
     const file = path.join(dir, 'config.json');
@@ -1873,19 +1947,25 @@ function withServer(fn) {
     const logLines = console.log;
     console.log = () => {}; // the start-up lines
     try { await app.start(); } finally { console.log = logLines; }
-    const store = await dk.openStore(storeOptions); // the app's own store (stores are shared per options)
-    const call = async (method, route, { body, cookie, key } = {}) => {
-      const r = await fetch(`http://127.0.0.1:${port}${route}`, { method, headers: { ...(body !== undefined && { 'Content-Type': 'application/json' }),
-        ...(cookie && { Cookie: cookie }), ...(key && { Authorization: `Bearer ${key}` }) }, body: body === undefined ? undefined : JSON.stringify(body) });
-      const text = await r.text();
-      return { status: r.status, body: text.startsWith('{') ? JSON.parse(text) : text, cookie: (r.headers.get('set-cookie') || '').split(';')[0] };
-    };
+    const store = app.db();
+    const call = (method, route, { body, cookie, key, host } = {}) => new Promise((resolve, reject) => {
+      const headers = { ...(body !== undefined && { 'Content-Type': 'application/json' }), ...(cookie && { Cookie: cookie }),
+        ...(key && { Authorization: `Bearer ${key}` }), ...(host && { Host: host }) };
+      const req = http.request({ host: '127.0.0.1', port, path: route, method, headers }, (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { text += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, body: text.startsWith('{') ? JSON.parse(text) : text,
+          cookie: String((res.headers['set-cookie'] || [''])[0]).split(';')[0] }));
+      });
+      req.on('error', reject);
+      req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
     try {
-      await fn({ app, store, call, dks: { hold: (ms) => { dks.holdMs = ms; } } });
+      await fn({ app, store, call, media: path.join(dir, 'media'), dks: { hold: (ms) => { dks.holdMs = ms; } } });
     } finally {
       await app.stop('test');
-      const again = await dk.openStore(storeOptions);
-      await dropStore(again);
+      await dropStore(await dk.openStore(storeOptions));
       await new Promise((r) => fake.close(r));
     }
   });
@@ -1906,6 +1986,16 @@ test('server: sign-in, wrong passwords limited, and pages need a session', withS
   const blocked = await call('POST', '/api/session', { body: { user: 'alice', password: PW } });
   assert.strictEqual(blocked.status, 429);
   assert.strictEqual((await call('GET', '/api/gates/%E0', { cookie })).status, 404);
+}));
+
+test('server: changing your own password needs the current one, and a different new one', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  const cookie = await signIn(call, 'alice', PW);
+  const change = (current, password) => call('PUT', '/api/me/password', { cookie, body: { current, password } });
+  assert.strictEqual((await change('wrong password here', NEW_PW)).status, 403);
+  assert.match((await change(PW, PW)).body.error, /different/);
+  assert.strictEqual((await change(PW, NEW_PW)).status, 200);
+  assert.ok(await dk.authenticate(store, 'alice', NEW_PW));
 }));
 
 test('server: an API key reaches only its own gate, never the web-only routes; sends need a passkey confirmation', withServer(async ({ store, call }) => {
@@ -1951,11 +2041,86 @@ test('server: one gate connection at a time per DKS account; gates on other acco
   assert.match(same.body.error, /same DKS login/);
   assert.strictEqual((await call('GET', '/api/gates/5550122/job', { cookie })).body.busyElsewhere, true);
   assert.strictEqual((await call('GET', '/api/gates/5550122/relays', { cookie })).status, 409, 'relay calls wait for the account too');
-  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/job`, { cookie })).body.state, 'running');
+  const job = (await call('GET', `/api/gates/${GATE_A.phoneNumber}/job`, { cookie })).body;
+  assert.strictEqual(job.state, 'running');
+  assert.strictEqual(job.account, undefined, 'the DKS login is not shown');
   assert.strictEqual((await call('GET', '/api/gates/5550111/job', { cookie })).body.state, 'running');
+  // The gate's DKS login changed while its pull runs: the gate itself is still busy.
+  await dk.updateGateLogin(store, GATE_A.phoneNumber, { dksUser: 'newlogin', dksPassword: 'pw' });
+  assert.strictEqual((await pull(GATE_A.phoneNumber)).status, 409);
 }));
 
-test('server: scheduled transfers queue per DKS account', withServer(async ({ store, call, dks }) => {
+test('server: a gate\'s stored data is not deleted while its connection runs', withServer(async ({ store, call, dks }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  const cookie = `sid=${await dk.createSession(store, 'alice', { strong: true })}`; // just confirmed with a passkey
+  dks.hold(800);
+  assert.strictEqual((await call('POST', `/api/gates/${GATE_A.phoneNumber}/pull`, { cookie, body: { what: 'transactions' } })).status, 202);
+  const refused = await call('POST', `/api/gates/${GATE_A.phoneNumber}/delete-data`, { cookie, body: { confirm: true } });
+  assert.strictEqual(refused.status, 409);
+  assert.ok(await dk.gateExists(store, GATE_A.phoneNumber));
+}));
+
+test('server: the gate-add window shows the newest add of the user', withServer(async ({ store, call, dks }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  const cookie = await signIn(call, 'alice', PW);
+  dks.hold(100);
+  const add = (phoneNumber) => call('POST', '/api/gates', { cookie, body: { phoneNumber, masterCode: '1234', dksUser: 'u', dksPassword: 'p' } });
+  const settled = async () => { while ((await call('GET', '/api/gate-add', { cookie })).body.job?.state === 'running') await new Promise((r) => setTimeout(r, 50)); };
+  for (const phone of ['5550111', '5550122']) {
+    assert.strictEqual((await add(phone)).status, 202);
+    await settled();
+  }
+  dks.hold(800);
+  assert.strictEqual((await add('5550111')).status, 202);
+  const { job } = (await call('GET', '/api/gate-add', { cookie })).body;
+  assert.deepStrictEqual([job.phoneNumber, job.state, job.account], ['5550111', 'running', undefined]);
+}));
+
+test('server: saved videos: byte ranges, a cancelled request closes the file, a missing file is a 404', withServer(async ({ app, store, call, media }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  const cookie = await signIn(call, 'alice', PW);
+  const folder = path.join(media, GATE_A.phoneNumber, 'snapshots', '20261019-0955');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'ch1.mp4'), Buffer.alloc(4 << 20, 7));
+  const get = (range, { cancel = false } = {}) => new Promise((resolve, reject) => {
+    const req = http.get({ agent: false, host: '127.0.0.1', port: app.port(), path: `/api/gates/${GATE_A.phoneNumber}/snapshots/20261019-0955/ch1.mp4`,
+      headers: { Cookie: cookie, ...(range && { Range: range }) } }, (res) => {
+      if (cancel) { res.once('data', () => { req.destroy(); resolve({ status: res.statusCode }); }); return; }
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, range: res.headers['content-range'], length: Buffer.concat(chunks).length }));
+    });
+    req.on('error', reject);
+  });
+  assert.deepStrictEqual(await get('bytes=10-19'), { status: 206, range: `bytes 10-19/${4 << 20}`, length: 10 });
+  assert.strictEqual((await get('bytes=99999999-')).status, 416);
+  const open = () => fs.readdirSync('/proc/self/fd').filter((fd) => { try { return fs.readlinkSync(`/proc/self/fd/${fd}`).endsWith('ch1.mp4'); } catch { return false; } }).length;
+  await get('', { cancel: true });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.strictEqual(open(), 0, 'the file is closed once the browser cancels');
+  fs.rmSync(folder, { recursive: true });
+  assert.strictEqual((await get('bytes=0-9')).status, 404);
+}));
+
+test('server: a wrong first-account setup code is refused, whatever its characters', withServer(async ({ call }) => {
+  for (const setupCode of ['0123456789', 'é'.repeat(10), '']) {
+    const reply = await call('POST', '/api/setup', { body: { setupCode, username: 'alice', password: PW } });
+    assert.strictEqual(reply.status, 403, `${setupCode}: ${JSON.stringify(reply.body)}`);
+  }
+}));
+
+test('server: two gates added at once on the same DKS login: one starts, the other waits', withServer(async ({ store, call, dks }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  const cookie = await signIn(call, 'alice', PW);
+  dks.hold(300);
+  const add = (phoneNumber) => call('POST', '/api/gates', { cookie, body: { phoneNumber, masterCode: '1234', dksUser: 'u', dksPassword: 'p' } });
+  const replies = await Promise.all([add('5550111'), add('5550122')]);
+  assert.deepStrictEqual(replies.map((reply) => reply.status).sort(), [202, 409]);
+}));
+
+test('server: scheduled transfers queue per DKS account', withServer(async ({ app, store, call, dks }) => {
   await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
   const gates = [GATE_A.phoneNumber, '5550111', '5550122'];
   await dk.registerGate(store, GATE_A, 'alice');
@@ -1964,14 +2129,94 @@ test('server: scheduled transfers queue per DKS account', withServer(async ({ st
   const keys = [];
   for (const phone of gates) keys.push((await dk.createApiKey(store, phone, { name: 'script', role: 'admin' }, 'alice')).key);
   dks.hold(800);
-  for (const [i, phone] of gates.entries()) {
-    const sch = await dk.saveSchedule(store, phone, 'alice', { days: [0], time: '03:00', actions: ['transactions'], enabled: false });
-    assert.strictEqual((await call('POST', `/api/gates/${phone}/schedules/${sch.id}/run`, { key: keys[i], body: {} })).status, 202);
-  }
+  const ids = [];
+  for (const phone of gates) ids.push((await dk.saveSchedule(store, phone, 'alice', { days: [0], time: '03:00', actions: ['transactions'], enabled: false })).id);
+  // Queued at the same moment (as due schedules are): the two on one login (either may go first) run one after the other.
+  const schedules = await Promise.all(gates.map((phone, i) => dk.getSchedule(store, phone, ids[i])));
+  assert.deepStrictEqual(await Promise.all(schedules.map((schedule) => app.modules.jobs.queueSchedule(schedule, true))), [true, true, true]);
   await new Promise((r) => setTimeout(r, 200));
-  const states = [];
-  for (const [i, phone] of gates.entries()) states.push((await call('GET', `/api/gates/${phone}/job`, { key: keys[i] })).body.state);
-  assert.deepStrictEqual(states, ['running', 'running', 'idle'], 'the third waits for the first (same DKS login)');
+  const states = async () => Promise.all(gates.map(async (phone, i) => (await call('GET', `/api/gates/${phone}/job`, { key: keys[i] })).body.state));
+  const first = await states();
+  assert.strictEqual(first[1], 'running', 'another DKS login runs at the same time');
+  assert.deepStrictEqual([first[0], first[2]].sort(), ['idle', 'running'], 'one of the two on the same DKS login waits');
+  const waiting = first[0] === 'idle' ? 0 : 2;
+  assert.strictEqual((await dk.getSchedule(store, gates[waiting], ids[waiting])).lastRun, null, 'it waits: it did not run (and fail as busy)');
+  // Both are known as queued or running: Run now again starts neither a second time.
+  assert.deepStrictEqual(await Promise.all(schedules.map((schedule) => app.modules.jobs.queueSchedule(schedule, true))), [false, false, false]);
+  // Deleted while it waits: it doesn't run.
+  assert.strictEqual((await call('DELETE', `/api/gates/${gates[waiting]}/schedules/${ids[waiting]}`, { key: keys[waiting] })).status, 200);
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.strictEqual((await states())[waiting], 'idle');
+}));
+
+test('page files: the built page, /assets/ and the app files at the top of the build; nothing outside it', (t) => {
+  for (const bad of ['/../config.json', '/assets/../../config.json', '/.env', '/sw.js/x', '/%2e%2e/config.json', '/index.html.bak', '/api']) {
+    assert.strictEqual(staticFile(bad), null, bad);
+  }
+  if (!staticFile('/')) return t.skip('the page is not built (npm run build)');
+  assert.deepStrictEqual(staticFile('/manifest.webmanifest')?.[1], 'application/manifest+json');
+  assert.deepStrictEqual(staticFile('/sw.js')?.[1], 'text/javascript');
+  assert.deepStrictEqual(staticFile('/index.html')?.[1], 'text/html', 'the service worker caches it by this name');
+  assert.deepStrictEqual(staticFile('/pwa-192x192.png')?.[1], 'image/png');
+});
+
+test('server: a passkey is saved without the password only for the first one, right after signing in', withServer(async ({ app, store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  const host = `localhost:${app.port()}`;
+  const signInOn = async () => (await call('POST', '/api/session', { host, body: { user: 'alice', password: PW } })).cookie;
+  const autoOptions = (cookie) => call('POST', '/api/me/passkeys/options', { host, cookie, body: { auto: true } });
+  const fresh = await autoOptions(await signInOn());
+  assert.strictEqual(fresh.status, 200, JSON.stringify(fresh.body));
+  assert.strictEqual(fresh.body.authenticatorSelection.userVerification, 'preferred');
+  const cookie = await signInOn();
+  await store.db.query("UPDATE sessions SET created_at = now() - interval '3 minutes' WHERE username = 'alice'");
+  assert.strictEqual((await autoOptions(cookie)).status, 409, 'signed in more than 2 minutes ago');
+  const now = await signInOn();
+  const key = softAuthenticator();
+  const options = (await autoOptions(now)).body;
+  const added = await call('POST', '/api/me/passkeys', { host, cookie: now, body: { auto: true, name: 'Saved', response: key.register(options, `http://${host}`, { uv: false }) } });
+  assert.strictEqual(added.status, 201, JSON.stringify(added.body));
+  assert.strictEqual((await autoOptions(now)).status, 409, 'the account has a passkey now');
+}));
+
+test('passkey approvals: one code per account, for 10 minutes', () => {
+  const approvals = new dk.PasskeyApprovals();
+  const first = approvals.create('ann', 0).code;
+  const { code } = approvals.create('ann', 0);
+  assert.strictEqual(approvals.accepts('ann', first, 1), first === code, 'a new code replaces the old one');
+  assert.strictEqual(approvals.accepts('bob', code, 1), false, 'only for its own account');
+  assert.strictEqual(approvals.accepts('ann', code, dk.APPROVAL_MS), true);
+  assert.strictEqual(approvals.accepts('ann', code, dk.APPROVAL_MS + 1), false, 'expired');
+});
+
+test('server: a device signed in with a passkey approves another device to add one', withServer(async ({ app, store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  const host = `localhost:${app.port()}`;
+  const origin = `http://${host}`;
+  const laptop = softAuthenticator();
+  const rp = { rpID: 'localhost', origin, challenges: new dk.PasskeyChallenges() };
+  await dk.addPasskey(store, 'alice', laptop.register(await dk.registrationOptions(store, 'alice', rp), origin), 'Laptop', rp);
+  // The laptop signs in with its passkey (a confirmed session) and creates a code.
+  const signInOptions = (await call('POST', '/api/passkey/options', { host, body: {} })).body;
+  const laptopCookie = (await call('POST', '/api/passkey/session', { host, body: { response: laptop.signIn(signInOptions, 1, origin) } })).cookie;
+  const approval = await call('POST', '/api/me/passkeys/approval', { host, cookie: laptopCookie, body: {} });
+  assert.strictEqual(approval.status, 201, JSON.stringify(approval.body));
+  assert.match(approval.body.code, /^[A-HJKMNP-Z2-9]{8}$/);
+  // The phone signs in with the password: without the code it must confirm with a passkey it doesn't have.
+  const phoneCookie = (await call('POST', '/api/session', { host, body: { user: 'alice', password: PW } })).cookie;
+  const options = (body) => call('POST', '/api/me/passkeys/options', { host, cookie: phoneCookie, body });
+  assert.strictEqual((await options({})).body.stepUp, true);
+  assert.strictEqual((await options({ approval: 'WRONGCOD' })).status, 403);
+  const typed = `${approval.body.code.slice(0, 4).toLowerCase()}-${approval.body.code.slice(4)}`; // as typed: case and dash ignored
+  const phone = softAuthenticator();
+  const allowed = await options({ approval: typed });
+  assert.strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+  assert.strictEqual((await call('POST', '/api/me/passkeys', { host, cookie: phoneCookie, body: { name: 'Phone', response: phone.register(allowed.body, origin) } })).status, 201);
+  assert.strictEqual((await options({ approval: approval.body.code })).status, 403, 'used up once a passkey was added');
+  // Five wrong codes drop a code.
+  const second = (await call('POST', '/api/me/passkeys/approval', { host, cookie: laptopCookie, body: {} })).body.code;
+  for (let i = 0; i < 5; i++) await options({ approval: 'WRONGCOD' });
+  assert.strictEqual((await options({ approval: second })).status, 403);
 }));
 
 // --- Single sign-on (OpenID Connect) ---
@@ -2058,11 +2303,12 @@ test('config: sso providers are checked; the client secret is masked', withDir(a
 }));
 
 test('single sign-on flow: state, browser binding, PKCE and nonce are checked against a real token exchange', async () => {
+  const sso = new dk.SsoFlows();
   const idp = await mockProvider();
   try {
     const p = provider({ issuer: idp.issuer });
     const redirectUri = 'https://gate.example.com/api/sso/work/callback';
-    const start = await dk.startSso(p, { mode: 'signin', redirectUri });
+    const start = await dk.startSso(sso, p, { mode: 'signin', redirectUri });
     const q = new URL(start.url).searchParams;
     assert.strictEqual(new URL(start.url).origin + new URL(start.url).pathname, `${idp.issuer}/authorize`);
     assert.deepStrictEqual(['client_id', 'redirect_uri', 'scope', 'response_type', 'code_challenge_method', 'prompt'].map((k) => q.get(k)),
@@ -2070,37 +2316,38 @@ test('single sign-on flow: state, browser binding, PKCE and nonce are checked ag
     assert.ok(q.get('state') && q.get('nonce') && q.get('code_challenge'));
     assert.strictEqual(q.get('max_age'), null); // no session-age limit by default
     const answer = idp.authorize(start.url, { sub: 'u-1', email: 'Jane@Example.com', email_verified: true, name: 'Jane' });
-    await assert.rejects(dk.finishSso(p, answer, 'another-browser'), (e) => e.status === 400 && /another browser/.test(e.message));
-    await assert.rejects(dk.finishSso(p, answer, start.binding), /expired or was already used/); // the attempt is used up either way
+    await assert.rejects(dk.finishSso(sso, p, answer, 'another-browser'), (e) => e.status === 400 && /another browser/.test(e.message));
+    await assert.rejects(dk.finishSso(sso, p, answer, start.binding), /expired or was already used/); // the attempt is used up either way
 
-    const s2 = await dk.startSso(p, { mode: 'invite', redirectUri, inviteToken: 'tok' });
-    const r = await dk.finishSso(p, idp.authorize(s2.url, { sub: 'u-1', email: 'Jane@Example.com', email_verified: true, name: 'Jane' }), s2.binding);
+    const s2 = await dk.startSso(sso, p, { mode: 'invite', redirectUri, inviteToken: 'tok' });
+    const r = await dk.finishSso(sso, p, idp.authorize(s2.url, { sub: 'u-1', email: 'Jane@Example.com', email_verified: true, name: 'Jane' }), s2.binding);
     assert.deepStrictEqual(r, { mode: 'invite', username: undefined, inviteToken: 'tok',
       identity: { subject: 'u-1', email: 'jane@example.com', emailVerified: true, name: 'Jane', hd: '' } });
 
-    const s3 = await dk.startSso(p, { mode: 'signin', redirectUri });
-    await assert.rejects(dk.finishSso(p, idp.authorize(s3.url, { sub: 'u-1' }, { nonce: 'forged' }), s3.binding), (e) => /nonce/.test(e.cause.message));
-    const s4 = await dk.startSso(p, { mode: 'signin', redirectUri });
+    const s3 = await dk.startSso(sso, p, { mode: 'signin', redirectUri });
+    await assert.rejects(dk.finishSso(sso, p, idp.authorize(s3.url, { sub: 'u-1' }, { nonce: 'forged' }), s3.binding), (e) => /nonce/.test(e.cause.message));
+    const s4 = await dk.startSso(sso, p, { mode: 'signin', redirectUri });
     const denied = new URLSearchParams({ error: 'access_denied', error_description: 'User cancelled', state: new URL(s4.url).searchParams.get('state') });
-    await assert.rejects(dk.finishSso(p, denied, s4.binding), /Work didn't sign you in: User cancelled/);
+    await assert.rejects(dk.finishSso(sso, p, denied, s4.binding), /Work didn't sign you in: User cancelled/);
     // An issuer without a path (as Google's) is discovered too.
     const bare = await mockProvider('');
     try {
-      const s5 = await dk.startSso(provider({ id: 'bare', issuer: bare.issuer }), { mode: 'signin', redirectUri });
-      assert.strictEqual((await dk.finishSso(provider({ id: 'bare', issuer: bare.issuer }), bare.authorize(s5.url, { sub: 'b-1' }), s5.binding)).identity.subject, 'b-1');
+      const s5 = await dk.startSso(sso, provider({ id: 'bare', issuer: bare.issuer }), { mode: 'signin', redirectUri });
+      assert.strictEqual((await dk.finishSso(sso, provider({ id: 'bare', issuer: bare.issuer }), bare.authorize(s5.url, { sub: 'b-1' }), s5.binding)).identity.subject, 'b-1');
     } finally { bare.close(); }
   } finally { idp.close(); }
 });
 
 test('single sign-on session age: maxAgeHours bounds auth_time; linking needs a fresh sign-in', async () => {
+  const sso = new dk.SsoFlows();
   const idp = await mockProvider();
   try {
     const p = provider({ issuer: idp.issuer, maxAgeHours: 12 });
     const redirectUri = 'https://gate.example.com/api/sso/work/callback';
     const now = Math.floor(Date.now() / 1000);
     const attempt = async (claims, mode = 'signin') => {
-      const s = await dk.startSso(p, { mode, redirectUri, username: mode === 'link' ? 'jane' : undefined });
-      return [new URL(s.url).searchParams, dk.finishSso(p, idp.authorize(s.url, { sub: 'u-1', ...claims }), s.binding)];
+      const s = await dk.startSso(sso, p, { mode, redirectUri, username: mode === 'link' ? 'jane' : undefined });
+      return [new URL(s.url).searchParams, dk.finishSso(sso, p, idp.authorize(s.url, { sub: 'u-1', ...claims }), s.binding)];
     };
     const [q, ok] = await attempt({ auth_time: now - 11 * 3600 });
     assert.strictEqual(q.get('max_age'), String(12 * 3600));
@@ -2114,8 +2361,8 @@ test('single sign-on session age: maxAgeHours bounds auth_time; linking needs a 
     await assert.rejects((await attempt({ auth_time: now - 3600 }, 'link'))[1], /linking needs a fresh sign-in/);
     // Without maxAgeHours, sign-ins don't need auth_time, but linking still does.
     const free = provider({ issuer: idp.issuer });
-    const s = await dk.startSso(free, { mode: 'link', redirectUri, username: 'jane' });
-    await assert.rejects(dk.finishSso(free, idp.authorize(s.url, { sub: 'u-1' }), s.binding), /auth_time/);
+    const s = await dk.startSso(sso, free, { mode: 'link', redirectUri, username: 'jane' });
+    await assert.rejects(dk.finishSso(sso, free, idp.authorize(s.url, { sub: 'u-1' }), s.binding), /auth_time/);
   } finally { idp.close(); }
 });
 
@@ -2168,21 +2415,38 @@ test('single sign-on invitations by link, password rules and unlinking', withSto
   assert.deepStrictEqual(await dk.completeSso(store, p, ssoResult({ sub: 'd', email: 'dee@example.com' }, { mode: 'invite', inviteToken: token })),
     { username: 'dee', outcome: 'invite-accepted' });
   await assert.rejects(dk.completeSso(store, p, ssoResult({ sub: 'd2', email: 'dee@example.com' }, { mode: 'invite', inviteToken: token })), /invalid, used or expired/);
+  // Two invitations accepted at once with the same provider account: one is linked; the other invitation stays unused.
+  const invite = async (username) => {
+    await dk.createUser(store, { username, email: `${username}@example.com`, createdBy: 't', invite: true });
+    return dk.createToken(store, 'invite', username);
+  };
+  const [fay, gus] = [await invite('fay'), await invite('gus')];
+  const both = await Promise.allSettled([fay, gus].map((inviteToken) =>
+    dk.completeSso(store, p, ssoResult({ sub: 'same', email: 'fay@example.com' }, { mode: 'invite', inviteToken }))));
+  assert.deepStrictEqual(both.map((result) => result.status).sort(), ['fulfilled', 'rejected']);
+  const loser = both[0].status === 'rejected' ? 'fay' : 'gus';
+  assert.strictEqual((await dk.getUser(store, loser)).invited, true, 'still invited');
+  assert.ok(await dk.peekToken(store, 'invite', loser === 'fay' ? fay : gus), 'its invitation still works');
   // A provider with passwords: false keeps its accounts from password sign-in.
   await dk.createUser(store, { username: 'eve', ['pass' + 'word']: PW, createdBy: 't', mustChangePassword: false });
-  assert.strictEqual(await dk.passwordAllowed(store, 'eve', [p]), true);
+  assert.deepStrictEqual(await dk.passwordBlockers(store, 'eve', [p]), []);
   await dk.completeSso(store, p, ssoResult({ sub: 'e', email: 'eve@example.com' }, { mode: 'link', username: 'eve' }));
-  assert.deepStrictEqual([await dk.passwordAllowed(store, 'eve', [p]), await dk.passwordBlockers(store, 'eve', [p])], [false, ['Work']]);
+  assert.deepStrictEqual(await dk.passwordBlockers(store, 'eve', [p]), ['Work']);
   const refuse = async (u) => ((await dk.passwordBlockers(store, u, [p])).length ? 'use Work' : null);
   assert.strictEqual(await dk.authenticate(store, 'eve', PW, refuse), null); // refused like a wrong password, so it can't confirm an old one
   assert.strictEqual((await dk.getUser(store, 'eve')).signIns, 0);
   // Unlinking keeps a way to sign in: dee (no password) can't drop her only sign-in; eve's password works again once unlinked.
-  await assert.rejects(dk.unlinkIdentity(store, 'dee', 'work', 'd', [p]), (e) => e.status === 409 && /only way to sign in/.test(e.message));
-  await dk.unlinkIdentity(store, 'eve', 'work', 'e', [p]);
-  assert.strictEqual(await dk.passwordAllowed(store, 'eve', [p]), true);
-  await assert.rejects(dk.unlinkIdentity(store, 'eve', 'work', 'e', [p]), (e) => e.status === 404);
+  await assert.rejects(dk.unlinkIdentity(store, 'dee', { provider: 'work', subject: 'd' }, [p]), (e) => e.status === 409 && /only way to sign in/.test(e.message));
+  await dk.unlinkIdentity(store, 'eve', { provider: 'work', subject: 'e' }, [p]);
+  assert.deepStrictEqual(await dk.passwordBlockers(store, 'eve', [p]), []);
+  await assert.rejects(dk.unlinkIdentity(store, 'eve', { provider: 'work', subject: 'e' }, [p]), (e) => e.status === 404);
+  // dee (no password) with one passkey: it can't go while it is her only way in, once Work is no longer configured.
+  await store.db.query("INSERT INTO passkeys (id, username, rp_id, name, public_key, counter, device_type, backed_up, created_at) VALUES ('k1', 'dee', 'localhost', 'Phone', '\\x00', 0, 'singleDevice', false, now())");
+  assert.strictEqual(await dk.signInLeftWithoutPasskey(store, 'dee', 'k1', [p]), true, 'Work is still linked');
+  assert.strictEqual(await dk.signInLeftWithoutPasskey(store, 'dee', 'k1', []), false);
+  assert.strictEqual(await dk.signInLeftWithoutPasskey(store, 'eve', 'none', []), true, 'eve has a password');
   const other = provider({ id: 'other', name: 'Other', allowedDomains: [] });
   await dk.completeSso(store, other, ssoResult({ sub: 'd3', email: 'dee@home.net' }, { mode: 'link', username: 'dee' }));
-  await dk.unlinkIdentity(store, 'dee', 'work', 'd', [p, other]);
+  await dk.unlinkIdentity(store, 'dee', { provider: 'work', subject: 'd' }, [p, other]);
   assert.deepStrictEqual((await dk.listIdentities(store, 'dee', [p, other])).map((i) => i.providerName), ['Other']);
 }));

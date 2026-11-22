@@ -17,6 +17,8 @@ export * from './src/users.ts';
 export * from './src/gate-list.ts';
 export * from './src/api-keys.ts';
 export * from './src/passkeys.ts';
+export * from './src/passkey-approvals.ts';
+export * from './src/shared.ts';
 export * from './src/sso.ts';
 export * from './src/email.ts';
 export * from './src/audit.ts';

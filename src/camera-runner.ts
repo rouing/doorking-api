@@ -16,7 +16,7 @@ const BIN_DIR = path.join(import.meta.dirname, '..', 'tools', 'bin');
 export function maskSecrets(text: unknown, secrets: string[] = []): string {
   let out = String(text || '').replace(/(rtsp:\/\/)[^@\s/]+@/gi, '$1***@');
   for (const secret of secrets.filter(Boolean)) {
-    for (const v of new Set([secret, encodeURIComponent(secret)])) out = out.split(v).join('***');
+    for (const variant of new Set([secret, encodeURIComponent(secret)])) out = out.split(variant).join('***');
   }
   return out;
 }
@@ -80,37 +80,38 @@ interface GrabOptions { signal?: AbortSignal; onRetry?: (error: Error) => void; 
 interface LiveOptions { sub?: boolean; signal?: AbortSignal; onStart?: () => void; maxMs?: number }
 
 // ffmpegPath: the ffmpeg program to run; empty = ffmpegCommand(binDir).
-export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs = 120000, readyMs = 45000, grabMs = 45000,
-  clipExtraMs = 60000, connectTries = 3, connectWaitMs = 10000, retryWaitMs = 2000, log = () => {} }: CameraRunnerOptions = {}) {
+// The recorders' bridges (one per recorder and username), each started when first needed and stopped after idleMs
+// unused or when its settings change.
+function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: number; log: Log }) {
   const bridges = new Map<string, Bridge>();
 
   function stop(key: string): void {
-    const b = bridges.get(key);
-    if (!b) return;
+    const bridge = bridges.get(key);
+    if (!bridge) return;
     bridges.delete(key);
-    clearTimeout(b.timer);
-    b.kill();
+    clearTimeout(bridge.timer);
+    bridge.kill();
   }
 
   // The dahua-p2p package's relay tunnel (reliable PTCP layer), exposing the recorder's RTSP port on a local port. It
   // carries one stream at a time (later ones wait) and retries while the recorder still holds an earlier session.
   function start(key: string, cfg: Recorder): Bridge {
-    const b = { password: cfg.password, lines: [] } as unknown as Bridge;
     let closeTunnel = () => {};
     let server: { close: () => void } | null = null;
     let killed = false;
-    b.kill = () => { killed = true; server?.close(); closeTunnel(); };
-    const note = (line: string) => { b.lines.push(line); if (b.lines.length > 20) b.lines.shift(); };
-    const tail = () => (b.lines.length ? `: ${maskSecrets(b.lines.slice(-3).join(' | '), [cfg.password])}` : '');
+    // port is set just below, once the bridge's other fields exist (its startup reports through them).
+    const bridge: Bridge = { password: cfg.password, lines: [], port: Promise.resolve(0), kill: () => { killed = true; server?.close(); closeTunnel(); } };
+    const note = (line: string) => { bridge.lines.push(line); if (bridge.lines.length > 20) bridge.lines.shift(); };
+    const tail = () => (bridge.lines.length ? `: ${maskSecrets(bridge.lines.slice(-3).join(' | '), [cfg.password])}` : '');
     log(`Recorder ${cfg.serial}: starting bridge`);
     const ended = (why: string) => {
-      b.dead = true;
-      if (bridges.get(key) === b) {
-        bridges.delete(key); clearTimeout(b.timer);
-        if (b.connected && !killed) log(`Recorder ${cfg.serial}: bridge closed (${why})${tail()}`);
+      bridge.dead = true;
+      if (bridges.get(key) === bridge) {
+        bridges.delete(key); clearTimeout(bridge.timer);
+        if (bridge.connected && !killed) log(`Recorder ${cfg.serial}: bridge closed (${why})${tail()}`);
       }
     };
-    b.port = (async () => {
+    bridge.port = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const opening = openTunnel({ serial: cfg.serial, log: note });
       let opened = false;
@@ -125,7 +126,7 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
         tunnel.on('closed', (reason) => { server?.close(); ended(String(reason || 'closed')); });
         const srv = await tunnel.listen(0, 554, '127.0.0.1');
         server = srv;
-        b.connected = true;
+        bridge.connected = true;
         log(`Recorder ${cfg.serial}: bridge connected (${tunnel.stats.handshakeMs} ms)`);
         return (srv.address() as AddressInfo).port;
       } catch (err) {
@@ -138,18 +139,18 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
         throw new Error(`Camera bridge: ${maskSecrets((err as Error).message, [cfg.password])}`);
       } finally { clearTimeout(timer); }
     })();
-    b.port.catch(() => {});
-    return b;
+    bridge.port.catch(() => {});
+    return bridge;
   }
 
   // The bridge's local port, starting the bridge when needed.
   function bridge(cfg: Recorder): { key: string; port: Promise<number>; b: Bridge } {
     const key = `${cfg.serial}|${cfg.username}`;
-    let b = bridges.get(key);
-    if (b && (b.password !== cfg.password || b.dead)) { stop(key); b = undefined; }
-    if (!b) { b = start(key, cfg); bridges.set(key, b); }
-    idle(key, b);
-    return { key, port: b.port, b };
+    let running = bridges.get(key);
+    if (running && (running.password !== cfg.password || running.dead)) { stop(key); running = undefined; }
+    if (!running) { running = start(key, cfg); bridges.set(key, running); }
+    idle(key, running);
+    return { key, port: running.port, b: running };
   }
 
   function idle(key: string, b: Bridge): void {
@@ -159,6 +160,29 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     }
   }
 
+  // The recorder's RTSP address through the bridge on localPort.
+  const streamUrl = (cfg: Recorder, localPort: number, pathQuery: string) =>
+    `rtsp://${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password)}@127.0.0.1:${localPort}${pathQuery}`;
+  // Runs use(url) with the bridge counted busy (so it isn't closed as idle meanwhile).
+  async function onBridge<T>(key: string, b: Bridge, use: (url: string) => Promise<T>, url: string): Promise<T> {
+    b.busy = (b.busy || 0) + 1;
+    clearTimeout(b.timer);
+    try {
+      return await use(url);
+    } finally {
+      b.busy--;
+      idle(key, b);
+    }
+  }
+
+  const stopAll = () => { for (const key of [...bridges.keys()]) stop(key); };
+  // Stops the bridge unless another has taken its place meanwhile, or another stream still uses it (and it isn't dead).
+  const drop = (key: string, b: Bridge): void => { if (bridges.get(key) === b && (!b.busy || b.dead)) stop(key); };
+  return { bridge, onBridge, streamUrl, drop, stopAll, running: () => bridges.size };
+}
+
+// ffmpeg: saving a frame or a video from a stream, joining video parts, and the live view as MJPEG.
+function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: string; ffmpegPath: string; grabMs: number; clipExtraMs: number }) {
   // video: seconds of video to save instead of one frame.
   function ffmpeg(url: string, outFile: string, secrets: string[], signal?: AbortSignal, video = 0): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -170,7 +194,7 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
         : [...input, '-fflags', '+discardcorrupt', '-skip_frame', 'nokey', '-i', url, '-frames:v', '1', '-update', '1', '-q:v', '3', '-y', outFile];
       const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
-      proc.stderr.on('data', (c) => { err = (err + c).slice(-2000); });
+      proc.stderr.on('data', (chunk) => { err = (err + chunk).slice(-2000); });
       const timer = setTimeout(() => proc.kill(), video ? video * 1000 + clipExtraMs : grabMs + 5000);
       const onAbort = () => proc.kill();
       if (signal) signal.addEventListener('abort', onAbort, { once: true });
@@ -199,7 +223,7 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     return new Promise((resolve) => {
       const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), ['-hide_banner', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
-      proc.stderr.on('data', (c) => { err = (err + c).slice(-4000); });
+      proc.stderr.on('data', (chunk) => { err = (err + chunk).slice(-4000); });
       const timer = setTimeout(() => proc.kill(), ms);
       proc.on('error', (error) => { clearTimeout(timer); resolve({ code: -1, err: error.message }); });
       proc.on('exit', (code) => { clearTimeout(timer); resolve({ code, err }); });
@@ -222,12 +246,12 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     if (parts.length > 1) fs.writeFileSync(list, parts.map((part) => `file '${part.replace(/\\/g, '/').replace(/'/g, "'\\''")}'\n`).join(''));
     try {
       const tag = /Video: hevc/.test((await localFfmpeg(['-i', parts[0]], 30000)).err) ? ['-tag:v', 'hvc1'] : [];
-      const r = await localFfmpeg(['-loglevel', 'error', '-skip_frame', 'nokey', ...input,
+      const result = await localFfmpeg(['-loglevel', 'error', '-skip_frame', 'nokey', ...input,
         '-map', '0:v:0', '-c', 'copy', ...tag, '-movflags', '+faststart', '-y', outFile,
         '-map', '0:v:0', '-frames:v', '1', '-update', '1', '-q:v', '3', '-y', poster]);
-      if (r.code !== 0 || !fs.existsSync(outFile) || !fs.statSync(outFile).size) {
+      if (result.code !== 0 || !fs.existsSync(outFile) || !fs.statSync(outFile).size) {
         drop();
-        throw new Error(`Could not save the video: ${r.err.trim().split(/\r?\n/).pop() || `ffmpeg exited (code ${r.code})`}`);
+        throw new Error(`Could not save the video: ${result.err.trim().split(/\r?\n/).pop() || `ffmpeg exited (code ${result.code})`}`);
       }
     } finally {
       fs.rmSync(list, { force: true });
@@ -235,79 +259,6 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     const secs = await clipSeconds(outFile);
     if (secs < 1) { drop(); throw new Error(NO_VIDEO_MSG); }
     return secs;
-  }
-
-  // Saves one frame from rtsp://<bridge><pathQuery> (e.g. /cam/playback?channel=1&starttime=...) to outFile.
-  // signal (AbortSignal) stops the grab: it rejects with "Stopped". onRetry(error) runs before the second try.
-  // once: no second try (bridge connection tries still apply). video: seconds of the stream to save instead (see
-  // above).
-  async function grabFrame(cfg: Recorder, pathQuery: string, outFile: string,
-    { signal, onRetry = () => {}, once = false, video = 0 }: GrabOptions = {}): Promise<void> {
-    let retried = once;
-    for (let fails = 0; ;) {
-      if (signal && signal.aborted) throw new Error(STOPPED_MSG);
-      const { key, port, b } = bridge(cfg);
-      let localPort: number;
-      try {
-        localPort = await port;
-      } catch (err) {
-        const { message } = err as Error;
-        if (signal && signal.aborted) throw new Error(STOPPED_MSG);
-        if (bridges.get(key) === b) stop(key);
-        log(`Recorder ${cfg.serial}: bridge did not connect (try ${fails + 1} of ${connectTries}): ${message}`);
-        if (++fails >= connectTries) throw Object.assign(new Error(`Could not reach the recorder after ${fails} tries (${message})`), { code: NO_CONNECTION });
-        await pause(connectWaitMs * fails, signal);
-        continue;
-      }
-      try {
-        const url = `rtsp://${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password)}@127.0.0.1:${localPort}${pathQuery}`;
-        b.busy = (b.busy || 0) + 1;
-        clearTimeout(b.timer);
-        try {
-          return await ffmpeg(url, outFile, [cfg.password], signal, video);
-        } finally {
-          b.busy--;
-          idle(key, b);
-        }
-      } catch (e) {
-        const err = e as Error;
-        if (retried || err.message === STOPPED_MSG || (signal && signal.aborted)) throw e;
-        retried = true;
-        onRetry(err);
-        if (err.message === DAMAGED_MSG) continue;
-        if (bridges.get(key) === b && (b.dead || STREAM_NOT_OPENED.test(err.message))) stop(key);
-        await pause(retryWaitMs, signal);
-      }
-    }
-  }
-
-  // Writes the live picture of one channel to out as MJPEG (multipart/x-mixed-replace; boundary=frame; up to
-  // LIVE_WIDTH wide, LIVE_FPS a second). sub: the recorder's lower-resolution sub stream. onStart() runs before
-  // the first write. Ends (resolves) when signal aborts, the stream stops, or after maxMs. Rejects when no
-  // picture came; the stream is tried once more on a new bridge when the first try got none.
-  async function liveStream(cfg: Recorder, channel: number | string, out: Writable,
-    { sub = true, signal, onStart = () => {}, maxMs = LIVE_MAX_MS }: LiveOptions = {}): Promise<void> {
-    const pathQuery = `/cam/realmonitor?channel=${channel}&subtype=${sub ? 1 : 0}`;
-    for (let attempt = 0; ; attempt++) {
-      if (signal && signal.aborted) return;
-      const { key, port, b } = bridge(cfg);
-      try {
-        const localPort = await port;
-        const url = `rtsp://${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password)}@127.0.0.1:${localPort}${pathQuery}`;
-        b.busy = (b.busy || 0) + 1;
-        clearTimeout(b.timer);
-        try {
-          return await mjpeg(url, out, [cfg.password], { signal, onStart, maxMs });
-        } finally {
-          b.busy--;
-          idle(key, b);
-        }
-      } catch (err) {
-        if (attempt || (signal && signal.aborted)) throw err;
-        log(`Recorder ${cfg.serial}: live view of channel ${channel} failed, trying a new bridge: ${(err as Error).message}`);
-        if (bridges.get(key) === b) stop(key);
-      }
-    }
   }
 
   function mjpeg(url: string, out: Writable, secrets: string[],
@@ -323,10 +274,10 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
       let started = false;
       const firstTimer = setTimeout(() => proc.kill(), grabMs + 5000);
       const endTimer = setTimeout(() => proc.kill(), maxMs);
-      proc.stderr.on('data', (c) => { err = (err + c).slice(-2000); });
-      proc.stdout.on('data', (c) => {
+      proc.stderr.on('data', (chunk) => { err = (err + chunk).slice(-2000); });
+      proc.stdout.on('data', (chunk) => {
         if (!started) { started = true; clearTimeout(firstTimer); onStart(); }
-        if (!out.write(c)) { proc.stdout.pause(); out.once('drain', () => proc.stdout.resume()); }
+        if (!out.write(chunk)) { proc.stdout.pause(); out.once('drain', () => proc.stdout.resume()); }
       });
       const onAbort = () => proc.kill();
       if (signal) signal.addEventListener('abort', onAbort, { once: true });
@@ -347,6 +298,71 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     });
   }
 
-  const stopAll = () => { for (const key of [...bridges.keys()]) stop(key); };
-  return { grabFrame, clipSeconds, finishClip, liveStream, stopAll, running: () => bridges.size };
+  return { ffmpeg, clipSeconds, finishClip, mjpeg };
+}
+
+export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs = 120000, readyMs = 45000, grabMs = 45000,
+  clipExtraMs = 60000, connectTries = 3, connectWaitMs = 10000, retryWaitMs = 2000, log = () => {} }: CameraRunnerOptions = {}) {
+  const pool = createBridgePool({ readyMs, idleMs, log });
+  const { bridge, onBridge, streamUrl, drop, stopAll } = pool;
+  const { ffmpeg, clipSeconds, finishClip, mjpeg } = createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs });
+
+  // Saves one frame from rtsp://<bridge><pathQuery> (e.g. /cam/playback?channel=1&starttime=...) to outFile.
+  // signal (AbortSignal) stops the grab: it rejects with "Stopped". onRetry(error) runs before the second try.
+  // once: no second try (bridge connection tries still apply). video: seconds of the stream to save instead (see
+  // above).
+  async function grabFrame(cfg: Recorder, pathQuery: string, outFile: string,
+    { signal, onRetry = () => {}, once = false, video = 0 }: GrabOptions = {}): Promise<void> {
+    let retried = once;
+    for (let fails = 0; ;) {
+      if (signal && signal.aborted) throw new Error(STOPPED_MSG);
+      const { key, port, b } = bridge(cfg);
+      let localPort: number;
+      try {
+        localPort = await port;
+      } catch (err) {
+        const { message } = err as Error;
+        if (signal && signal.aborted) throw new Error(STOPPED_MSG);
+        drop(key, b);
+        log(`Recorder ${cfg.serial}: bridge did not connect (try ${fails + 1} of ${connectTries}): ${message}`);
+        if (++fails >= connectTries) throw Object.assign(new Error(`Could not reach the recorder after ${fails} tries (${message})`), { code: NO_CONNECTION });
+        await pause(connectWaitMs * fails, signal);
+        continue;
+      }
+      try {
+        return await onBridge(key, b, (url) => ffmpeg(url, outFile, [cfg.password], signal, video), streamUrl(cfg, localPort, pathQuery));
+      } catch (caught) {
+        const err = caught as Error;
+        if (retried || err.message === STOPPED_MSG || (signal && signal.aborted)) throw err;
+        retried = true;
+        onRetry(err);
+        if (err.message === DAMAGED_MSG) continue;
+        if (b.dead || STREAM_NOT_OPENED.test(err.message)) drop(key, b);
+        await pause(retryWaitMs, signal);
+      }
+    }
+  }
+
+  // Writes the live picture of one channel to out as MJPEG (multipart/x-mixed-replace; boundary=frame; up to
+  // LIVE_WIDTH wide, LIVE_FPS a second). sub: the recorder's lower-resolution sub stream. onStart() runs before
+  // the first write. Ends (resolves) when signal aborts, the stream stops, or after maxMs. Rejects when no
+  // picture came; the stream is tried once more on a new bridge when the first try got none.
+  async function liveStream(cfg: Recorder, channel: number | string, out: Writable,
+    { sub = true, signal, onStart = () => {}, maxMs = LIVE_MAX_MS }: LiveOptions = {}): Promise<void> {
+    const pathQuery = `/cam/realmonitor?channel=${channel}&subtype=${sub ? 1 : 0}`;
+    for (let attempt = 0; ; attempt++) {
+      if (signal && signal.aborted) return;
+      const { key, port, b } = bridge(cfg);
+      try {
+        const localPort = await port;
+        return await onBridge(key, b, (url) => mjpeg(url, out, [cfg.password], { signal, onStart, maxMs }), streamUrl(cfg, localPort, pathQuery));
+      } catch (err) {
+        if (attempt || (signal && signal.aborted)) throw err;
+        log(`Recorder ${cfg.serial}: live view of channel ${channel} failed, trying a new bridge: ${(err as Error).message}`);
+        drop(key, b);
+      }
+    }
+  }
+
+  return { grabFrame, clipSeconds, finishClip, liveStream, stopAll, running: pool.running };
 }

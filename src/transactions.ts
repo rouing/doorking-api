@@ -18,48 +18,48 @@ export interface TraFile { lastMarker: string; version: string; transactions: Tr
 // The first 12 bytes are the "last received" marker that is sent back to DKS Cloud
 // as TransactionBytes so only newer transactions are downloaded.
 export function parseTraFile(buffer: Buffer): TraFile {
-  const r = new ArchiveReader(buffer);
-  const lastMarker = r.bytes(12).toString('hex');
-  const version = r.string();
-  const count = r.u16();
+  const reader = new ArchiveReader(buffer);
+  const lastMarker = reader.bytes(12).toString('hex');
+  const version = reader.string();
+  const count = reader.u16();
   const transactions: TraTransaction[] = [];
   for (let i = 0; i < count; i++) {
-    const className = r.classTag();
+    const className = reader.classTag();
     if (className !== 'CTran54Record') {
       throw new Error(`Unexpected class ${className} in transaction file`);
     }
-    const date = r.string().trim();
-    const time = r.string().trim();
-    const t = {
+    const date = reader.string().trim();
+    const time = reader.string().trim();
+    const transaction = {
       date,
       time,
       timestamp: toIsoTimestamp(date, time),
-      type: r.string(),
-      code: r.string(),
-      name: r.string().trimEnd(),
-      result: r.string(),
-      relay: r.string(),
+      type: reader.string(),
+      code: reader.string(),
+      name: reader.string().trimEnd(),
+      result: reader.string(),
+      relay: reader.string(),
     };
-    r.string();
-    r.i16();
-    r.u8();
-    transactions.push(t);
+    reader.string();
+    reader.i16();
+    reader.u8();
+    transactions.push(transaction);
   }
-  if (!r.eof) {
-    throw new Error(`Transaction file has ${buffer.length - r.pos} unread bytes`);
+  if (!reader.eof) {
+    throw new Error(`Transaction file has ${buffer.length - reader.pos} unread bytes`);
   }
   return { lastMarker, version, transactions };
 }
 
 // "6/22/26" + "11:39PM" -> "2026-06-22 23:39"
 export function toIsoTimestamp(date: string, time: string): string {
-  const match = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(date);
-  const t = /^(\d{1,2}):(\d{2})\s*([AP])M$/i.exec(time);
-  if (!match || !t) return '';
-  let hour = Number(t[1]) % 12;
-  if (t[3].toUpperCase() === 'P') hour += 12;
-  const pad = (n: number | string) => String(n).padStart(2, '0');
-  return `20${match[3]}-${pad(match[1])}-${pad(match[2])} ${pad(hour)}:${t[2]}`;
+  const day = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(date);
+  const clock = /^(\d{1,2}):(\d{2})\s*([AP])M$/i.exec(time);
+  if (!day || !clock) return '';
+  let hour = Number(clock[1]) % 12;
+  if (clock[3].toUpperCase() === 'P') hour += 12;
+  const pad = (value: number | string) => String(value).padStart(2, '0');
+  return `20${day[3]}-${pad(day[1])}-${pad(day[2])} ${pad(hour)}:${clock[2]}`;
 }
 
 export function readTraFile(path: string): TraFile {

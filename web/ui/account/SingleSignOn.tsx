@@ -14,14 +14,18 @@ export async function startSso(path: string, body: Record<string, unknown>): Pro
   const { url } = await api<{ url: string }>('POST', path, body);
   window.location.assign(url);
 }
+interface SingleSignOnProps {
+  session: SignedIn;
+}
+
 // The account's single sign-on: linked provider accounts (unlink) and Link buttons (the current password first, when the
 // account has one; the provider then sends the browser back here).
-export function SingleSignOn({ session }: { session: SignedIn }) {
+export function SingleSignOn({ session }: SingleSignOnProps) {
   const [list, setList] = useState<SsoIdentityInfo[]>([]);
   const [password, setPassword] = useState('');
   const [info, setInfo] = useState('');
   const [dialog, confirm] = useConfirm();
-  useEffect(() => { api<{ identities: SsoIdentityInfo[] }>('GET', '/api/me/sso').then((r) => setList(r.identities), (err) => setInfo(errorText(err))); }, []);
+  useEffect(() => { api<{ identities: SsoIdentityInfo[] }>('GET', '/api/me/sso').then((reply) => setList(reply.identities), (err) => setInfo(errorText(err))); }, []);
   if (!session.sso.length && !list.length) return null;
   const linkTo = (provider: string) => {
     setInfo('Opening the sign-in page…');
@@ -44,7 +48,7 @@ export function SingleSignOn({ session }: { session: SignedIn }) {
         {list.length > 0 && (
           <Table.Root size="1">
             <Table.Header>
-              <Table.Row>{['Account', 'Email', 'Linked', 'Last used', ''].map((h, i) => <Table.ColumnHeaderCell key={i}>{h}</Table.ColumnHeaderCell>)}</Table.Row>
+              <Table.Row>{['Account', 'Email', 'Linked', 'Last used', ''].map((header, i) => <Table.ColumnHeaderCell key={i}>{header}</Table.ColumnHeaderCell>)}</Table.Row>
             </Table.Header>
             <Table.Body>
               {list.map((i) => (

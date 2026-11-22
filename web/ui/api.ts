@@ -54,6 +54,10 @@ export const errorText = (err: unknown) => (err instanceof Error ? err.message :
 export const ReadOnlyContext = createContext(false);
 export const useReadOnly = () => useContext(ReadOnlyContext);
 
+// Called after a page saved to the working copy, so the gate's state (matches the gate / changes not sent) and Send to
+// gate follow it (GateApp reloads its data).
+export const WorkingCopySavedContext = createContext<() => Promise<void> | void>(() => {});
+
 // Per-browser settings in localStorage. Never holds a password or master code.
 export function lsGet<T>(key: string, def: T): T {
   try { const v = localStorage.getItem(key); return v == null ? def : JSON.parse(v) as T; } catch { return def; }

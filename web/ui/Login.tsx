@@ -1,15 +1,23 @@
 import { useState, type FormEvent } from 'react';
 import { Button, Callout, Card, Checkbox, Container, Flex, Heading, Link, Text, TextField } from '@radix-ui/themes';
-import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser';
+import { browserSupportsWebAuthn, sendSignal, startAuthentication, type AuthenticationResponseJSON } from '@simplewebauthn/browser';
 import type { SsoProviderInfo } from '../../src/types.ts';
-import { api, errorText, lsGet, lsSet } from './api.ts';
-import { passkeyError } from './account/Passkeys.tsx';
+import { api, ApiError, errorText, lsGet, lsSet } from './api.ts';
+import { passkeyError, savePasskeyAfterSignIn } from './account/Passkeys.tsx';
+import { usePasskeyAutofill, type PasskeyOptions } from './account/passkeyAutofill.ts';
 import { ForgotPassword } from './account/SignInPages.tsx';
 import { startSso } from './account/SingleSignOn.tsx';
 
+interface LoginProps {
+  onSignedIn: () => void;
+  emailEnabled: boolean;
+  sso: SsoProviderInfo[];
+}
+
 // Sign in with a local account (gate admins create them), a passkey, or a single sign-on provider. "Remember user"
-// keeps only the username in this browser.
-export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => void; emailEnabled: boolean; sso: SsoProviderInfo[] }) {
+// keeps only the username in this browser. Passkeys are also offered in the username box's suggestions (autofill),
+// and after a password sign-in the browser may save one by itself (savePasskeyAfterSignIn).
+export function Login({ onSignedIn, emailEnabled, sso }: LoginProps) {
   const [forgot, setForgot] = useState(false);
   const [remember, setRemember] = useState(() => lsGet('dk-remember-user', false));
   const [user, setUser] = useState(() => (remember ? lsGet('dk-user', '') : ''));
@@ -17,18 +25,37 @@ export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => voi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  // Passkey sign-in: no username needed, the browser offers this site's passkeys.
-  async function withPasskey() {
+  // Signs in with the browser's passkey answer. A passkey the server doesn't know (removed here) is reported to the
+  // browser, which then stops offering it (Chrome 132 and later).
+  async function passkeySession(optionsJSON: PasskeyOptions, response: AuthenticationResponseJSON) {
+    try {
+      await api('POST', '/api/passkey/session', { response });
+    } catch (err) {
+      if (err instanceof ApiError && err.body.unknownCredential) {
+        sendSignal({ signalName: 'unknownCredential', rpID: optionsJSON.rpId || window.location.hostname, credentialID: response.id })
+          .catch(() => { /* not supported */ });
+      }
+      throw err;
+    }
+    onSignedIn();
+  }
+
+  const autofill = usePasskeyAutofill({
+    enabled: !forgot,
+    onAnswer: async (optionsJSON, response) => { setBusy(true); setError(''); await passkeySession(optionsJSON, response); },
+    onError: (err) => { setError(passkeyError(err)); setBusy(false); },
+  });
+
+  // Passkey sign-in with the button: no username needed, the browser offers this site's passkeys.
+  const withPasskey = () => autofill.whilePaused(async () => {
     setBusy(true);
     setError('');
     try {
-      const optionsJSON = await api<Parameters<typeof startAuthentication>[0]['optionsJSON']>('POST', '/api/passkey/options', {});
-      const response = await startAuthentication({ optionsJSON });
-      await api('POST', '/api/passkey/session', { response });
-      onSignedIn();
+      const optionsJSON = await api<PasskeyOptions>('POST', '/api/passkey/options', {});
+      await passkeySession(optionsJSON, await startAuthentication({ optionsJSON }));
     } catch (err) { setError(passkeyError(err)); }
     setBusy(false);
-  }
+  });
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -40,6 +67,7 @@ export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => voi
       lsSet('dk-user', remember ? user : '');
       setPassword('');
       onSignedIn();
+      savePasskeyAfterSignIn();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -48,8 +76,8 @@ export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => voi
   }
 
   return (
-    <Container size="1" p="6">
-      <Card size="3">
+    <Container size="1" p={{ initial: '3', sm: '6' }} pt={{ initial: '5', sm: '6' }}>
+      <Card size={{ initial: '2', sm: '3' }}>
         {forgot ? <><Heading mb="3">Reset your password</Heading><ForgotPassword onBack={() => setForgot(false)} /></> : (
         <form onSubmit={submit} autoComplete="off">
           <Flex direction="column" gap="3">
@@ -57,11 +85,11 @@ export function Login({ onSignedIn, emailEnabled, sso }: { onSignedIn: () => voi
             <Text color="gray">Sign in with the account a gate admin created for you. New here? Read the <Link href="/help" target="_blank" rel="noopener">user guide</Link>.</Text>
             <label>
               <Text size="2" weight="medium">Username</Text>
-              <TextField.Root value={user} onChange={(event) => setUser(event.target.value)} required autoComplete="username" />
+              <TextField.Root value={user} onChange={(event) => setUser(event.target.value)} required autoComplete="username webauthn" />
             </label>
             <Text as="label" size="2">
               <Flex gap="2" align="center">
-                <Checkbox checked={remember} onCheckedChange={(v) => setRemember(v === true)} /> Remember user
+                <Checkbox checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} /> Remember user
               </Flex>
             </Text>
             <label>

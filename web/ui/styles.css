@@ -23,15 +23,31 @@ body { margin: 0; }
 .sidebar .sidebar-nav, .sidebar .sidebar-bottom { gap: var(--nav-gap); padding: var(--nav-pad); }
 .sidebar .rt-Separator { margin-block: var(--nav-sep); }
 .sidebar .nav-section { margin-top: var(--nav-section); margin-bottom: 2px; }
-.sidebar .nav-gates { margin-bottom: var(--nav-section); }
+.sidebar .gate-switcher:has(+ .gate-status) { margin-bottom: 0; }
+.sidebar .gate-status { margin: -2px 0 var(--nav-section); }
+.sidebar .gate-switcher { margin-bottom: var(--nav-section); }
 .sidebar .nav-action { height: var(--nav-action-h); font-size: var(--nav-font); }
 .content { flex: 1; min-width: 0; padding: var(--space-5); }
 /* Menu items: the same size whether selected (soft) or not (ghost). Radix draws ghost buttons smaller and pulls them
    outward with negative margins, which made the selected item taller and let a hovered neighbour touch it. */
 .rt-Button.nav-item {
   justify-content: flex-start; width: 100%; box-sizing: border-box; height: var(--nav-h); font-size: var(--nav-font);
-  margin: 0; padding: 0 var(--space-3);
+  margin: 0; padding: 0 var(--space-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* The working copy's state (matches the gate / changes not sent / conflicts) under the gate's name and in the phone's top bar. */
+.status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: currentColor; }
+
+/* The gate's name in the sidebar, opening the gate switcher (GateApp). */
+.gate-switcher {
+  display: flex; align-items: center; gap: var(--space-1); max-width: 100%; min-height: 32px; margin: 0 calc(-1 * var(--space-1));
+  padding: 2px var(--space-1); border: 0; border-radius: var(--radius-2); background: none; color: inherit; font: inherit;
+  text-align: left; cursor: pointer;
+}
+.gate-switcher:hover, .gate-switcher[data-state='open'] { background: var(--gray-a3); }
+.gate-switcher:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 1px; }
+.gate-switcher svg { flex-shrink: 0; color: var(--gray-11); }
+@media (pointer: coarse) { .gate-switcher { min-height: 44px; } }
 
 /* "?" hover tips (HelpTip). */
 .help-tip {
@@ -95,13 +111,208 @@ video.snap-video { display: block; width: min(1280px, 90vw); max-height: 80vh; a
 .live-body img { display: block; width: 100%; height: auto; }
 .live-body p { margin: 0; padding: 12px; text-align: center; color: #d1d5db; }
 
+/* Floating windows: gate connection progress (JobDock), the camera button and window (LiveView), the update notice. */
+.dock {
+  position: fixed; right: calc(env(safe-area-inset-right) + 16px); bottom: calc(env(safe-area-inset-bottom) + 16px);
+  width: min(560px, calc(100vw - 32px)); z-index: 10;
+}
+.live-toggle { position: fixed; top: calc(env(safe-area-inset-top) + 10px); right: calc(env(safe-area-inset-right) + 16px); z-index: 11; }
+.live-window {
+  position: fixed; top: calc(env(safe-area-inset-top) + 58px); right: calc(env(safe-area-inset-right) + 16px);
+  width: min(640px, calc(100vw - 32px)); z-index: 11;
+}
+.update-notice {
+  position: fixed; top: calc(env(safe-area-inset-top) + 12px); left: 50%; transform: translateX(-50%); z-index: 20; box-shadow: var(--shadow-4);
+  max-width: calc(100vw - 24px); box-sizing: border-box;
+}
+/* The page reaches the screen edges (viewport-fit=cover): keep it clear of a notch or rounded corner at any width,
+   such as a phone turned sideways. */
+.sidebar { padding-left: env(safe-area-inset-left); }
+.content { padding-right: calc(env(safe-area-inset-right) + var(--space-5)); padding-bottom: calc(env(safe-area-inset-bottom) + var(--space-5)); }
+.rt-BaseDialogScrollPadding {
+  padding-top: max(var(--space-6), calc(env(safe-area-inset-top) + var(--space-3)));
+  padding-bottom: max(var(--space-6), 6vh, calc(env(safe-area-inset-bottom) + var(--space-3)));
+  padding-left: max(var(--space-4), env(safe-area-inset-left)); padding-right: max(var(--space-4), env(safe-area-inset-right));
+}
+
 /* Resident/vendor Notes column: one line, full text on hover */
 .note-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-@media (max-width: 760px) {
-  .app { flex-direction: column; }
-  .sidebar { width: 100%; height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--gray-a5); }
-}
 
 /* Read-only users: a gate settings page with every control disabled (GateApp). */
 fieldset.readonly-page { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+/* Phones: narrow windows, and phones turned sideways (keep the query the same as PHONE in phone.ts). */
+.mobile-bar { display: none; }
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
+  .app { display: block; }
+  .mobile-bar {
+    display: flex; align-items: center; gap: var(--space-3); position: sticky; top: 0; z-index: 9;
+    min-height: 44px; padding: calc(env(safe-area-inset-top) + var(--space-2)) calc(env(safe-area-inset-right) + var(--space-3)) var(--space-2)
+      calc(env(safe-area-inset-left) + var(--space-3));
+    background: var(--color-panel-solid); border-bottom: 1px solid var(--gray-a5);
+  }
+  .title-button {
+    flex: 1; min-width: 0; min-height: 44px; display: flex; flex-direction: column; justify-content: center; padding: 0;
+    border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  }
+  .title-button:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; border-radius: var(--radius-2); }
+  .mobile-bar.has-camera { padding-right: calc(env(safe-area-inset-right) + 64px); } /* room for the camera button */
+
+  /* Bottom tab bar: Residents, Vendors, Transactions, Gate, More (GateApp). */
+  .tab-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; display: flex;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    background: var(--color-panel-solid); border-top: 1px solid var(--gray-a5);
+  }
+  .tab {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 56px;
+    padding: 6px 0; border: 0; background: none; color: var(--gray-11); font: inherit; font-size: 11px; letter-spacing: -0.01em; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tab:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+  .tab { min-width: 0; }
+  .tab.wide { flex-grow: 1.4; } /* "Transactions" needs more room than the others */
+  .tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab-icon {
+    position: relative; display: flex; align-items: center; justify-content: center; width: 52px; height: 28px; border-radius: 14px;
+  }
+  .tab-icon svg { width: 20px; height: 20px; }
+  .tab[aria-current='page'] { color: var(--accent-11); font-weight: 600; }
+  .tab[aria-current='page'] .tab-icon { background: var(--accent-a4); }
+  .tab-dot { position: absolute; top: 3px; right: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--blue-9); }
+
+  /* The Gate tab's sheet: a dialog along the bottom edge. */
+  .rt-DialogContent.sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; width: auto; max-width: none; margin: 0;
+    padding: var(--space-4) calc(env(safe-area-inset-right) + var(--space-4)) calc(env(safe-area-inset-bottom) + var(--space-4))
+      calc(env(safe-area-inset-left) + var(--space-4));
+    border-radius: var(--radius-5) var(--radius-5) 0 0; animation: sheet-in 200ms ease-out;
+  }
+  .rt-DialogContent.sheet[data-state='closed'] { animation: sheet-out 150ms ease-in; }
+  .content {
+    padding: var(--space-3) calc(env(safe-area-inset-right) + var(--space-3)) calc(env(safe-area-inset-bottom) + 56px + var(--space-9))
+      calc(env(safe-area-inset-left) + var(--space-3));
+  }
+
+  /* The menu is a drawer (a dialog, GateApp) at the left edge; the whole drawer scrolls, with full-size items. */
+  .rt-DialogContent.drawer {
+    position: fixed; top: 0; bottom: 0; left: 0; width: min(300px, 85vw); max-width: none; height: 100dvh; max-height: none;
+    margin: 0; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left);
+    border-radius: 0; overflow-y: auto; animation: drawer-in 200ms ease-out;
+  }
+  .rt-DialogContent.drawer[data-state='closed'] { animation: drawer-out 150ms ease-in; }
+  .drawer .sidebar, .drawer .sidebar[data-density] {
+    display: block; position: static; width: auto; height: auto; padding: 0; border: 0; background: none;
+    --nav-h: 48px; --nav-gap: 2px; --nav-pad: var(--space-3); --nav-action-h: 48px; --nav-sep: var(--space-2);
+    --nav-section: var(--space-3); --nav-font: var(--font-size-3);
+  }
+  .drawer .sidebar-nav { overflow: visible; }
+
+  .dock {
+    left: calc(env(safe-area-inset-left) + 8px); right: calc(env(safe-area-inset-right) + 8px); width: auto;
+    bottom: calc(env(safe-area-inset-bottom) + 56px + 8px); /* above the tab bar */
+  }
+  .dock .job-log { max-height: 30vh; }
+  .update-notice { left: calc(env(safe-area-inset-left) + 12px); right: calc(env(safe-area-inset-right) + 12px); transform: none; max-width: none; }
+  .live-toggle { top: calc(env(safe-area-inset-top) + 6px); right: calc(env(safe-area-inset-right) + 8px); }
+  .live-window {
+    left: calc(env(safe-area-inset-left) + 8px); right: calc(env(safe-area-inset-right) + 8px); width: auto;
+    max-height: calc(100dvh - env(safe-area-inset-top) - 70px); overflow: auto;
+  }
+
+  /* Tables: each body row is a card, each cell a line with its column's name in front (data-label, stackTables.ts). */
+  .rt-TableRoot { width: 100% !important; max-width: 100% !important; overflow: visible; }
+  /* Radix gives the table height: 0 (it grows as a table, not as a block) and the surface variant hides overflow. */
+  .rt-TableRootTable { height: auto; overflow: visible !important; }
+  .rt-TableRoot.rt-variant-surface { border: 0; background: none; box-shadow: none; }
+  .rt-TableRootTable, .rt-TableRootTable > tbody, .rt-TableRootTable > tbody > tr,
+  .rt-TableRootTable > tbody > tr > td, .rt-TableRootTable > tbody > tr > th { display: block; width: auto !important; }
+  .rt-TableRootTable > thead { display: none; }
+  .rt-TableRootTable > tbody > tr {
+    margin-bottom: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--gray-a5); border-radius: var(--radius-3);
+    background: var(--color-panel-solid);
+  }
+  .rt-TableRootTable > tbody > tr > td, .rt-TableRootTable > tbody > tr > th {
+    display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--space-2); row-gap: 2px;
+    height: auto; padding: 3px 0; box-shadow: none; text-align: left;
+  }
+  .rt-TableRootTable > tbody > tr > th { font-weight: bold; padding-bottom: var(--space-1); }
+  .rt-TableRootTable > tbody > tr > td:empty, .rt-TableRootTable > tbody > tr > td:has(> .note-cell:empty) { display: none; }
+  .rt-TableRootTable > tbody > tr > td[data-label]::before {
+    content: attr(data-label); flex: 0 0 auto; min-width: 7.5rem; max-width: 45%; color: var(--gray-11); font-size: var(--font-size-1);
+  }
+  /* Cells holding just a checkbox (the hold-open, security and elevator grids) sit side by side. */
+  .rt-TableRootTable > tbody > tr > td:has(> .rt-CheckboxRoot:only-child) { display: inline-flex; margin-right: var(--space-3); }
+  .rt-TableRootTable > tbody > tr > td:has(> .rt-CheckboxRoot:only-child)::before { min-width: 0; max-width: none; }
+  /* Sortable tables keep their header as a row of "sort by" buttons. */
+  .rt-TableRootTable > thead.sort-head { display: block; margin-bottom: var(--space-2); }
+  .rt-TableRootTable > thead.sort-head > tr { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+  .rt-TableRootTable > thead.sort-head > tr::before { content: 'Sort by'; margin-right: var(--space-1); color: var(--gray-11); font-size: var(--font-size-1); }
+  .rt-TableRootTable > thead.sort-head > tr > th {
+    display: block; height: auto; padding: 2px var(--space-2); border: 1px solid var(--gray-a6); border-radius: 999px; box-shadow: none;
+    font-size: var(--font-size-1);
+  }
+  .note-cell { max-width: none; white-space: normal; }
+  .lcd-input { min-width: 0 !important; max-width: 100% !important; }
+  .lcd-input { min-width: 0 !important; max-width: 100% !important; }
+  /* A cell spanning the row (a resident's details, an edit form) uses the card's full width. */
+  .rt-TableRootTable > tbody > tr > td[colspan] { display: block; }
+
+  /* Residents/vendors and transactions: the name is the card's title with a summary line under it; tapping the card
+     (data-open) shows every value. Only the list's own rows (card-row), not a table inside a resident's details. Duplicate values (marked with a title) always show. */
+  .dir-table tr.card-row, .tx-table tr.card-row {
+    display: flex; flex-wrap: wrap; align-items: baseline; cursor: pointer;
+  }
+  .dir-table tr.card-row > td, .tx-table tr.card-row > td { flex: 1 1 100%; }
+  .dir-table tr.card-row > td[data-col='name'], .tx-table tr.card-row > td[data-col='name'],
+  .tx-table tr.card-row:has(> td[data-col='name']:empty) > td[data-col='eventType'] {
+    order: -2; font-size: var(--font-size-4); font-weight: 600; padding-bottom: 0;
+  }
+  .dir-table tr.card-row > td[data-col='name']::before, .tx-table tr.card-row > td[data-col='name']::before,
+  .tx-table tr.card-row:has(> td[data-col='name']:empty) > td[data-col='eventType']::before { content: none; }
+  .dir-table tr.card-row > td[data-col='name']:empty { display: flex; }
+  .dir-table tr.card-row > td[data-col='name']:empty::after { content: 'No name'; color: var(--gray-10); font-weight: normal; }
+  .dir-table tr.card-row > td:is([data-col='directoryCode'], [data-col='phoneFull'], [data-col='hidden']),
+  .tx-table tr.card-row > td:is([data-col='date'], [data-col='time'], [data-col='access'], [data-col='snap']) {
+    order: -1; flex: 0 0 auto; margin-right: var(--space-2); color: var(--gray-11);
+  }
+  .dir-table tr.card-row > td[data-col='directoryCode']::before { content: 'Directory'; min-width: 0; max-width: none; }
+  .dir-table tr.card-row > td:is([data-col='phoneFull'], [data-col='hidden'])::before,
+  .tx-table tr.card-row > td:is([data-col='date'], [data-col='time'], [data-col='snap'])::before { content: none; }
+  .tx-table tr.card-row > td[data-col='access']::before { content: '·'; min-width: 0; max-width: none; }
+  .tx-table tr.card-row > td[data-col='snap'] { margin-left: auto; margin-right: 0; }
+  .dir-table tr.card-row:not([data-open]) > td:not([data-col='name'], [data-col='directoryCode'], [data-col='phoneFull'], [data-col='hidden'], [title]),
+  .tx-table tr.card-row:not([data-open]) > td:not([data-col='name'], [data-col='date'], [data-col='time'], [data-col='access'], [data-col='snap']) {
+    display: none;
+  }
+  .tx-table tr.card-row:not([data-open]):has(> td[data-col='name']:empty) > td[data-col='eventType'] { display: flex; }
+  /* An open resident and its details read as one card. */
+  .dir-table tr.card-row[data-open] { margin-bottom: 0; border-bottom-style: dashed; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .dir-table tr.detail-row { border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; padding: 0; overflow: hidden; }
+  .dir-table tr.detail-row > td { padding: var(--space-3); }
+}
+@keyframes drawer-in { from { transform: translateX(-100%); } }
+@keyframes drawer-out { to { transform: translateX(-100%); } }
+@keyframes sheet-in { from { transform: translateY(100%); } }
+@keyframes sheet-out { to { transform: translateY(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .rt-DialogContent.drawer, .rt-DialogContent.drawer[data-state='closed'],
+  .rt-DialogContent.sheet, .rt-DialogContent.sheet[data-state='closed'] { animation-duration: 1ms; }
+}
+
+/* Touch screens: controls at least 44 px tall (small icons get a larger invisible tap area), and 16 px text in fields
+   so phones don't zoom in on them. */
+@media (pointer: coarse) {
+  .rt-Button, .rt-IconButton { min-height: 44px; }
+  .rt-IconButton { min-width: 44px; }
+  .rt-TextFieldRoot, .rt-SelectTrigger, .rt-TextAreaRoot { font-size: 16px !important; }
+  .rt-TextFieldRoot, .rt-SelectTrigger { min-height: 44px; }
+  .time-input { height: 44px; font-size: 16px; }
+  .rt-CheckboxRoot { --checkbox-size: 22px; position: relative; }
+  .rt-CheckboxRoot::after { content: ''; position: absolute; inset: -11px; }
+  .help-tip { position: relative; }
+  .help-tip::after { content: ''; position: absolute; inset: -14px; }
+  .snap-refresh::after { content: ''; position: absolute; inset: -14px; }
+  .rt-TableRootTable > thead.sort-head > tr > th { display: inline-flex; align-items: center; min-height: 44px; padding: 0 var(--space-3); }
+}

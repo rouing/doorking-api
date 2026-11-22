@@ -8,9 +8,14 @@ import { fmtTime } from '../format.ts';
 export const ACTIONS: Record<string, string> = { change: 'Change', revert: 'Revert', pull: 'Pull', send: 'Send', relay: 'Relay', camera: 'Camera',
   access: 'Users', login: 'Gate login', apikey: 'API key', note: 'Note' };
 
+interface HistoryProps {
+  gapi: GateApi;
+  onReverted: () => void;
+}
+
 // The gate's users with their last sign-in, then this gate's events (newest first). Rows with details expand on click, one at a
 // time; Revert undoes that change in the working copy only.
-export function History({ gapi, onReverted }: { gapi: GateApi; onReverted: () => void }) {
+export function History({ gapi, onReverted }: HistoryProps) {
   const readOnly = useReadOnly();
   const [history, setHistory] = useState<HistoryReply | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -27,11 +32,11 @@ export function History({ gapi, onReverted }: { gapi: GateApi; onReverted: () =>
   }, [gapi]);
   useEffect(() => { load(); }, [load]);
 
-  async function revert(e: HistoryEvent) {
-    if (!await confirm({ title: `Revert "${e.summary}"?`, action: 'Revert',
+  async function revert(event: HistoryEvent) {
+    if (!await confirm({ title: `Revert "${event.summary}"?`, action: 'Revert',
       body: 'This undoes the change in the working copy. The gate is not changed until you Send to gate.' })) return;
     try {
-      await gapi('POST', `/history/${encodeURIComponent(e.id)}/revert`, {});
+      await gapi('POST', `/history/${encodeURIComponent(event.id)}/revert`, {});
       await load();
       setInfo('Reverted in the working copy. Review it, then Send to gate.');
       onReverted();
@@ -64,37 +69,37 @@ export function History({ gapi, onReverted }: { gapi: GateApi; onReverted: () =>
       </Card>
       <Card>
         <Heading size="3" mb="2">Events</Heading>
-        <Flex gap="3" align="center" mb="2">
+        <Flex gap="3" align="center" wrap="wrap" mb="2">
           <Button variant="soft" color="gray" onClick={load}>Refresh</Button>
           <Text size="2" color="gray">{info}</Text>
         </Flex>
         <Table.Root size="1">
           <Table.Header>
             <Table.Row>
-              {['Time', 'User', 'Action', 'Summary', 'Result', ''].map((h, i) => <Table.ColumnHeaderCell key={i}>{h}</Table.ColumnHeaderCell>)}
+              {['Time', 'User', 'Action', 'Summary', 'Result', ''].map((header, i) => <Table.ColumnHeaderCell key={i}>{header}</Table.ColumnHeaderCell>)}
             </Table.Row>
           </Table.Header>
           <Table.Body>
-            {(history?.events || []).map((e) => {
-              const details = e.details || [];
-              const result = e.result === 'failed' ? `Failed: ${e.error || ''}` : e.result === 'done' ? 'OK' : '';
+            {(history?.events || []).map((entry) => {
+              const details = entry.details || [];
+              const result = entry.result === 'failed' ? `Failed: ${entry.error || ''}` : entry.result === 'done' ? 'OK' : '';
               return (
-                <Fragment key={e.id}>
-                  <Table.Row onClick={details.length ? () => setOpen(open === e.id ? null : e.id) : undefined}
-                    style={{ cursor: details.length ? 'pointer' : undefined, background: e.result === 'failed' ? 'var(--red-a3)' : undefined,
-                      color: e.revertedBy ? 'var(--gray-10)' : undefined }}>
-                    <Table.Cell style={{ whiteSpace: 'nowrap' }}>{fmtTime(e.time)}</Table.Cell>
-                    <Table.Cell>{e.user || ''}</Table.Cell>
-                    <Table.Cell>{ACTIONS[e.action] || e.action}</Table.Cell>
-                    <Table.Cell>{e.summary || ''}</Table.Cell>
+                <Fragment key={entry.id}>
+                  <Table.Row onClick={details.length ? () => setOpen(open === entry.id ? null : entry.id) : undefined}
+                    style={{ cursor: details.length ? 'pointer' : undefined, background: entry.result === 'failed' ? 'var(--red-a3)' : undefined,
+                      color: entry.revertedBy ? 'var(--gray-10)' : undefined }}>
+                    <Table.Cell style={{ whiteSpace: 'nowrap' }}>{fmtTime(entry.time)}</Table.Cell>
+                    <Table.Cell>{entry.user || ''}</Table.Cell>
+                    <Table.Cell>{ACTIONS[entry.action] || entry.action}</Table.Cell>
+                    <Table.Cell>{entry.summary || ''}</Table.Cell>
                     <Table.Cell>{result}</Table.Cell>
                     <Table.Cell>
-                      {e.revertedBy ? `Reverted by ${e.revertedBy.user} ${fmtTime(e.revertedBy.time)}`
-                        : e.revertible && !readOnly ? <Button size="1" variant="soft" color="gray"
-                          onClick={(event) => { event.stopPropagation(); revert(e); }}>Revert</Button> : ''}
+                      {entry.revertedBy ? `Reverted by ${entry.revertedBy.user} ${fmtTime(entry.revertedBy.time)}`
+                        : entry.revertible && !readOnly ? <Button size="1" variant="soft" color="gray"
+                          onClick={(event) => { event.stopPropagation(); revert(entry); }}>Revert</Button> : ''}
                     </Table.Cell>
                   </Table.Row>
-                  {open === e.id && details.length > 0 && (
+                  {open === entry.id && details.length > 0 && (
                     <Table.Row>
                       <Table.Cell colSpan={6} style={{ background: 'var(--gray-a2)' }}>
                         <Flex direction="column" gap="2">

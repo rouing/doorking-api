@@ -2,31 +2,31 @@
 // with GitHub-style ids so its "#section" links work), paragraphs, "-" and "1." lists (continuation lines indented),
 // tables, "> " quotes, **bold**, *italic*, `code` and [links](#... or http(s)://...). All text is HTML-escaped.
 
-const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const esc = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // GitHub's heading id: lower case, punctuation other than spaces and hyphens dropped, spaces to hyphens.
 export const slug = (text: string): string => text.toLowerCase().replace(/[^a-z0-9 -]/g, '').trim().replace(/ /g, '-');
 
-const plain = (s: string): string => s.replace(/\*\*|`|\*/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+const plain = (text: string): string => text.replace(/\*\*|`|\*/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
 
 // Inline markup of one line or paragraph.
 export function inline(text: string): string {
   return text.split('`').map((part, i) => {
     if (i % 2) return `<code>${esc(part)}</code>`;
     return esc(part)
-      .replace(/\[([^\]]+)\]\((#[\w-]*|https?:\/\/[^\s)]+)\)/g, (_, t: string, href: string) =>
-        `<a href="${href}"${href.startsWith('#') ? '' : ' target="_blank" rel="noopener"'}>${t}</a>`)
+      .replace(/\[([^\]]+)\]\((#[\w-]*|https?:\/\/[^\s)]+)\)/g, (_, label: string, href: string) =>
+        `<a href="${href}"${href.startsWith('#') ? '' : ' target="_blank" rel="noopener"'}>${label}</a>`)
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[^*\w])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
   }).join('');
 }
 
 const cells = (row: string): string[] => row.trim().replace(/^\||\|$/g, '').replace(/\\\|/g, '\u0000').split('|')
-  .map((c) => c.replace(/\u0000/g, '|').trim());
+  .map((cell) => cell.replace(/\u0000/g, '|').trim());
 
 // The guide's HTML body (no <html> wrapper).
-export function markdownToHtml(md: string): string {
-  const lines = md.replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/);
+export function markdownToHtml(markdown: string): string {
+  const lines = markdown.replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/);
   const out: string[] = [];
   let para: string[] = [];
   let list: { tag: 'ul' | 'ol'; items: string[] } | null = null;
@@ -61,8 +61,8 @@ export function markdownToHtml(md: string): string {
       const rows: string[][] = [];
       for (i += 2; i < lines.length && lines[i].startsWith('|'); i++) rows.push(cells(lines[i]));
       i--;
-      out.push(`<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${
-        rows.map((row) => `<tr>${row.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+      out.push(`<table><thead><tr>${head.map((cell) => `<th>${inline(cell)}</th>`).join('')}</tr></thead><tbody>${
+        rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
       continue;
     }
     if (item) {
@@ -85,7 +85,7 @@ export function markdownToHtml(md: string): string {
 }
 
 // The whole /help page: the guide with its own styles (light and dark).
-export function helpPage(md: string): string {
+export function helpPage(markdown: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>User guide · DoorKing Gate Manager</title><style>
 :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #60646c; --line: #d9d9e0; --bg: #fff; --soft: #f4f4f6; --accent: #3e63dd; }
@@ -99,6 +99,6 @@ th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; ver
 blockquote { margin: 16px 0; padding: 4px 16px; border-left: 4px solid #e5484d; background: var(--soft); border-radius: 0 6px 6px 0; }
 li { margin: 4px 0; }
 </style></head><body><main>
-${markdownToHtml(md)}
+${markdownToHtml(markdown)}
 </main></body></html>`;
 }

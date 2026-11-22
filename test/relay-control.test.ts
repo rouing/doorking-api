@@ -28,13 +28,19 @@ test('controlRelays: untouched relays echo current; unknown (2) sent as 0', asyn
   assert.strictEqual(r.settings, 'M0110000000000000000');
 });
 
-test('controlRelays: mode letter reflects which banks change', async () => {
+test('controlRelays: mode letter reflects which banks change (FUN_004f1c20)', async () => {
+  const mode = async (status, desired) => (await dk.controlRelays(fakeClient(status), cred, desired)).settings[0];
   const base = '0000000000000000000';
-  // relay 5 is in bank 3-10 -> R
-  assert.strictEqual((await dk.controlRelays(fakeClient(base), cred, {})).settings[0], 'M');
-  const setBank1 = await dk.controlRelays({ getRelays: () => Promise.resolve(base), setRelays: () => Promise.resolve('OK') },
-    cred, {});
-  assert.strictEqual(setBank1.settings[0], 'M');
+  assert.strictEqual(await mode(base, { 1: true }), 'M'); // main board only
+  assert.strictEqual(await mode(base, { 5: true }), 'R'); // relays 3-10
+  assert.strictEqual(await mode(base, { 12: true }), 'P'); // relays 11-18
+  assert.strictEqual(await mode(base, { 5: true, 12: true }), 'T'); // both banks
+  // Unused Tracker relays reporting unknown (2) are left alone, so they are no change.
+  const unknown = '0002222222222222222';
+  assert.strictEqual(await mode(unknown, { 1: true }), 'M');
+  assert.strictEqual(await mode(unknown, { 5: true }), 'R');
+  const sent = await dk.controlRelays(fakeClient(unknown), cred, { 12: true });
+  assert.deepStrictEqual([sent.settings[0], sent.settings.slice(1)], ['P', '0000000000001000000']);
 });
 
 test('controlRelays: retries on timeout reply, then succeeds', async () => {

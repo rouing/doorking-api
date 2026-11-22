@@ -1,4 +1,6 @@
-import { Table } from '@radix-ui/themes';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Button, Flex, Table, Text } from '@radix-ui/themes';
+import { usePhone } from './phone.ts';
 import { cmpCells } from './format.ts';
 
 export type Column = [label: string, key: string];
@@ -15,21 +17,26 @@ export function nextSort(cur: Sort | null, key: string, dateTime = false): Sort 
 }
 
 // Rows sorted by `sort`; value(col) gives the value a column sorts on.
-export function sortRows<R>(rows: R[], sort: Sort | null, value: (col: string) => (r: R) => unknown): R[] {
+export function sortRows<R>(rows: R[], sort: Sort | null, value: (col: string) => (row: R) => unknown): R[] {
   if (!sort) return rows;
-  const v1 = value(sort.col);
+  const first = value(sort.col);
   const then = sort.then;
-  const v2 = then && value(then.col);
-  return [...rows].sort((a, b) => cmpCells(v1(a), v1(b)) * sort.dir || (v2 && then ? cmpCells(v2(a), v2(b)) * then.dir : 0));
+  const second = then && value(then.col);
+  return [...rows].sort((a, b) => cmpCells(first(a), first(b)) * sort.dir || (second && then ? cmpCells(second(a), second(b)) * then.dir : 0));
+}
+
+interface SortHeadProps {
+  cols: Column[];
+  sort: Sort | null;
+  onSort: (key: string) => void;
+  title?: (key: string) => string;
 }
 
 // Header row whose cells sort the table on click (▲/▼, with 1/2 for a two-level sort).
-export function SortHead({ cols, sort, onSort, title }: {
-  cols: Column[]; sort: Sort | null; onSort: (key: string) => void; title?: (key: string) => string;
-}) {
+export function SortHead({ cols, sort, onSort, title }: SortHeadProps) {
   const arrow = (dir: number) => (dir > 0 ? ' ▲' : ' ▼');
   return (
-    <Table.Header>
+    <Table.Header className="sort-head">
       <Table.Row>
         {cols.map(([label, key]) => (
           <Table.ColumnHeaderCell key={key} onClick={() => onSort(key)} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
@@ -44,4 +51,28 @@ export function SortHead({ cols, sort, onSort, title }: {
   );
 }
 
-export const MAX_ROWS = 2000;
+const PAGE_ROWS = 2000; // rows drawn at a time (and per Show more)
+const PHONE_ROWS = 100; // the same on phones
+
+interface ShownRows {
+  limit: number; // rows to draw
+  more: ReactNode; // the Show more row, or null when everything shows
+  showMore: () => void; // draws one step more (after loading more rows), as Show more does
+}
+
+// How many rows a long table draws: PAGE_ROWS (phones: PHONE_ROWS), and that many more each time Show more is
+// clicked, so every row can be reached (rows added later, such as older transactions, too). Back to one page when
+// `reset` changes, such as the filter.
+export function useShownRows(total: number, reset: unknown): ShownRows {
+  const step = usePhone() ? PHONE_ROWS : PAGE_ROWS;
+  const [pages, setPages] = useState(1);
+  useEffect(() => { setPages(1); }, [reset]);
+  const limit = step * pages;
+  const more = total > limit ? (
+    <Flex align="center" gap="3" wrap="wrap">
+      <Text size="2" color="gray">Showing {limit} of {total}</Text>
+      <Button variant="soft" onClick={() => setPages(pages + 1)}>Show {Math.min(step, total - limit)} more</Button>
+    </Flex>
+  ) : null;
+  return { limit, more, showMore: () => setPages((shown) => shown + 1) };
+}

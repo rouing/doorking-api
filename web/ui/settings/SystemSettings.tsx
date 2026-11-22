@@ -11,9 +11,15 @@ import { DeviceAssociation } from './LocalPrefs.tsx';
 import { useGateSettings } from './useGateSettings.ts';
 import { GateLoginCard, GateUsersCard, ApiKeysCard } from './GateAccess.tsx';
 
+interface DeleteGateDataProps {
+  phone: string;
+  gapi: GateApi;
+  onDeleted: () => void;
+}
+
 // Deletes everything this app stores about the gate (database rows for every user and the gate's folder), after a
 // warning. Nothing on the gate changes. Afterwards the gate is gone from every list, so the page returns to the list.
-function DeleteGateData({ phone, gapi, onDeleted }: { phone: string; gapi: GateApi; onDeleted: () => void }) {
+function DeleteGateData({ phone, gapi, onDeleted }: DeleteGateDataProps) {
   const [dialog, confirm] = useConfirm();
   const [info, setInfo] = useState('');
   const remove = async () => {
@@ -38,15 +44,20 @@ function DeleteGateData({ phone, gapi, onDeleted }: { phone: string; gapi: GateA
           Removes everything this app has stored about this gate, for <strong>every account</strong> on this computer, and takes it off
           every gate list. Use it when the gate is no longer managed here. Nothing on the gate changes; to manage it again, add it and pull.
         </Text>
-        <Flex gap="3" align="center"><Button color="red" onClick={remove}>Delete all data for this gate…</Button>
+        <Flex gap="3" align="center" wrap="wrap"><Button color="red" onClick={remove}>Delete all data for this gate…</Button>
           <Text size="2" color="gray">{info}</Text></Flex>
       </Flex>
     </Card>
   );
 }
 
+interface WorkingCopyFilesProps {
+  phone: string;
+  available: boolean;
+}
+
 // Downloads of the working copy's board files (names.map flags the 128-byte blocks of names.bin that changed).
-function WorkingCopyFiles({ phone, available }: { phone: string; available: boolean }) {
+function WorkingCopyFiles({ phone, available }: WorkingCopyFilesProps) {
   return (
     <Card>
       <Flex direction="column" gap="3">
@@ -56,8 +67,8 @@ function WorkingCopyFiles({ phone, available }: { phone: string; available: bool
         </Text>
         {available && (
           <Flex gap="3" wrap="wrap">
-            {['names.bin', 'names.map', 'phone.bin', 'cards.bin'].map((f) => (
-              <Link key={f} size="2" href={gateUrl(phone, `/files/${f}`)} download={f}>{f}</Link>
+            {['names.bin', 'names.map', 'phone.bin', 'cards.bin'].map((file) => (
+              <Link key={file} size="2" href={gateUrl(phone, `/files/${file}`)} download={file}>{file}</Link>
             ))}
           </Flex>
         )}
@@ -66,13 +77,24 @@ function WorkingCopyFiles({ phone, available }: { phone: string; available: bool
   );
 }
 
+interface SystemSettingsProps {
+  phone: string;
+  gapi: GateApi;
+  prefs: GatePrefs;
+  defaults: Config;
+  list: ResidentsReply | null;
+  cameras: CameraSettings | null;
+  user: string;
+  emailEnabled: boolean;
+  onReload: () => Promise<void>;
+  onSessionChange: () => void;
+  onJobStarted: () => void;
+}
+
 // System Settings: gate login and users (admins), gate configuration, gate settings (working copy), working copy
 // files, device association, cameras and deleting the gate's stored data. Relay names are on the
 // Relays page; dark mode is in User Settings. Read-only users see the gate's configuration and settings, disabled.
-export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, user, emailEnabled, onReload, onSessionChange, onJobStarted }: {
-  phone: string; gapi: GateApi; prefs: GatePrefs; defaults: Config; list: ResidentsReply | null; cameras: CameraSettings | null;
-  user: string; emailEnabled: boolean; onReload: () => Promise<void>; onSessionChange: () => void; onJobStarted: () => void;
-}) {
+export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, user, emailEnabled, onReload, onSessionChange, onJobStarted }: SystemSettingsProps) {
   const settings = useGateSettings(gapi);
   const readOnly = useReadOnly();
   const reloadAll = async () => { await onReload(); await settings.load(); };
@@ -84,7 +106,7 @@ export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, us
       <Card>
         <Flex direction="column" gap="3">
           <Heading size="3">Gate settings</Heading>
-          <GateSettingsEditor gs={settings} view="prefs" gapi={gapi} onReload={onReload} onJobStarted={onJobStarted} />
+          <GateSettingsEditor settings={settings} view="prefs" gapi={gapi} onReload={onReload} />
         </Flex>
       </Card>
     </>

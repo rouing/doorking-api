@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import * as dk from '../index.ts';
 import type { RecordChange } from '../src/audit.ts';
 import type { SnapshotProgress, SnapshotResult } from '../src/cameras.ts';
-import type { GateConfig, GatePrefs, GateRole } from '../src/types.ts';
+import type { GatePrefs, GateRole } from '../src/types.ts';
 import { logger, logMessages } from '../src/logging.ts';
 
 export type Body = Record<string, unknown>; // request JSON, checked by each handler
@@ -23,6 +23,7 @@ export interface JobState {
 }
 // adding: the first pull of a gate being added; it is saved as a managed gate only when that pull succeeds.
 export interface JobInfo { scheduled?: boolean; details?: RecordChange[]; adding?: boolean }
+export interface PullSteps { prepare?: () => Promise<unknown>; afterPull?: (log: (line: string) => void) => Promise<void> }
 export interface SnapRun {
   state: 'running' | 'done' | 'stopped' | 'failed'; startedAt: Date; finishedAt?: Date; log: string[]; minute?: string;
   progress?: SnapshotProgress; result?: SnapshotResult | null; error?: string; again?: boolean; stopping?: boolean;
@@ -53,8 +54,8 @@ export function createContext(deps: Services) {
   const MAX_AGE_MS = config.security.sessionMaxHours * 3600000;
   const STEP_UP_MS = config.security.stepUpMinutes * 60000;
   const MAX_BODY_BYTES = 10000;
-  // Failed sign-ins per user name: after MAX_FAILED_SIGN_INS within SIGN_IN_WINDOW_MS, sign-in is refused for the
-  // rest of the window without asking DKS Cloud, so a guessing script cannot get the DKS account locked.
+  // Failed password sign-ins: after MAX_FAILED_SIGN_INS within SIGN_IN_WINDOW_MS (per user name, client address and
+  // both; see signInKeys), sign-in is refused for the rest of the window, so a guessing script gets nowhere.
   const MAX_FAILED_SIGN_INS = config.security.maxFailedSignIns;
   const SIGN_IN_WINDOW_MS = config.security.signInWindowMinutes * 60000;
   // Gate-match defaults for the login form; the browser can override them in the Connect panel.
@@ -67,6 +68,7 @@ export function createContext(deps: Services) {
   const APP = config.email.appUrl;
   const NO_EMAIL = 'Email isn\'t set up on this server (config.json → email). Ask the person who runs it.';
   function send(res: ServerResponse, code: number, body: unknown, type = 'application/json') {
+    if (res.headersSent) return void res.end(); // a reply already under way (a picture or video) that then failed
     res.writeHead(code, {
       'Content-Type': `${type}; charset=utf-8`,
       'Cache-Control': 'no-store',
@@ -87,8 +89,8 @@ export function createContext(deps: Services) {
       req.on('end', () => {
         if (size > MAX_BODY_BYTES) return reject(dk.httpError('Request body too large', 413));
         let body: unknown;
-        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return reject(new Error('Bad JSON')); }
-        if (!body || typeof body !== 'object' || Array.isArray(body)) return reject(new Error('The body must be a JSON object'));
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return reject(dk.httpError('Bad JSON')); }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return reject(dk.httpError('The body must be a JSON object'));
         return resolve(body as Body);
       });
       req.on('error', reject);
@@ -103,28 +105,28 @@ export function createContext(deps: Services) {
     return { ...rec, role, actor, user: rec.dksUser, password: rec.dksPassword, dir: path.join(ROOT, rec.phoneNumber) };
   }
   // The gate named in the URL, if the signed-in user has access to it.
-  async function gateFor(s: { user: string }, phone: unknown): Promise<Gate> {
-    const [rec, role] = await Promise.all([dk.getGate(store, phone), dk.accessOf(store, phone, s.user)]);
+  async function gateFor(session: { user: string }, phone: string): Promise<Gate> {
+    const [rec, role] = await Promise.all([dk.getGate(store, phone), dk.accessOf(store, phone, session.user)]);
     if (!rec || !role) throw dk.httpError(NO_GATE, 404);
-    return asGate(rec, role, s.user);
+    return asGate(rec, role, session.user);
   }
-  const prefsOf = (phone: unknown): Promise<GatePrefs> => dk.getPrefs(store, phone);
-  const siteNameOf = async (phone: unknown): Promise<string> => ((await prefsOf(phone)).gateConfig || {}).siteName || '';
-  const gateInfo = async (g: { phoneNumber: string; role: GateRole; addedAt: string }) => ({
-    phoneNumber: g.phoneNumber, siteName: await siteNameOf(g.phoneNumber), addedAt: g.addedAt, role: g.role,
+  const prefsOf = (phone: string): Promise<GatePrefs> => dk.getPrefs(store, phone);
+  const siteNameOf = async (phone: string): Promise<string> => ((await prefsOf(phone)).gateConfig || {}).siteName || '';
+  const gateInfo = async (gate: { phoneNumber: string; role: GateRole; addedAt: string }) => ({
+    phoneNumber: gate.phoneNumber, siteName: await siteNameOf(gate.phoneNumber), addedAt: gate.addedAt, role: gate.role,
   });
   // Runs fn after the gate's earlier queued work: changes to a gate's working copy and prefs run one at a time, so
   // each History entry holds exactly its own change.
   const gateQueues = new Map<string, Promise<unknown>>();
   function serial<T>(phone: string, fn: () => Promise<T>): Promise<T> {
-    const p = (gateQueues.get(phone) || Promise.resolve()).catch(() => {}).then(fn);
-    gateQueues.set(phone, p);
-    p.catch(() => {}).finally(() => { if (gateQueues.get(phone) === p) gateQueues.delete(phone); });
-    return p;
+    const queued = (gateQueues.get(phone) || Promise.resolve()).catch(() => {}).then(fn);
+    gateQueues.set(phone, queued);
+    queued.catch(() => {}).finally(() => { if (gateQueues.get(phone) === queued) gateQueues.delete(phone); });
+    return queued;
   }
-  const GATE_CONFIG_KEYS: (keyof GateConfig)[] = ['siteName', 'memorySize', 'areaCodes', 'modelNumber', 'antiPassBack', 'interface1816'];
+  const { GATE_CONFIG_KEYS } = dk;
   const AREA_CODE_SETTINGS = ['10 Area Codes', '255 Area Codes'];
-  return { objectField, HERE, config, HOST, PORT, PUBLIC_HOST, ROOT, store, IDLE_MS, MAX_AGE_MS, STEP_UP_MS, MAX_FAILED_SIGN_INS, SIGN_IN_WINDOW_MS, defaults, client, cameras, mailer, APP, NO_EMAIL, send, readJson, logged, ADMIN_ONLY, asGate, gateFor, prefsOf, siteNameOf, gateInfo, serial, GATE_CONFIG_KEYS, AREA_CODE_SETTINGS };
+  return { objectField, HERE, config, HOST, PORT, PUBLIC_HOST, ROOT, store, IDLE_MS, MAX_AGE_MS, STEP_UP_MS, MAX_FAILED_SIGN_INS, SIGN_IN_WINDOW_MS, defaults, client, cameras, mailer, APP, NO_EMAIL, send, readJson, logged, NO_GATE, ADMIN_ONLY, asGate, gateFor, prefsOf, siteNameOf, gateInfo, serial, GATE_CONFIG_KEYS, AREA_CODE_SETTINGS };
 }
 
 export type ContextModule = ReturnType<typeof createContext>;

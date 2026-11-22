@@ -45,9 +45,9 @@ Web UI and REST API: node web/server.ts [--config config.json] [--check-config] 
                            [--site-name <tag>] [--memory 1000|2000|3000] [--area-codes "255 Area Codes"|"10 Area Codes"]
                            [--anti-passback Y|N] [--interface-1816 Y|N] [--model 1834]   (see README.md)`;
 
-const csvCell = (v: unknown): string => {
-  const s = v == null ? '' : String(v);
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+const csvCell = (value: unknown): string => {
+  const text = value == null ? '' : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 const toCsv = (columns: [string, string][], rows: object[]): string => [columns.map((column) => column[0]),
   ...rows.map((row) => columns.map((column) => (row as Record<string, unknown>)[column[1]]))]
@@ -56,7 +56,7 @@ const toCsv = (columns: [string, string][], rows: object[]): string => [columns.
 // Area-code mode of a phone.bin, from the names.bin in the same folder (255 when there is none).
 function phoneModeFor(file: string) {
   const dir = path.dirname(file);
-  const names = fs.readdirSync(dir).find((f) => f.toLowerCase() === 'names.bin');
+  const names = fs.readdirSync(dir).find((name) => name.toLowerCase() === 'names.bin');
   return names ? dk.namesLayout(fs.readFileSync(path.join(dir, names))).areaCodeMode : 255;
 }
 
@@ -80,7 +80,7 @@ function credentials(): [string, string] {
   return [DKS_USER, DKS_PASSWORD];
 }
 
-const serverConfig = () => dk.loadConfig({ args: process.argv.slice(2).filter((a, i, all) => a === '--config' || all[i - 1] === '--config') });
+const serverConfig = () => dk.loadConfig({ args: process.argv.slice(2).filter((arg, i, all) => arg === '--config' || all[i - 1] === '--config') });
 
 // The server's database (config.json).
 async function openDatabase(): Promise<dk.Store> {
@@ -95,7 +95,7 @@ function askHidden(prompt: string): Promise<string> {
     if (!input.isTTY) {
       let data = '';
       input.setEncoding('utf8');
-      input.on('data', (c) => { data += c; });
+      input.on('data', (chunk) => { data += chunk; });
       input.on('end', () => resolve(data.split(/\r?\n/)[0]));
       input.on('error', reject);
       return;
@@ -116,10 +116,10 @@ function askHidden(prompt: string): Promise<string> {
       resolve(value);
     };
     const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === '\r' || ch === '\n') return done(text);
-        if (ch === '\u0003') return done(null);
-        text = ch === '\u007f' || ch === '\b' ? text.slice(0, -1) : text + ch;
+      for (const char of chunk) {
+        if (char === '\r' || char === '\n') return done(text);
+        if (char === '\u0003') return done(null);
+        text = char === '\u007f' || char === '\b' ? text.slice(0, -1) : text + char;
       }
     };
     input.on('data', onData);
@@ -193,7 +193,7 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
       console.log(`${provider.name} (${provider.id})`);
       console.log(`  redirect address to register: ${origin}/api/sso/${provider.id}/callback`);
       try {
-        const metadata = await dk.discoverProvider(provider);
+        const metadata = await dk.discoverProvider(new dk.SsoFlows(), provider);
         console.log(`  issuer ${metadata.issuer}\n  sign-in page ${metadata.authorization}\n  token endpoint ${metadata.token}`);
         console.log(`  auth_time claim: ${metadata.authTime === null ? 'not listed (the provider lists no claims)' : metadata.authTime ? 'listed' : 'not listed in discovery (some providers still send it: check with a real sign-in)'}`
           + (provider.maxAgeHours ? `; sign-ins older than ${provider.maxAgeHours} hours are refused` : '; no session-age limit'));
@@ -204,8 +204,8 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
   },
 
   emails: () => withDatabase(async (store) => {
-    for (const e of (await dk.listEmails(store, 20)).reverse()) {
-      console.log(`${e.createdAt}  ${e.status.padEnd(6)}  ${e.kind.padEnd(8)}  ${e.to}  "${e.subject}"${e.error ? `  (${e.attempts} tries: ${e.error})` : ''}`);
+    for (const email of (await dk.listEmails(store, 20)).reverse()) {
+      console.log(`${email.createdAt}  ${email.status.padEnd(6)}  ${email.kind.padEnd(8)}  ${email.to}  "${email.subject}"${email.error ? `  (${email.attempts} tries: ${email.error})` : ''}`);
     }
   }),
 
@@ -241,18 +241,18 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
   ], dk.parseRcvOut(fs.readFileSync(file))), args),
 
   board: ([dir = '.'], args) => {
-    const find = (name: string) => fs.readdirSync(dir).find((f) => f.toLowerCase() === name);
+    const find = (name: string) => fs.readdirSync(dir).find((file) => file.toLowerCase() === name);
     const lines: string[] = [];
     const report = (name: string, fn: (b: Buffer) => string) => {
-      const f = find(name);
-      lines.push(f ? `${name.padEnd(12)} ${fn(fs.readFileSync(path.join(dir, f)))}` : `${name.padEnd(12)} (not found)`);
+      const file = find(name);
+      lines.push(file ? `${name.padEnd(12)} ${fn(fs.readFileSync(path.join(dir, file)))}` : `${name.padEnd(12)} (not found)`);
     };
-    report('names.bin', (b) => `${dk.parseNamesBin(b).directory.length} directory entries`);
-    report('phone.bin', (b) => `${dk.parsePhoneBin(b, phoneModeFor(path.join(dir, find('phone.bin')!))).filter((e) => e.phone).length} phone numbers`);
-    report('cards.bin', (b) => `${dk.parseCardsBin(b).length} cards`);
-    report('rcv_out.bin', (b) => `${dk.parseRcvOut(b).length} raw transactions`);
-    for (const m of ['names.map', 'phone.map', 'cards.map']) {
-      report(m, (b) => { const r = dk.parseMap(b); return `${r.changedBlocks.length} of ${r.blocks} blocks flagged`; });
+    report('names.bin', (buffer) => `${dk.parseNamesBin(buffer).directory.length} directory entries`);
+    report('phone.bin', (buffer) => `${dk.parsePhoneBin(buffer, phoneModeFor(path.join(dir, find('phone.bin')!))).filter((entry) => entry.phone).length} phone numbers`);
+    report('cards.bin', (buffer) => `${dk.parseCardsBin(buffer).length} cards`);
+    report('rcv_out.bin', (buffer) => `${dk.parseRcvOut(buffer).length} raw transactions`);
+    for (const mapName of ['names.map', 'phone.map', 'cards.map']) {
+      report(mapName, (buffer) => { const map = dk.parseMap(buffer); return `${map.changedBlocks.length} of ${map.blocks} blocks flagged`; });
     }
     output(`${lines.join('\r\n')}\r\n`, args);
   },
@@ -292,9 +292,9 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
       marker, onStatus: (message) => console.error(message),
     });
     fs.mkdirSync(dir, { recursive: true });
-    for (const [f, data] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, f), data);
-      console.error(`Wrote ${path.join(dir, f)} (${data.length} bytes)`);
+    for (const [name, data] of Object.entries(files)) {
+      fs.writeFileSync(path.join(dir, name), data);
+      console.error(`Wrote ${path.join(dir, name)} (${data.length} bytes)`);
     }
   },
 
@@ -310,7 +310,7 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
 async function main() {
   const args = process.argv.slice(2);
   const [command, ...rest] = args;
-  const positional = rest.filter((a, i) => !['--out', '--config'].includes(a) && !['--out', '--config'].includes(rest[i - 1]));
+  const positional = rest.filter((arg, i) => !['--out', '--config'].includes(arg) && !['--out', '--config'].includes(rest[i - 1]));
   if (!COMMANDS[command]) {
     console.error(USAGE);
     process.exit(command ? 1 : 0);

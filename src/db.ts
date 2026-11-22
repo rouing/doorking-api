@@ -17,18 +17,16 @@ export const phoneDigits = (phone: unknown): string => String(phone || '').repla
 
 // Timestamps come back as ISO strings (as stored before), bigints (COUNT, identities) as numbers.
 const parseTimestamptz = pg.types.getTypeParser(pg.types.builtins.TIMESTAMPTZ);
-pg.types.setTypeParser(pg.types.builtins.TIMESTAMPTZ, (v: string) => (parseTimestamptz(v) as Date).toISOString());
-pg.types.setTypeParser(pg.types.builtins.INT8, (v: string) => Number(v));
+pg.types.setTypeParser(pg.types.builtins.TIMESTAMPTZ, (value: string) => (parseTimestamptz(value) as Date).toISOString());
+pg.types.setTypeParser(pg.types.builtins.INT8, (value: string) => Number(value));
 
 export interface Queryable { query(text: string, values?: unknown[]): Promise<pg.QueryResult> }
 // db: the pool, or inside transaction() the transaction's client.
-export interface Store { id: string; pool: pg.Pool; db: Queryable; key: Buffer; schema: string }
+export interface Store { pool: pg.Pool; db: Queryable; key: Buffer; schema: string }
 
 // The schema (tables, indexes), applied every time a store opens; every statement is idempotent.
 export const SCHEMA_FILE = fileURLToPath(new URL('../sql/schema.sql', import.meta.url));
 const SCHEMA = fs.readFileSync(SCHEMA_FILE, 'utf8');
-
-const stores = new Map<string, Promise<Store>>(); // key file + connection + schema -> store
 
 // The key from keyFile (64 hex digits), created when missing.
 function readKey(file: string): Buffer {
@@ -49,7 +47,7 @@ export interface StoreOptions {
   poolSize?: number;
 }
 
-async function connect(id: string, { connection, keyFile, schema = 'public', poolSize = 5 }: StoreOptions): Promise<Store> {
+async function connect({ connection, keyFile, schema = 'public', poolSize = 5 }: StoreOptions): Promise<Store> {
   const key = readKey(keyFile);
   const pool = new pg.Pool({ ...connection, max: poolSize, ...(schema !== 'public' && { options: `-c search_path=${schema}` }) });
   // An idle connection that fails (PostgreSQL restarted, network lost) is reported here; unhandled, it ends the process.
@@ -62,26 +60,18 @@ async function connect(id: string, { connection, keyFile, schema = 'public', poo
     await pool.end().catch(() => {});
     throw err;
   }
-  return { id, pool, db: pool, key, schema };
+  return { pool, db: pool, key, schema };
 }
 
-// Opens the database (creating the key and the tables when missing). The same key file, connection and schema
-// always return the same store.
+// Opens the database (creating the key and the tables when missing). Each call opens its own connection pool, which
+// closeStore ends.
 export function openStore(opts: StoreOptions): Promise<Store> {
   const schema = opts.schema || 'public';
   if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Invalid schema name ${schema}`);
-  const keyFile = path.resolve(opts.keyFile);
-  const id = `${keyFile}|${JSON.stringify(opts.connection)}|${schema}`;
-  if (!stores.has(id)) {
-    const p = connect(id, { ...opts, keyFile, schema });
-    p.catch(() => stores.delete(id));
-    stores.set(id, p);
-  }
-  return stores.get(id)!;
+  return connect({ ...opts, keyFile: path.resolve(opts.keyFile), schema });
 }
 
 export async function closeStore(store: Store): Promise<void> {
-  stores.delete(store.id);
   await store.pool.end();
 }
 
@@ -120,7 +110,7 @@ export function encrypt(store: Store, text: unknown): string {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', store.key, iv);
   const data = Buffer.concat([cipher.update(String(text), 'utf8'), cipher.final()]);
-  return ['v1', iv, cipher.getAuthTag(), data].map((p) => (Buffer.isBuffer(p) ? p.toString('base64') : p)).join(':');
+  return ['v1', iv, cipher.getAuthTag(), data].map((part) => (Buffer.isBuffer(part) ? part.toString('base64') : part)).join(':');
 }
 
 // Bytes: 12-byte IV, 16-byte tag, then the ciphertext.
@@ -138,8 +128,8 @@ export function decryptBytes(store: Store, data: Buffer): Buffer {
 }
 
 export function decrypt(store: Store, value: unknown): string {
-  const [v, iv, tag, data] = String(value).split(':');
-  if (v !== 'v1' || data === undefined) throw new Error('Not an encrypted value');
+  const [version, iv, tag, data] = String(value).split(':');
+  if (version !== 'v1' || data === undefined) throw new Error('Not an encrypted value');
   const decipher = crypto.createDecipheriv('aes-256-gcm', store.key, Buffer.from(iv, 'base64'));
   decipher.setAuthTag(Buffer.from(tag, 'base64'));
   return Buffer.concat([decipher.update(Buffer.from(data, 'base64')), decipher.final()]).toString('utf8');
@@ -165,7 +155,7 @@ async function ensureRole(client: pg.Client, user: string, password: string): Pr
 
 // A database owned by user: created when missing and closed to other logins (an existing one is left alone).
 async function ensureDatabase(client: pg.Client, admin: pg.ClientConfig, database: string, user: string): Promise<string> {
-  const id = (n: string) => client.escapeIdentifier(n);
+  const id = (name: string) => client.escapeIdentifier(name);
   const existing = await client.query<{ owner: string }>('SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = $1', [database]);
   if (existing.rowCount) {
     const owner = existing.rows[0].owner;
@@ -192,14 +182,14 @@ async function ensureDatabase(client: pg.Client, admin: pg.ClientConfig, databas
 // its password, an existing database its owner and permissions. Returns one line per step. The tables come from SCHEMA_FILE when the app opens the database.
 export async function setupDatabase(admin: pg.ClientConfig, { user, password, databases }:
   { user: string; password: string; databases: string[] }): Promise<string[]> {
-  for (const n of [user, ...databases]) {
-    if (!/^[a-z_][a-z0-9_]*$/.test(n)) throw new Error(`Invalid name "${n}": use lower-case letters, digits and _ (starting with a letter or _)`);
+  for (const name of [user, ...databases]) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error(`Invalid name "${name}": use lower-case letters, digits and _ (starting with a letter or _)`);
   }
   const client = new pg.Client(admin);
   await client.connect();
   const steps: string[] = [];
   try {
-    const id = (n: string) => client.escapeIdentifier(n);
+    const id = (name: string) => client.escapeIdentifier(name);
     steps.push(await ensureRole(client, user, password));
     // A non-superuser admin (CREATEROLE) holds only ADMIN over roles it creates (PostgreSQL 16+); giving a database
     // to a role needs the right to SET ROLE to it, which ADMIN lets it grant itself.

@@ -1,15 +1,39 @@
 // Sign-in: password, first account, email links, passkeys, step-up and single sign-on.
-import crypto from 'node:crypto';
 import * as dk from '../../index.ts';
 import { type Route, route } from '../routing.ts';
-import type { Reply } from '../context.ts';
-import type { AuthModule } from '../auth.ts';
-import type { ContextModule } from '../context.ts';
-import type { MailModule } from '../mail.ts';
+import type { Modules } from '../modules.ts';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Body, Reply } from '../context.ts';
 import { logger } from '../../src/logging.ts';
 
-export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route[] {
-  const { APP, blocked, clearFailures, clientIp, config, confirmOwnPassword, cookieAttrs, cookieValue, countTry, defaults, failedSignIns, gateInfo, mailer, mailTo, NO_EMAIL, NO_PASSKEY_SITE, NO_SSO_SITE, overLimit, passwordOff, PER_ADDRESS, providerOf, relyingParty, RESET_PER_ACCOUNT, securityAlert, setup, SIGN_IN_WINDOW_MS, signInKeys, SSO_LIST, ssoCookie, ssoRedirect, STEP_UP_MS, store, strongUntil } = deps;
+export function authRoutes(modules: Modules): Route[] {
+  return [...sessionRoutes(modules), ...emailLinkRoutes(modules), ...passkeyRoutes(modules), ...ssoRoutes(modules)];
+}
+
+// Signing in and out with a password, and the first account.
+function sessionRoutes(modules: Modules): Route[] {
+  const { config, defaults, gateInfo, mailer, SIGN_IN_WINDOW_MS, store } = modules.context;
+  const {
+    blocked, clearFailedSignIn, clientIp, cookieAttrs, countTry, endSetup, oneSetupAtATime, passwordOff,
+    setupCodeMatches, signInKeys, SSO_LIST, strongUntil
+  } = modules.auth;
+  // The first account (see POST /api/setup).
+  async function createFirstAccount(body: Body, req: IncomingMessage, res: ServerResponse): Promise<Reply> {
+    if (await dk.userCount(store) > 0) return [409, { error: 'Setup is already done. Sign in instead.' }];
+    if (!setupCodeMatches(body.setupCode)) {
+      logger('session').warn('First-account setup refused: wrong setup code');
+      return [403, { error: 'Wrong setup code. It is printed in the server\'s log (journalctl -u doorking) when the server starts.' }];
+    }
+    const user = await dk.createUser(store, { username: body.username, password: body.password, email: body.email, createdBy: 'setup', mustChangePassword: false });
+    const adopted = await dk.adoptAdminlessGates(store, user.username);
+    const tok = await dk.createSession(store, user.username);
+    endSetup();
+    logger('session').info`First account ${user.username} created (admin of ${adopted.length} gate(s))`;
+    res.setHeader('Set-Cookie', `sid=${tok}${cookieAttrs(req)}`);
+    return [201, { ok: true, gates: adopted.length }];
+  }
+
+
   return [
     // Session: sign in with a local account; the sid cookie authenticates every later call. setup: no account exists
     // yet (POST /api/setup creates the first one).
@@ -19,7 +43,7 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
       const open = session.gate ? await dk.accessOf(store, session.gate, session.user) : null;
       const rec = open && session.gate ? await dk.getGate(store, session.gate) : null;
       return [200, { loggedIn: true, user: user.username, email: user.email, pendingEmail: user.pendingEmail, phone: user.phone, dark: user.dark,
-        notifyAccess: user.notifyAccess, notifyAlerts: user.notifyAlerts, mustChangePassword: user.mustChangePassword, emailEnabled: Boolean(mailer),
+        notifyAccess: user.notifyAccess, notifyAlerts: user.notifyAlerts, mustChangePassword: session.mustChangePassword, emailEnabled: Boolean(mailer),
         sso: SSO_LIST, hasPassword: user.hasPassword, passwordAllowed: !await passwordOff(user.username),
         hasPasskey: (await dk.listPasskeys(store, user.username)).length > 0, stepUpMinutes: config.security.stepUpMinutes,
         strongUntil: strongUntil(session) ? new Date(strongUntil(session)!).toISOString() : null,
@@ -40,16 +64,16 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
         return [429, { error: `Too many failed sign-ins. Try again in ${SIGN_IN_WINDOW_MS / 60000} minutes.` }];
       }
       const takeBack = countTry(keys);
-      let u: dk.User | null;
-      try { u = await dk.authenticate(store, user, password, passwordOff); } catch (err) { takeBack(); throw err; }
-      if (!u) {
+      let account: dk.User | null;
+      try { account = await dk.authenticate(store, user, password, passwordOff); } catch (err) { takeBack(); throw err; }
+      if (!account) {
         logger('session').warn`Sign-in for ${await who()} refused: wrong username or password (${ip})`;
         return [401, { error: `Wrong username or password${SSO_LIST.length ? '. Accounts that sign in with a work account use its button.' : ''}` }];
       }
       takeBack();
-      failedSignIns.delete(`${key}|${ip}`);
-      const tok = await dk.createSession(store, u.username);
-      logger('session').info`${u.username} signed in`;
+      clearFailedSignIn(key, ip);
+      const tok = await dk.createSession(store, account.username);
+      logger('session').info`${account.username} signed in`;
       res.setHeader('Set-Cookie', `sid=${tok}${cookieAttrs(req)}`);
       return [200, { ok: true }];
     }),
@@ -63,29 +87,25 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
     // First start only (no account yet): creates the first account, which becomes admin of every gate that has no
     // admin (gates moved over from DKS sign-in), and signs it in. { setupCode, username, password, email? }.
     route('POST', '/api/setup', 'public', async ({ body, req, res }) => {
-      if (await dk.userCount(store) > 0) return [409, { error: 'Setup is already done. Sign in instead.' }];
-      const code = String(body.setupCode || '').trim().toLowerCase();
-      if (!setup.code || code.length !== setup.code.length || !crypto.timingSafeEqual(Buffer.from(code), Buffer.from(setup.code))) {
-        logger('session').warn('First-account setup refused: wrong setup code');
-        return [403, { error: 'Wrong setup code. It is printed in the server\'s log (journalctl -u doorking) when the server starts.' }];
-      }
-      const user = await dk.createUser(store, { username: body.username, password: body.password, email: body.email, createdBy: 'setup', mustChangePassword: false });
-      const adopted = await dk.adoptAdminlessGates(store, user.username);
-      const tok = await dk.createSession(store, user.username);
-      setup.code = '';
-      logger('session').info`First account ${user.username} created (admin of ${adopted.length} gate(s))`;
-      res.setHeader('Set-Cookie', `sid=${tok}${cookieAttrs(req)}`);
-      return [201, { ok: true, gates: adopted.length }];
+      return await oneSetupAtATime(() => createFirstAccount(body, req, res)) ?? [409, { error: 'Setup is already running. Try again in a moment.' }];
     }),
+  ];
+}
 
+// The email links: confirming an address, password reset and accepting an invitation.
+function emailLinkRoutes(modules: Modules): Route[] {
+  const { APP, mailer, NO_EMAIL, store } = modules.context;
+  const { clearFailures, clientIp, cookieAttrs, overLimit, passwordOff, PER_ADDRESS, RESET_PER_ACCOUNT } = modules.auth;
+  const { mailTo, securityAlert } = modules.mail;
+  return [
     // Email links (public: they work without being signed in). verify { token }: confirms the address. Password reset:
     // request { identifier } (username or confirmed email; the reply is the same whether or not it exists), then
     // { token, password }. Invitation: check { token } -> { username }, then { token, password } (sets the password, confirms
     // the email and signs in).
     route('POST', '/api/email/verify', 'public', async ({ body }) => {
-      const t = await dk.useToken(store, 'verify', body.token);
-      if (!t) return [400, { error: 'This confirmation link is invalid, used or expired. Ask for a new one in User Settings.' }];
-      const user = await dk.confirmEmail(store, t.username, t.data);
+      const token = await dk.useToken(store, 'verify', body.token);
+      if (!token) return [400, { error: 'This confirmation link is invalid, used or expired. Ask for a new one in User Settings.' }];
+      const user = await dk.confirmEmail(store, token.username, token.data);
       logger('session').info`${user.username} confirmed their email`;
       return [200, { username: user.username, email: user.email }];
     }),
@@ -111,33 +131,42 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
     }),
     route('POST', '/api/password-reset', 'public', async ({ body }) => {
       dk.checkPassword(body.password);
-      const t = await dk.useToken(store, 'reset', body.token);
-      if (!t) return [400, { error: 'This reset link is invalid, used or expired. Ask for a new one.' }];
-      const off = await passwordOff(t.username);
+      const token = await dk.useToken(store, 'reset', body.token);
+      if (!token) return [400, { error: 'This reset link is invalid, used or expired. Ask for a new one.' }];
+      const off = await passwordOff(token.username);
       if (off) return [403, { error: off }];
-      await dk.setPassword(store, t.username, body.password, { byEmail: true });
-      clearFailures(t.username);
-      await securityAlert(t.username, 'Your password was reset');
-      logger('session').info`${t.username} reset their password with an email link`;
-      return [200, { username: t.username }];
+      await dk.setPassword(store, token.username, body.password, { byEmail: true });
+      clearFailures(token.username);
+      await securityAlert(token.username, 'Your password was reset');
+      logger('session').info`${token.username} reset their password with an email link`;
+      return [200, { username: token.username }];
     }),
     route('POST', '/api/invite/check', 'public', async ({ body }) => {
-      const t = await dk.useToken(store, 'invite', body.token, { peek: true });
-      return t ? [200, { username: t.username }] : [400, { error: 'This invitation link is invalid, used or expired. Ask the gate admin to send a new one.' }];
+      const token = await dk.peekToken(store, 'invite', body.token);
+      return token ? [200, { username: token.username }] : [400, { error: 'This invitation link is invalid, used or expired. Ask the gate admin to send a new one.' }];
     }),
     route('POST', '/api/invite', 'public', async ({ req, res, body }) => {
       dk.checkPassword(body.password);
-      const t = await dk.useToken(store, 'invite', body.token);
-      if (!t) return [400, { error: 'This invitation link is invalid, used or expired. Ask the gate admin to send a new one.' }];
-      const user = await dk.acceptInvite(store, t.username, body.password);
+      const token = await dk.useToken(store, 'invite', body.token);
+      if (!token) return [400, { error: 'This invitation link is invalid, used or expired. Ask the gate admin to send a new one.' }];
+      const user = await dk.acceptInvite(store, token.username, body.password);
       await dk.recordSignIn(store, user.username);
       const tok = await dk.createSession(store, user.username);
       logger('session').info`${user.username} accepted their invitation and signed in`;
       res.setHeader('Set-Cookie', `sid=${tok}${cookieAttrs(req)}`);
       return [200, { ok: true }];
     }),
-    // Passkey sign-in: POST options (no username: the browser offers this site's passkeys), then POST session
-    // { response }; sets the sid cookie like a password sign-in.
+  ];
+}
+
+// Signing in with a passkey, and confirming with one (step-up).
+function passkeyRoutes(modules: Modules): Route[] {
+  const { STEP_UP_MS, store } = modules.context;
+  const { clientIp, cookieAttrs, NO_PASSKEY_SITE, overLimit, PER_ADDRESS, relyingParty } = modules.auth;
+  return [
+    // Passkey sign-in: POST options (no username: the browser offers this site's passkeys, also in the username box's
+    // suggestions), then POST session { response }; sets the sid cookie like a password sign-in. A passkey not
+    // registered here: 401 { unknownCredential: true }.
     route('POST', '/api/passkey/options', 'public', async ({ req }) => {
       if (overLimit(`passkey:${clientIp(req)}`, PER_ADDRESS)) return [429, { error: 'Too many sign-in attempts. Try again in a few minutes.' }];
       const rp = relyingParty(req);
@@ -149,6 +178,7 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
       let username: string;
       try { username = await dk.signInWithPasskey(store, body.response, rp); } catch (err) {
         logger('session').warn`Passkey sign-in refused: ${(err as Error).message}`;
+        if (err instanceof dk.UnknownPasskeyError) return [401, { error: err.message, unknownCredential: true }];
         throw err;
       }
       await dk.recordSignIn(store, username);
@@ -175,7 +205,18 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
       logger('session').info`${session.user} confirmed with a passkey`;
       return [200, { strongUntil: new Date(at + STEP_UP_MS).toISOString() }];
     }),
+  ];
+}
 
+// Single sign-on: starting a sign-in or a link, and the provider's callback.
+function ssoRoutes(modules: Modules): Route[] {
+  const { store } = modules.context;
+  const {
+    clientIp, confirmOwnPassword, cookieAttrs, cookieValue, NO_SSO_SITE, overLimit, PER_ADDRESS, providerOf,
+    ssoCookie, ssoFlows, ssoRedirect
+  } = modules.auth;
+  const { securityAlert } = modules.mail;
+  return [
     // Single sign-on (src/sso.ts). Start { provider, invite? } -> { url }: the provider's address to open; the response
     // sets the cookie tying the attempt to this browser. With an invitation link's token, the invitation is accepted
     // with the provider. Linking to the signed-in account: { provider, password } (the current password; not asked when the
@@ -188,7 +229,7 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
       const redirectUri = ssoRedirect(req, provider);
       if (!redirectUri) return [400, { error: NO_SSO_SITE }];
       const invite = body.invite ? String(body.invite) : undefined;
-      const { url, binding } = await dk.startSso(provider, { mode: invite ? 'invite' : 'signin', redirectUri, inviteToken: invite });
+      const { url, binding } = await dk.startSso(ssoFlows, provider, { mode: invite ? 'invite' : 'signin', redirectUri, inviteToken: invite });
       res.setHeader('Set-Cookie', ssoCookie(req, binding, 600));
       return [200, { url }];
     }),
@@ -199,7 +240,7 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
       if (!redirectUri) return [400, { error: NO_SSO_SITE }];
       const refused = await confirmOwnPassword(session.user, body.password);
       if (refused) return refused;
-      const { url, binding } = await dk.startSso(provider, { mode: 'link', redirectUri, username: session.user });
+      const { url, binding } = await dk.startSso(ssoFlows, provider, { mode: 'link', redirectUri, username: session.user });
       res.setHeader('Set-Cookie', ssoCookie(req, binding, 600));
       return [200, { url }];
     }),
@@ -209,15 +250,15 @@ export function authRoutes(deps: AuthModule & ContextModule & MailModule): Route
       const provider = providerOf(params.provider);
       try {
         if (!provider) throw dk.httpError('Unknown sign-in provider', 404);
-        const result = await dk.finishSso(provider, new URL(req.url!, 'http://local').searchParams, cookieValue(req, 'dk_sso'));
+        const result = await dk.finishSso(ssoFlows, provider, new URL(req.url!, 'http://local').searchParams, cookieValue(req, 'dk_sso'));
         const done = await dk.completeSso(store, provider, result);
         logger('session').info`${done.username}: ${provider.name} single sign-on (${done.outcome})`;
         if (done.outcome === 'linked') await securityAlert(done.username, `Sign-in with ${provider.name} was linked to your account`);
         if (result.mode === 'link') return go('/#sso=linked');
         cookies.push(`sid=${await dk.createSession(store, done.username)}${cookieAttrs(req)}`);
         return go('/');
-      } catch (e) {
-        const err = e as Error & { status?: number };
+      } catch (caught) {
+        const err = caught as Error & { status?: number };
         logger('session').warn`Single sign-on${provider ? ` with ${provider.name}` : ''} refused: ${err.message}`;
         return go(`/#sso-error=${encodeURIComponent(err.status ? err.message : `The ${provider ? provider.name : ''} sign-in couldn't be checked. Try again.`)}`);
       }

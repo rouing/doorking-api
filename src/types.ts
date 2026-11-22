@@ -68,7 +68,7 @@ export interface TransactionRow {
 
 // GET G/data: views of the pulled files (null where the file isn't there).
 // transactions.next: ask GET /data?before=<next> for the older page (null: none).
-export interface DataReply { transactions: { updated: string; rows: TransactionRow[]; next?: number | null } | null; [view: string]: unknown }
+export interface DataReply { transactions: { updated: string; rows: TransactionRow[]; next?: number | null } | null }
 
 // An item changed differently at the gate and in the working copy since the last pull: decided with Keep mine or
 // Take the gate's (POST G/working-copy/conflicts). gate / mine: how the two values differ, in words.

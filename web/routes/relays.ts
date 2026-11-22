@@ -1,13 +1,14 @@
 // Live relays.
 import * as dk from '../../index.ts';
+import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
-import type { ContextModule, Reply } from '../context.ts';
-import type { EditingModule } from '../editing.ts';
-import type { JobsModule } from '../jobs.ts';
+import type { Reply } from '../context.ts';
 import { logger } from '../../src/logging.ts';
 
-export function relaysRoutes(deps: ContextModule & EditingModule & JobsModule): Route[] {
-  const { client, commandRelays, liveRelays, prefsOf, store, withAccount } = deps;
+export function relaysRoutes(modules: Modules): Route[] {
+  const { client, prefsOf, store } = modules.context;
+  const { commandRelays, liveRelays } = modules.editing;
+  const { withAccount } = modules.jobs;
   return [
     // Live relays: GET reads the current state (GetRelays); PUT { '0'|'1'|'2': boolean } sets relays 0-2
     // Active/Inactive (SetRelays). Active holds the gate open. PUT changes the gate immediately. Both use the gate's DKS

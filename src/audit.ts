@@ -29,7 +29,7 @@ export interface StoredEvent {
 const MAX_LIST = 500;
 
 const pack = (buf: Buffer): string => zlib.deflateRawSync(buf).toString('base64');
-const unpack = (s: string): Buffer => zlib.inflateRawSync(Buffer.from(s, 'base64'));
+const unpack = (packed: string): Buffer => zlib.inflateRawSync(Buffer.from(packed, 'base64'));
 
 // Patch from `before` to `after`: the changed byte runs as [offset, beforeHex, afterHex]. When the size
 // differs (names.bin switching area-code layout), both whole files are kept, compressed.
@@ -59,69 +59,86 @@ export function undoPatch(current: Buffer, patch: Patch): Buffer | null {
   return out;
 }
 
-const shown = (v: unknown): string => (Array.isArray(v) ? v.join(', ') : v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+const shown = (value: unknown): string => (Array.isArray(value) ? value.join(', ') : value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value));
 
 // Field changes between two record lists keyed by `key`:
 // [{ key, label, change: 'added'|'removed'|'changed', fields: [{ field, from, to }] }].
 export function diffRecords<R extends object, L = string>(
-  before: R[], after: R[], key: string, fields: string[], label: (r: R) => L,
+  before: R[], after: R[], key: string, fields: string[], label: (row: R) => L,
 ): RecordChange<L>[] {
-  const get = (r: R, k: string): unknown => (r as Record<string, unknown>)[k];
-  const was = new Map(before.map((r) => [get(r, key) as string, r]));
-  const now = new Map(after.map((r) => [get(r, key) as string, r]));
+  const get = (row: R, field: string): unknown => (row as Record<string, unknown>)[field];
+  const was = new Map(before.map((row) => [get(row, key) as string, row]));
+  const now = new Map(after.map((row) => [get(row, key) as string, row]));
   const out: RecordChange<L>[] = [];
-  for (const k of [...new Set([...was.keys(), ...now.keys()])].sort()) {
-    const a = was.get(k);
-    const b = now.get(k);
+  for (const id of [...new Set([...was.keys(), ...now.keys()])].sort()) {
+    const old = was.get(id);
+    const next = now.get(id);
     const list = fields
-      .map((field) => ({ field, from: a ? shown(get(a, field)) : '', to: b ? shown(get(b, field)) : '' }))
-      .filter((f) => f.from !== f.to);
+      .map((field) => ({ field, from: old ? shown(get(old, field)) : '', to: next ? shown(get(next, field)) : '' }))
+      .filter((field) => field.from !== field.to);
     if (!list.length) continue;
-    out.push({ key: k, label: label((b || a) as R), change: !a ? 'added' : !b ? 'removed' : 'changed', fields: list });
+    out.push({ key: id, label: label((next || old) as R), change: !old ? 'added' : !next ? 'removed' : 'changed', fields: list });
   }
   return out;
 }
 
-// The gate's events, oldest first.
-export async function readHistory(store: Store, phone: unknown): Promise<StoredEvent[]> {
-  return (await all<{ data: StoredEvent }>(store, 'SELECT data FROM history WHERE phone = $1 ORDER BY seq', [phoneDigits(phone)]))
-    .map((r) => r.data);
+// One event with its patch data (to revert it), and the revert that undid it (none: null).
+export async function historyEvent(store: Store, phone: string, id: string): Promise<{ event: StoredEvent | null; revertedBy: StoredEvent | null }> {
+  const rows = await all<{ data: StoredEvent }>(store, "SELECT data FROM history WHERE phone = $1 AND (id = $2 OR data->>'revertOf' = $2) ORDER BY seq",
+    [phoneDigits(phone), id]);
+  return { event: rows.find((row) => row.data.id === id)?.data ?? null, revertedBy: rows.find((row) => row.data.revertOf === id)?.data ?? null };
 }
 
-export async function addEvent(store: Store, phone: unknown, event: Record<string, unknown>): Promise<StoredEvent> {
-  const e: StoredEvent = { id: crypto.randomBytes(8).toString('hex'), time: new Date().toISOString(), ...event };
-  await run(store, 'INSERT INTO history (id, phone, data) VALUES ($1, $2, $3)', [e.id, phoneDigits(phone), JSON.stringify(e)]);
-  return e;
+// Events without their patch data (values, files, prefs; patched: whether they had any), newest first; and who
+// reverted which (revertOf -> the revert).
+const SUMMARY = "data - 'values' - 'files' - 'prefs' AS data, (data ? 'values' OR data ? 'files' OR data ? 'prefs') AS patched";
+async function reverts(store: Store, phone: string): Promise<Map<unknown, StoredEvent>> {
+  const rows = await all<{ data: StoredEvent }>(store, `SELECT ${SUMMARY} FROM history WHERE phone = $1 AND data ? 'revertOf'`, [phone]);
+  return new Map(rows.map((row) => [row.data.revertOf, row.data]));
+}
+
+export async function addEvent(store: Store, phone: string, event: Record<string, unknown>): Promise<StoredEvent> {
+  const stored: StoredEvent = { id: crypto.randomBytes(8).toString('hex'), time: new Date().toISOString(), ...event };
+  await run(store, 'INSERT INTO history (id, phone, data) VALUES ($1, $2, $3)', [stored.id, phoneDigits(phone), JSON.stringify(stored)]);
+  return stored;
 }
 
 // The changes History recorded for one directory code (its resident/vendor fields and its note), newest first:
 // [{ id, time, user, action, summary, change, fields: [{ field, from, to }], revertedBy }]. Pulls and sends that list
 // the code are included (their user is whoever ran them).
-export async function entryHistory(store: Store, phone: unknown, code: unknown): Promise<EntryChange[]> {
+export async function entryHistory(store: Store, phone: string, code: string): Promise<EntryChange[]> {
   const key = String(code ?? '');
-  const events = await readHistory(store, phone);
-  const reverts = new Map(events.filter((event) => event.revertOf).map((event) => [event.revertOf, event]));
+  const phoneKey = phoneDigits(phone);
+  const events = (await all<{ data: StoredEvent }>(store, `SELECT ${SUMMARY} FROM history WHERE phone = $1
+    AND data->'details' @> jsonb_build_array(jsonb_build_object('key', $2::text)) ORDER BY seq DESC`, [phoneKey, key])).map((row) => row.data);
+  const revertsOf = await reverts(store, phoneKey);
   const out: EntryChange[] = [];
-  for (const event of events.reverse()) {
-    const d = (Array.isArray(event.details) ? event.details as RecordChange[] : []).find((x) => x.key === key);
-    if (!d) continue;
-    const by = reverts.get(event.id);
+  for (const event of events) {
+    const change = (Array.isArray(event.details) ? event.details as RecordChange[] : []).find((item) => item.key === key);
+    if (!change) continue;
+    const by = revertsOf.get(event.id);
     out.push({ id: event.id, time: event.time, user: String(event.user ?? ''), action: String(event.action ?? ''), summary: String(event.summary ?? ''),
-      change: d.change, fields: d.fields, revertedBy: by ? { id: by.id, user: String(by.user ?? ''), time: by.time } : null });
+      change: change.change, fields: change.fields, revertedBy: by ? { id: by.id, user: String(by.user ?? ''), time: by.time } : null });
   }
   return out;
 }
 
 // Newest first, without the patch data. revertedBy names the revert that undid an event.
-export async function listHistory(store: Store, phone: unknown, limit = MAX_LIST): Promise<HistoryEvent[]> {
-  const events = await readHistory(store, phone);
-  const reverts = new Map(events.filter((event) => event.revertOf).map((event) => [event.revertOf, event]));
-  return events.reverse().slice(0, limit).map(({ values, files, prefs, ...e }) => {
-    const by = reverts.get(e.id);
+export async function listHistory(store: Store, phone: string, limit = MAX_LIST): Promise<HistoryEvent[]> {
+  const phoneKey = phoneDigits(phone);
+  const rows = await all<{ data: StoredEvent; patched: boolean }>(store, `SELECT ${SUMMARY} FROM history WHERE phone = $1 ORDER BY seq DESC LIMIT $2`,
+    [phoneKey, limit]);
+  const revertsOf = await reverts(store, phoneKey);
+  return rows.map(({ data: event, patched }): HistoryEvent => {
+    const by = revertsOf.get(event.id);
+    const { user, action, summary, result, error, details, ...rest } = event;
     return {
-      ...e,
-      revertible: Boolean(values || files || prefs) && !by,
-      revertedBy: by ? { id: by.id, user: by.user as string, time: by.time } : null,
-    } as unknown as HistoryEvent;
+      ...rest,
+      user: String(user ?? ''), action: String(action ?? ''), summary: String(summary ?? ''),
+      ...(result !== undefined && { result: String(result) }), ...(error !== undefined && { error: String(error) }),
+      ...(details !== undefined && { details: details as HistoryEvent['details'] }),
+      revertible: patched && !by,
+      revertedBy: by ? { id: by.id, user: String(by.user ?? ''), time: by.time } : null,
+    };
   });
 }

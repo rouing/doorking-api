@@ -9,20 +9,28 @@ import { RelayNameBox } from './LocalPrefs.tsx';
 import { HelpTip } from '../HelpTip.tsx';
 import { useGateSettings, type GateSettings } from './useGateSettings.ts';
 
-interface Common { gapi: GateApi; onReload: () => Promise<void>; onJobStarted: () => void }
+interface Common {
+  gapi: GateApi;
+  onReload: () => Promise<void>;
+}
+
+interface LiveRelaysProps {
+  gapi: GateApi;
+  labels: Record<string, string>;
+  relays: number[];
+  commandRelays: number[];
+}
 
 // Live relay control: a button per relay (0-2, plus the Tracker relays when their box is ticked; green = held open,
 // red = released, grey = not checked). Refresh reads GetRelays when the page opens and on demand; tapping a button
 // toggles that relay (SetRelays) right away. commandRelays: Tracker command relays, greyed out (use their Tracker
 // relays instead).
-function LiveRelays({ gapi, labels, relays, commandRelays }: {
-  gapi: GateApi; labels: Record<string, string>; relays: number[]; commandRelays: number[];
-}) {
+function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
   const [state, setState] = useState<Record<number, string> | null>(null);
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState('');
   const [dialog, confirm] = useConfirm();
-  const codes = (list: Relay[]) => Object.fromEntries(Array.from({ length: 19 }, (_, i) => [i, list.find((r) => r.relay === i)?.code ?? '2']));
+  const codes = (list: Relay[]) => Object.fromEntries(Array.from({ length: 19 }, (_, i) => [i, list.find((relay) => relay.relay === i)?.code ?? '2']));
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -58,7 +66,7 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: {
         <Heading size="3">Live relay control<HelpTip of="liveRelays" /></Heading>
         <Text size="2" color="gray"><strong>Changes the gate immediately.</strong> Tap a relay to hold it open (green) or release it (red).
           Separate from the Hold Open schedule. Refresh to read the gate's current state.</Text>
-        <Flex gap="3" align="center"><Button variant="soft" color="gray" onClick={refresh} disabled={busy}>Refresh state</Button>
+        <Flex gap="3" align="center" wrap="wrap"><Button variant="soft" color="gray" onClick={refresh} disabled={busy}>Refresh state</Button>
           <Text size="2" color="gray">{info}</Text></Flex>
         <Flex gap="3" wrap="wrap">
           {relays.map((i) => {
@@ -90,10 +98,17 @@ const TRACKERS = [
   { key: 'tracker1', relay: 1, range: '11-18', label: 'Additional Relays For Tracker 1 (relays 11-18)' },
 ] as const;
 
+interface TrackerRelaysProps {
+  prefs: GatePrefs;
+  settings: GateSettings;
+  gapi: GateApi;
+  onReload: () => Promise<void>;
+}
+
 // The Additional Relays boxes (shown when Tracker is on in Gate configuration). Ticking one sets its command relay's
 // strike time to 00 in the working copy, as DoorKing32 does; the boxes themselves are saved for this page only
 // (DoorKing32 keeps them in ACCOUNT.DAT).
-function TrackerRelays({ prefs, gs: settings, gapi, onReload }: { prefs: GatePrefs; gs: GateSettings; gapi: GateApi; onReload: () => Promise<void> }) {
+function TrackerRelays({ prefs, settings, gapi, onReload }: TrackerRelaysProps) {
   const tracker = trackerOf(prefs);
   const [info, setInfo] = useState('');
   // Ticking remembers the strike time, then sets it to 00; unticking puts the remembered time back (as DoorKing32 does).
@@ -121,10 +136,10 @@ function TrackerRelays({ prefs, gs: settings, gapi, onReload }: { prefs: GatePre
     <Card>
       <Flex direction="column" gap="2">
         <Heading size="3">Tracker expansion<HelpTip of="trackerExpansion" /></Heading>
-        {TRACKERS.map((x) => (
-          <Text key={x.key} as="label" size="2"><Flex gap="2" align="center">
-            <Checkbox checked={tracker[x.key]} onCheckedChange={(v) => toggle(x.key, x.relay, v === true)} />
-            {x.label}, commanded by relay {x.relay}
+        {TRACKERS.map((option) => (
+          <Text key={option.key} as="label" size="2"><Flex gap="2" align="center">
+            <Checkbox checked={tracker[option.key]} onCheckedChange={(checked) => toggle(option.key, option.relay, checked === true)} />
+            {option.label}, commanded by relay {option.relay}
           </Flex></Text>
         ))}
         <Text size="1" color="gray">Name the extra relays in the Relay settings table below. The boxes are saved for this page only.</Text>
@@ -134,22 +149,26 @@ function TrackerRelays({ prefs, gs: settings, gapi, onReload }: { prefs: GatePre
   );
 }
 
-export function RelaysPage({ prefs, ...c }: Common & { prefs: GatePrefs }) {
-  const settings = useGateSettings(c.gapi);
+interface RelaysPageProps extends Common {
+  prefs: GatePrefs;
+}
+
+export function RelaysPage({ prefs, ...common }: RelaysPageProps) {
+  const settings = useGateSettings(common.gapi);
   const tracker = trackerOf(prefs);
   const relays = trackerRelays(tracker);
   const labels = Object.fromEntries(relays.map((i) => [i, (prefs.relayLabels && prefs.relayLabels[String(i)]) || `Relay ${i}`]));
-  const lockedRelays = Object.fromEntries(TRACKERS.filter((x) => tracker[x.key]).map((x) => [x.relay, TRACKER_NOTE(x.range)]));
+  const lockedRelays = Object.fromEntries(TRACKERS.filter((option) => tracker[option.key]).map((option) => [option.relay, TRACKER_NOTE(option.range)]));
   return (
     <Flex direction="column" gap="4">
       <Heading>Relays</Heading>
-      <LiveRelays gapi={c.gapi} labels={labels} relays={relays} commandRelays={Object.keys(lockedRelays).map(Number)} />
-      {tracker.enabled && <TrackerRelays prefs={prefs} gs={settings} gapi={c.gapi} onReload={c.onReload} />}
+      <LiveRelays gapi={common.gapi} labels={labels} relays={relays} commandRelays={Object.keys(lockedRelays).map(Number)} />
+      {tracker.enabled && <TrackerRelays prefs={prefs} settings={settings} gapi={common.gapi} onReload={common.onReload} />}
       <Card>
         <Flex direction="column" gap="3">
           <Heading size="3">Relay settings</Heading>
-          <GateSettingsEditor gs={settings} view="relays" relayLabels={labels} lockedRelays={lockedRelays} relays={relays}
-            nameCell={(r) => <RelayNameBox relay={r} prefs={prefs} gapi={c.gapi} onSaved={c.onReload} />} {...c} />
+          <GateSettingsEditor settings={settings} view="relays" relayLabels={labels} lockedRelays={lockedRelays} relays={relays}
+            nameCell={(relay) => <RelayNameBox relay={relay} prefs={prefs} gapi={common.gapi} onSaved={common.onReload} />} {...common} />
         </Flex>
       </Card>
     </Flex>
@@ -158,23 +177,23 @@ export function RelaysPage({ prefs, ...c }: Common & { prefs: GatePrefs }) {
 
 // Display: LCD message settings. The layout choice only picks which Display group is shown (the gate stores both;
 // the active mode is set in the DoorKing app). Remembered in this browser.
-export function DisplayPage(c: Common) {
-  const settings = useGateSettings(c.gapi);
+export function DisplayPage(common: Common) {
+  const settings = useGateSettings(common.gapi);
   // Stored as plain text (not JSON), so a saved choice from before the React page still reads back.
   const [mode, setMode] = useState<'single' | '8line'>(() => {
     try { return localStorage.getItem('dk-display-mode') === '8line' ? '8line' : 'single'; } catch { return 'single'; }
   });
-  const choose = (v: string) => {
-    const m = v === '8line' ? '8line' : 'single';
-    setMode(m);
-    try { localStorage.setItem('dk-display-mode', m); } catch { /* storage blocked */ }
+  const choose = (value: string) => {
+    const displayMode = value === '8line' ? '8line' : 'single';
+    setMode(displayMode);
+    try { localStorage.setItem('dk-display-mode', displayMode); } catch { /* storage blocked */ }
   };
   return (
     <Flex direction="column" gap="4">
       <Heading>Display</Heading>
       <Card>
         <Flex direction="column" gap="2">
-          <Flex gap="3" align="center">
+          <Flex gap="3" align="center" wrap="wrap">
             <Text size="2">LCD message layout:</Text>
             <RadioGroup.Root value={mode} onValueChange={choose}>
               <Flex gap="3"><RadioGroup.Item value="single">Single Line</RadioGroup.Item><RadioGroup.Item value="8line">8 Line</RadioGroup.Item></Flex>
@@ -184,7 +203,7 @@ export function DisplayPage(c: Common) {
             stores both and the active mode is set in the DoorKing app.</Text>
         </Flex>
       </Card>
-      <GateSettingsEditor gs={settings} view="display" displayMode={mode} {...c} />
+      <GateSettingsEditor settings={settings} view="display" displayMode={mode} {...common} />
     </Flex>
   );
 }

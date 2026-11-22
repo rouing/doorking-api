@@ -6,8 +6,8 @@ import { useConfirm } from '../Confirm.tsx';
 import { featuresOf, trackerOf } from '../format.ts';
 import { Choice, Field } from '../panes/fields.tsx';
 import { HelpTip } from '../HelpTip.tsx';
+import { GATE_CONFIG_KEYS } from '../../../src/shared.ts';
 
-export const CONFIG_KEYS: (keyof Config)[] = ['siteName', 'memorySize', 'areaCodes', 'modelNumber', 'antiPassBack', 'interface1816'];
 export const CONFIG_OPTIONS: Partial<Record<keyof Config, string[]>> = {
   memorySize: ['1000', '2000', '3000'], areaCodes: ['10 Area Codes', '255 Area Codes'], modelNumber: ['1833/1835/1837/1838', '1834'],
   antiPassBack: ['N', 'Y'], interface1816: ['N', 'Y'],
@@ -17,28 +17,40 @@ export const CONFIG_LABELS: Record<keyof Config, string> = {
   antiPassBack: 'Anti-passback', interface1816: 'Interface 1816/1820',
 };
 
+interface ConfigFieldsProps {
+  config: Record<string, string>;
+  onChange: (cfg: Record<string, string>) => void;
+  disabled?: boolean;
+}
+
 // Gate configuration (must match the gate; DKS Cloud uses it to connect), the working copy's area codes and the
 // directory code digits. gate: what the gate's last pull records (system memory, memory chips), to point out a mismatch.
 // The gate configuration fields (drop-downs for the settings with fixed choices).
-export function ConfigFields({ cfg, onChange, disabled }: { cfg: Record<string, string>; onChange: (cfg: Record<string, string>) => void; disabled?: boolean }) {
+export function ConfigFields({ config, onChange, disabled }: ConfigFieldsProps) {
   return (
     <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
-      {CONFIG_KEYS.map((k) => (
-        <Field key={k} label={CONFIG_LABELS[k]} help={k}>
-          {CONFIG_OPTIONS[k]
-            ? <Choice value={cfg[k]} onChange={(v) => onChange({ ...cfg, [k]: v })} options={CONFIG_OPTIONS[k]!} disabled={disabled} />
-            : <TextField.Root value={cfg[k]} maxLength={40} onChange={(event) => onChange({ ...cfg, [k]: event.target.value })} disabled={disabled} />}
+      {GATE_CONFIG_KEYS.map((key) => (
+        <Field key={key} label={CONFIG_LABELS[key]} help={key}>
+          {CONFIG_OPTIONS[key]
+            ? <Choice value={config[key]} onChange={(value) => onChange({ ...config, [key]: value })} options={CONFIG_OPTIONS[key]!} disabled={disabled} />
+            : <TextField.Root value={config[key]} maxLength={40} onChange={(event) => onChange({ ...config, [key]: event.target.value })} disabled={disabled} />}
         </Field>
       ))}
     </Grid>
   );
 }
 
-export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: {
-  prefs: GatePrefs; defaults: Config; list: ResidentsReply | null; gapi: GateApi; gate?: { memory?: string; chips?: string };
+interface GateConfigProps {
+  prefs: GatePrefs;
+  defaults: Config;
+  list: ResidentsReply | null;
+  gapi: GateApi;
+  gate?: { memory?: string; chips?: string };
   onSaved: () => Promise<void>;
-}) {
-  const [cfg, setCfg] = useState<Record<string, string>>(() => Object.fromEntries(CONFIG_KEYS.map((k) => [k, (prefs.gateConfig && prefs.gateConfig[k]) || defaults[k] || ''])));
+}
+
+export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: GateConfigProps) {
+  const [cfg, setCfg] = useState<Record<string, string>>(() => Object.fromEntries(GATE_CONFIG_KEYS.map((key) => [key, (prefs.gateConfig && prefs.gateConfig[key]) || defaults[key] || ''])));
   const [info, setInfo] = useState('');
   const [digits, setDigits] = useState(String(list ? list.dirDigits : 3));
   const [digitsInfo, setDigitsInfo] = useState('');
@@ -49,7 +61,7 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
   const [dialog, confirm] = useConfirm();
   const areaCodes = list ? list.areaCodes : [];
   const from = list ? list.dirDigits : 3;
-  const saved = (k: keyof Config) => (prefs.gateConfig && prefs.gateConfig[k]) || defaults[k] || '';
+  const saved = (key: keyof Config) => (prefs.gateConfig && prefs.gateConfig[key]) || defaults[key] || '';
   const mismatches = [
     ...(gate.memory && /^\d+$/.test(gate.memory) && saved('memorySize') !== gate.memory
       ? [`The gate records a system memory of ${gate.memory}, but System memory here is ${saved('memorySize')}.`] : []),
@@ -112,12 +124,12 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
           These must match the gate's own settings; DKS Cloud uses them to connect. Stored locally and <strong>shared by every
           account that manages this gate</strong> (keyed by system phone number). Pulls and sends use them automatically.
         </Text>
-        <ConfigFields cfg={cfg} onChange={setCfg} />
+        <ConfigFields config={cfg} onChange={setCfg} />
         {mismatches.map((mismatch) => <Text key={mismatch} size="2" color="red" role="alert">{mismatch} They must match, or pulls and sends fail.</Text>)}
-        <Flex gap="3" align="center"><Button onClick={save}>Save gate configuration</Button><Text size="2" color="gray">{info}</Text></Flex>
+        <Flex gap="3" align="center" wrap="wrap"><Button onClick={save}>Save gate configuration</Button><Text size="2" color="gray">{info}</Text></Flex>
         <Flex direction="column" gap="2">
           <Text as="label" size="2"><Flex gap="2" align="center">
-            <Checkbox checked={tracker} onCheckedChange={(v) => toggleTracker(v === true)} />
+            <Checkbox checked={tracker} onCheckedChange={(checked) => toggleTracker(checked === true)} />
             Tracker (Tracker expansion boards are connected; not for the 1834)<HelpTip of="tracker" />
             <Text size="2" color="gray">{trackerInfo}</Text>
           </Flex></Text>
@@ -133,11 +145,11 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
           </Text>
           <Flex gap="4" align="center" wrap="wrap">
             <Text as="label" size="2"><Flex gap="2" align="center">
-              <Checkbox checked={features.floors} onCheckedChange={(v) => toggle('floors', v === true)} />
+              <Checkbox checked={features.floors} onCheckedChange={(checked) => toggle('floors', checked === true)} />
               Floors (Residents Floor column and field, Security Levels Floors column)
             </Flex></Text>
             <Text as="label" size="2"><Flex gap="2" align="center">
-              <Checkbox checked={features.elevators} onCheckedChange={(v) => toggle('elevators', v === true)} />
+              <Checkbox checked={features.elevators} onCheckedChange={(checked) => toggle('elevators', checked === true)} />
               Elevators (Residents Elevator column and field, Elevator Reference and Relay / Elevator pages)
             </Flex></Text>
             <Text size="2" color="gray">{featuresInfo}</Text>
@@ -145,7 +157,7 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
         </Flex>
         {areaCodes.length > 0 && (
           <Text size="2" color="gray">
-            Working copy has {areaCodes.length} area code{areaCodes.length === 1 ? '' : 's'}: {areaCodes.map((a) => `${a.code} (${a.uses})`).join(', ')}.
+            Working copy has {areaCodes.length} area code{areaCodes.length === 1 ? '' : 's'}: {areaCodes.map((areaCode) => `${areaCode.code} (${areaCode.uses})`).join(', ')}.
             4-digit codes (1 + area code) are dialed as long distance.
           </Text>
         )}

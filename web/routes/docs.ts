@@ -4,10 +4,10 @@ import path from 'node:path';
 import type { ServerResponse } from 'node:http';
 import { helpPage } from '../../src/markdown.ts';
 import { type Route, route } from '../routing.ts';
-import type { ContextModule } from '../context.ts';
+import type { Modules } from '../modules.ts';
 
-export function docsRoutes(deps: ContextModule): Route[] {
-  const { HERE, send } = deps;
+export function docsRoutes(modules: Modules): Route[] {
+  const { HERE, send } = modules.context;
   const MANUAL = path.join(HERE, '..', 'docs', 'MANUAL.md');
   // The API-key routes as OpenAPI 3.1 (docs/openapi.json, kept in step with ROUTES by a test) and a Swagger UI page
   // for it at /api/docs, served from node_modules/swagger-ui-dist (no CDN, so the CSP stays 'self').

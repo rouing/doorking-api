@@ -10,10 +10,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { phoneDigits, run, type Store } from './db.ts';
 import type { CameraChannel, SnapshotMinute } from './types.ts';
-import { posterFile } from './snapshot-files.ts';
-import { afterMs, finished, frameJobs, frameOfFile, listSnapshots, minuteStart, NO_FOOTAGE_MSG, NO_RECORDING_MSG, noFootageMinute, pendingMinutes, playbackTime, recordSnapshot, shiftsOf } from './camera-log.ts';
+import { frameJobs, posterFile, type FrameJob } from './snapshot-files.ts';
+import { afterMs, finished, frameOfFile, listSnapshots, minuteStart, NO_FOOTAGE_MSG, NO_RECORDING_MSG, noFootageMinute, pendingMinutes, playbackTime, recordSnapshot, shiftsOf } from './camera-log.ts';
 import { createCameraRunner, NO_CONNECTION, STOPPED_MSG } from './camera-runner.ts';
-import { type CameraConfig, CLIP_TRIES, type FrameJob, getCameraSettings, type Log, NO_VIDEO_MSG, type PendingMinute, type Recorder, SETTLE_MS, type Shifts, type TxRow, type WithPassword } from './camera-settings.ts';
+import { type CameraConfig, CLIP_TRIES, recorderSettings, type Log, NO_VIDEO_MSG, type PendingMinute, type Recorder, SETTLE_MS, type Shifts, type TxRow, type WithPassword } from './camera-settings.ts';
 import { httpError } from './errors.ts';
 
 type CameraRunner = ReturnType<typeof createCameraRunner>;
@@ -49,7 +49,7 @@ async function settleAll<T>(fns: (() => Promise<T>)[], limit: number): Promise<S
 function missingFrames(cfg: CameraConfig, dir: string, minute: string, have: string[] = [], short: Shifts = {}):
   { kept: string[]; jobs: FrameJob[] } {
   const folder = path.join(dir, 'snapshots', minute);
-  const kept = have.filter((f) => fs.existsSync(path.join(folder, f)));
+  const kept = have.filter((name) => fs.existsSync(path.join(folder, name)));
   const jobs = frameJobs(cfg).filter(({ file }) => !kept.includes(file) || short[file]);
   return { kept, jobs };
 }
@@ -122,17 +122,17 @@ async function saveClip(runner: CameraRunner, cfg: RecorderConfig, channel: numb
   // Always fetched beside the video and moved in when done, so a crash never leaves a cut-off ch<N>.mp4.
   const tmp = file.replace(/\.mp4$/, '.new.mp4');
   const { log = () => {} } = opts;
-  let r: ClipResult;
+  let result: ClipResult;
   try {
-    r = await grabClip(runner, cfg, channel, at, tmp, { ...opts, log: (message) => log(message.replace(path.basename(tmp), path.basename(file))) });
+    result = await grabClip(runner, cfg, channel, at, tmp, { ...opts, log: (message) => log(message.replace(path.basename(tmp), path.basename(file))) });
   } catch (err) {
     dropClip(tmp);
     if (!have || (err as Error).message === STOPPED_MSG) throw err;
     return { secs: have, error: err as CodedError, saved: false };
   }
-  if (have && r.error && r.secs <= have) { dropClip(tmp); return { secs: have, error: r.error, saved: false }; }
+  if (have && result.error && result.secs <= have) { dropClip(tmp); return { secs: have, error: result.error, saved: false }; }
   moveClip(tmp, file);
-  return { ...r, saved: true };
+  return { ...result, saved: true };
 }
 
 // Seconds of the video file in a minute's folder: 0 when missing or not in the snapshot log (logged false: a file left
@@ -178,10 +178,10 @@ async function grabClipOnce(runner: CameraRunner, cfg: RecorderConfig, channel: 
         break;
       }
       if (gap) { logGap(`+${got} s`); gap = 0; }
-      const d = Math.floor(await runner.clipSeconds(part));
-      if (d < 1) { empty++; continue; }
+      const seconds = Math.floor(await runner.clipSeconds(part));
+      if (seconds < 1) { empty++; continue; }
       parts.push(part);
-      got += d;
+      got += seconds;
     }
     if (gap && parts.length) logGap('the end');
     if (!parts.length) throw new Error(skipped ? NO_RECORDING_MSG : NO_VIDEO_MSG);
@@ -206,9 +206,9 @@ async function grabNearby(runner: CameraRunner, cfg: Recorder, channel: number, 
         await runner.grabFrame(cfg, query, outFile, { signal, once: true });
         log(`${path.basename(outFile)}: no recording at the planned time, took ${second > 0 ? '+' : ''}${second} s instead (${query})`);
         return second;
-      } catch (e2) {
-        const err = e2 as CodedError;
-        if (err.message === STOPPED_MSG || err.code === NO_CONNECTION) throw e2;
+      } catch (retryError) {
+        const err = retryError as CodedError;
+        if (err.message === STOPPED_MSG || err.code === NO_CONNECTION) throw retryError;
       }
     }
     throw err;
@@ -250,11 +250,11 @@ async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: st
         partialErrors.push(clip.error.message);
         log(`${minute}/${file} partial video kept (${Math.round(clip.secs)} s, ${query}): ${clip.error.message}`);
       }
-    } catch (e) {
-      const err = e as CodedError;
+    } catch (caught) {
+      const err = caught as CodedError;
       if (err.code === NO_CONNECTION) unreachable = err;
       if (err.message !== STOPPED_MSG) log(`${minute}/${file} failed (${query}): ${err.message}`);
-      throw e;
+      throw err;
     } finally {
       if (!(signal && signal.aborted)) onFrame();
     }
@@ -272,60 +272,89 @@ async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: st
 // minute is done (attempts unchanged). Returns the minute's log entry; when no picture is saved, throws the
 // grab's error with status 502 (the old picture, if any, is kept). A partial video is saved (marked short) only
 // when longer than the saved one. log(message) gets retries and failures.
-export async function refreshSnapshot(store: Store, runner: CameraRunner, phone: unknown, dir: string, minute: string, file: string,
+// Which saved picture or video: the gate, its media folder, the minute and the file name.
+export interface SnapshotFileRef { phone: string; dir: string; minute: string; file: string }
+
+export async function refreshSnapshot(store: Store, runner: CameraRunner, ref: SnapshotFileRef,
   { log: logTo = () => {} }: { log?: Log } = {}): Promise<SnapshotMinute | undefined> {
-  const cfg = await getCameraSettings(store, phone, { withPassword: true });
+  const target = await refreshTarget(store, ref);
+  const log = (message: string) => logTo(`Gate ${ref.phone}: ${message}`);
+  const short: Shifts = { ...target.snapshot.short };
+  const { shift, clipError } = await fetchAgain(runner, target, short, log);
+  await saveRefreshed(store, target, { shift, clipError, short });
+  return (await listSnapshots(store, ref.phone))[ref.minute];
+}
+
+// What refreshSnapshot fetches: the recorder settings, the file's channel and offset, when it was taken (at, ms), the
+// minute's log entry and folder. Only a minute in the snapshot log, from one of the configured cameras.
+interface RefreshTarget extends SnapshotFileRef {
+  cfg: RecorderConfig; frame: { channel: number; off: number; video?: boolean }; at: number; snapshot: SnapshotMinute; folder: string;
+}
+async function refreshTarget(store: Store, ref: SnapshotFileRef): Promise<RefreshTarget> {
+  const cfg = await recorderSettings(store, ref.phone);
   if (!cfg) throw httpError('Save the camera settings first', 404);
-  const frame = frameOfFile(file);
-  const start = minuteStart(minute);
+  const frame = frameOfFile(ref.file);
+  const start = minuteStart(ref.minute);
   if (!frame || start === null) throw httpError('Not a snapshot picture');
-  const log = (m: string) => logTo(`Gate ${phone}: ${m}`);
-  const folder = path.join(dir, 'snapshots', minute);
+  const snapshot = (await listSnapshots(store, ref.phone))[ref.minute];
+  if (!snapshot || !cfg.channels.some((channel) => channel.channel === frame.channel)) throw httpError('Snapshot not found', 404);
+  const folder = path.join(ref.dir, 'snapshots', ref.minute);
+  return { ...ref, cfg, frame, at: start + (cfg.clockOffset + frame.off) * 1000, snapshot, folder };
+}
+
+// Fetches the file again (a video: the rest of it, noted in short; a picture: the nearest recorded second). 502 when
+// nothing could be saved.
+async function fetchAgain(runner: CameraRunner, { cfg, frame, at, snapshot, folder, minute, file }: RefreshTarget, short: Shifts,
+  log: (message: string) => void): Promise<{ shift: number; clipError: CodedError | null }> {
   fs.mkdirSync(folder, { recursive: true });
   const tmp = path.join(folder, file.replace(/\.(jpg|mp4)$/, '.new.$1'));
-  const at = start + (cfg.clockOffset + frame.off) * 1000;
   const query = frame.video ? clipQuery(frame.channel, at) : playbackQuery(frame.channel, at);
   const opts: ClipOptions = {
-    onRetry: (e) => log(`${minute}/${file} refresh failed, trying again (${query}): ${e.message}`),
+    onRetry: (error) => log(`${minute}/${file} refresh failed, trying again (${query}): ${error.message}`),
     log: (message) => log(`${minute}/${message.replace(path.basename(tmp), file)}`),
   };
-  const snapshot = (await listSnapshots(store, phone))[minute];
-  const short: Shifts = { ...(snapshot ? snapshot.short : {}) };
-  const refreshVideo = async (): Promise<{ shift: number; clipError: CodedError | null }> => {
+  try {
+    if (!frame.video) {
+      const shift = await grabNearby(runner, cfg, frame.channel, at, tmp, opts);
+      fs.renameSync(tmp, path.join(folder, file));
+      return { shift, clipError: null };
+    }
     const clip = await saveClip(runner, cfg, frame.channel, at, path.join(folder, file),
-      clipHave(folder, file, Boolean(snapshot && snapshot.files.includes(file)), short), { ...opts, log: (message) => log(`${minute}/${message}`) });
+      clipHave(folder, file, snapshot.files.includes(file), short), { ...opts, log: (message) => log(`${minute}/${message}`) });
     if (!clip.saved) throw clip.error;
     noteShort(short, file, clip.secs);
     if (clip.error) log(`${minute}/${file} refresh saved a partial video (${Math.round(clip.secs)} s, ${query}): ${clip.error.message}`);
     return { shift: 0, clipError: clip.error };
-  };
-  const refreshPicture = async (): Promise<{ shift: number; clipError: CodedError | null }> => {
-    const shift = await grabNearby(runner, cfg, frame.channel, at, tmp, opts);
-    fs.renameSync(tmp, path.join(folder, file));
-    return { shift, clipError: null };
-  };
-  let shift = 0;
-  let clipError: CodedError | null = null;
-  try {
-    ({ shift, clipError } = await (frame.video ? refreshVideo() : refreshPicture()));
   } catch (err) {
     const { message } = err as Error;
     if (!frame.video) fs.rmSync(tmp, { force: true });
     log(`${minute}/${file} refresh failed (${query}): ${message}`);
     throw httpError(message, 502);
   }
-  const files = [...new Set([...(snapshot ? snapshot.files : []), file])].filter((f) => fs.existsSync(path.join(folder, f)));
+}
+
+// The minute's status after a refresh: done once every frame is saved; else partial when this video came short or the
+// minute had failed, otherwise as it was.
+function refreshedStatus(complete: boolean, clipError: CodedError | null, previous: string): string {
+  if (complete) return 'done';
+  if (clipError || previous === 'failed') return 'partial';
+  return previous;
+}
+
+// Records the refreshed file in the minute's log entry.
+async function saveRefreshed(store: Store, { cfg, snapshot, folder, phone, dir, minute, file }: RefreshTarget,
+  { shift, clipError, short }: { shift: number; clipError: CodedError | null; short: Shifts }): Promise<void> {
+  const files = [...new Set([...snapshot.files, file])].filter((name) => fs.existsSync(path.join(folder, name)));
   const complete = !missingFrames(cfg, dir, minute, files, short).jobs.length;
-  const status = complete ? 'done' : clipError ? 'partial' : snapshot && snapshot.status !== 'failed' ? snapshot.status : 'partial';
-  const shifts = { ...(snapshot ? snapshot.shifts : {}), [file]: shift };
-  const error = complete ? null : clipError ? clipError.message : (snapshot && snapshot.error) || null;
+  const status = refreshedStatus(complete, clipError, snapshot.status);
+  const shifts = { ...snapshot.shifts, [file]: shift };
+  const error = complete ? null : clipError ? clipError.message : snapshot.error || null;
   await run(store, `INSERT INTO snapshots (phone, minute, status, files, error, attempts, at, shifts, short)
     VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8)
     ON CONFLICT (phone, minute) DO UPDATE SET status = excluded.status, files = excluded.files, error = excluded.error, at = excluded.at,
     shifts = excluded.shifts, short = excluded.short`,
   [phoneDigits(phone), minute, status, JSON.stringify(files), error, new Date().toISOString(),
     JSON.stringify(shiftsOf(files, shifts)), JSON.stringify(shiftsOf(files, short))]);
-  return (await listSnapshots(store, phone))[minute];
 }
 
 // A live frame from each channel, to check the settings: <dir>/snapshots/live/ch<N>.jpg.
@@ -344,7 +373,7 @@ export interface SnapshotProgress {
 }
 export interface SnapshotResult { minutes: number; done: number; partial: number; failed: number; stopped: boolean; error?: string }
 interface RunSnapshotsOptions {
-  now?: number; onStatus?: Log; onProgress?: (p: SnapshotProgress) => void; signal?: AbortSignal; log?: Log; minute?: string;
+  now?: number; onStatus?: Log; onProgress?: (progress: SnapshotProgress) => void; signal?: AbortSignal; log?: Log; minute?: string;
 }
 
 // Snapshots the gate's pending minutes (see pendingMinutes). rows: transaction rows. Returns null when the gate
@@ -358,48 +387,59 @@ interface RunSnapshotsOptions {
 // log(message) gets frame retries and failures, minutes not done, and why the run ended early.
 // minute (YYYYMMDD-HHMM): snapshot only that minute (one transaction's button), whatever its transaction type,
 // age or tries so far; a minute too recent to be recorded yet ends the run with error.
-export async function runSnapshots(store: Store, runner: CameraRunner, phone: unknown, dir: string, rows: TxRow[],
+export async function runSnapshots(store: Store, runner: CameraRunner, phone: string, dir: string, rows: TxRow[],
   { now = Date.now(), onStatus = () => {}, onProgress = () => {}, signal, log: logTo = () => {}, minute }: RunSnapshotsOptions = {}):
   Promise<SnapshotResult | null> {
-  const log = (m: string) => logTo(`Gate ${phone}: ${m}`);
-  const cfg = await getCameraSettings(store, phone, { withPassword: true });
+  const log = (message: string) => logTo(`Gate ${phone}: ${message}`);
+  const cfg = await recorderSettings(store, phone);
   if (!cfg || !cfg.enabled) return null;
   const known = await listSnapshots(store, phone);
-  const start = minute ? minuteStart(minute) : null;
-  if (minute && start === null) throw httpError('Not a transaction minute');
-  if (minute && noFootageMinute(rows, minute)) throw httpError(NO_FOOTAGE_MSG);
-  const tooRecent = start !== null && start > now - SETTLE_MS - afterMs(cfg);
-  const pending: PendingMinute[] = !minute ? pendingMinutes(cfg, rows, known, now) : tooRecent ? [] : [{ minute, ts: start! }];
+  const { pending, tooRecent } = minutesToFetch(cfg, rows, known, minute, now);
   const out: SnapshotResult = { minutes: pending.length, done: 0, partial: 0, failed: 0, stopped: false };
   if (tooRecent) out.error = 'This minute may not be recorded yet; try again in a few minutes';
-  const byMinute: SnapshotProgress['byMinute'] = Object.fromEntries(pending.map((p) => [p.minute,
-    { frames: missingFrames(cfg, dir, p.minute, known[p.minute]?.files, known[p.minute]?.short).jobs.length, done: 0 }]));
-  const progress = {
-    minutes: pending.length, minutesDone: 0, framesDone: 0,
-    frames: Object.values(byMinute).reduce((n, m) => n + m.frames, 0), current: null as string | null,
-  };
-  const report = () => onProgress({ ...progress,
-    byMinute: Object.fromEntries(Object.entries(byMinute).map(([k, m]) => [k, { ...m }])) });
-  report();
-  for (const p of pending) {
+  const progress = snapshotProgress(pending, (item) => missingFrames(cfg, dir, item, known[item]?.files, known[item]?.short).jobs.length, onProgress);
+  for (const item of pending) {
     if (signal && signal.aborted) { out.stopped = true; break; }
-    progress.current = p.minute;
-    report();
-    const onFrame = () => { progress.framesDone++; byMinute[p.minute].done++; report(); };
-    const { files, errors, stopped, unreachable, shifts, short } = await snapshotMinute(runner, cfg, dir, p, known[p.minute]?.files,
-      { signal, onFrame, log, short: known[p.minute]?.short });
+    progress.starting(item.minute);
+    const { files, errors, stopped, unreachable, shifts, short } = await snapshotMinute(runner, cfg, dir, item, known[item.minute]?.files,
+      { signal, onFrame: () => progress.frameSaved(item.minute), log, short: known[item.minute]?.short });
     if (stopped) { out.stopped = true; break; }
-    progress.minutesDone++;
-    progress.current = null;
-    delete byMinute[p.minute];
-    report();
+    progress.finished(item.minute);
     const status: 'failed' | 'done' | 'partial' = !files.length ? 'failed' : finished({ error: errors.join('; ') }) ? 'done' : 'partial';
-    await recordSnapshot(store, phone, p.minute, { status, files, error: errors.join('; '), shifts: { ...known[p.minute]?.shifts, ...shifts },
+    await recordSnapshot(store, phone, item.minute, { status, files, error: errors.join('; '), shifts: { ...known[item.minute]?.shifts, ...shifts },
       short, video: cfg.mode === 'video' });
     out[status]++;
-    onStatus(`${p.minute}: ${files.length} frames${errors.length ? ` (${errors.join('; ')})` : ''}`);
-    if (errors.length) log(`${p.minute} ${status}: ${files.length} frames saved (${errors.join('; ')})`);
+    onStatus(`${item.minute}: ${files.length} frames${errors.length ? ` (${errors.join('; ')})` : ''}`);
+    if (errors.length) log(`${item.minute} ${status}: ${files.length} frames saved (${errors.join('; ')})`);
     if (unreachable) { out.error = unreachable; log(`Snapshot run ended early: ${unreachable}`); break; }
   }
   return out;
+}
+
+// The minutes a run fetches: every pending one, or the one asked for (none while it may not be recorded yet: tooRecent).
+function minutesToFetch(cfg: RecorderConfig, rows: TxRow[], known: Record<string, SnapshotMinute>, minute: string | undefined, now: number):
+  { pending: PendingMinute[]; tooRecent: boolean } {
+  if (!minute) return { pending: pendingMinutes(cfg, rows, known, now), tooRecent: false };
+  const start = minuteStart(minute);
+  if (start === null) throw httpError('Not a transaction minute');
+  if (noFootageMinute(rows, minute)) throw httpError(NO_FOOTAGE_MSG);
+  const tooRecent = start > now - SETTLE_MS - afterMs(cfg);
+  return { pending: tooRecent ? [] : [{ minute, ts: start }], tooRecent };
+}
+
+// A run's progress, reported (onProgress) as each minute starts, each frame is saved and each minute ends.
+// framesOf(minute): the frames still to fetch for it.
+function snapshotProgress(pending: PendingMinute[], framesOf: (minute: string) => number, onProgress: (progress: SnapshotProgress) => void) {
+  const byMinute: SnapshotProgress['byMinute'] = Object.fromEntries(pending.map((item) => [item.minute, { frames: framesOf(item.minute), done: 0 }]));
+  const state = {
+    minutes: pending.length, minutesDone: 0, framesDone: 0,
+    frames: Object.values(byMinute).reduce((total, counts) => total + counts.frames, 0), current: null as string | null,
+  };
+  const report = () => onProgress({ ...state, byMinute: Object.fromEntries(Object.entries(byMinute).map(([key, counts]) => [key, { ...counts }])) });
+  report();
+  return {
+    starting: (minute: string) => { state.current = minute; report(); },
+    frameSaved: (minute: string) => { state.framesDone++; byMinute[minute].done++; report(); },
+    finished: (minute: string) => { state.minutesDone++; state.current = null; delete byMinute[minute]; report(); },
+  };
 }

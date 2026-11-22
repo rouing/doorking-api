@@ -13,13 +13,12 @@
 -- the CREATE TABLE (new databases) and add an ALTER TABLE ... ADD COLUMN IF NOT EXISTS at the end (older ones).
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
--- gates, sign_ins, credentials: from before local accounts (2026-11-13); read once by the migration to
--- managed gates and kept so older databases upgrade cleanly.
+-- gates, credentials: from before local accounts (2026-11-13); read once by the migration to managed gates and
+-- kept so older databases upgrade cleanly. (Older databases also have an unused sign_ins table, never dropped.)
 CREATE TABLE IF NOT EXISTS gates (username TEXT NOT NULL, phone TEXT NOT NULL, master_code TEXT NOT NULL,
   added_at TIMESTAMPTZ NOT NULL, verified_at TIMESTAMPTZ, PRIMARY KEY (username, phone));
 CREATE INDEX IF NOT EXISTS gates_phone ON gates (phone);
 CREATE TABLE IF NOT EXISTS prefs (phone TEXT PRIMARY KEY, data JSONB NOT NULL);
-CREATE TABLE IF NOT EXISTS sign_ins (username TEXT PRIMARY KEY, last TIMESTAMPTZ NOT NULL, count INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS history (seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, id TEXT NOT NULL UNIQUE,
   phone TEXT NOT NULL, data JSONB NOT NULL);
 CREATE INDEX IF NOT EXISTS history_phone ON history (phone, seq);

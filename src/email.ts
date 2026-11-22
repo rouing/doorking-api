@@ -14,10 +14,15 @@ export const TOKEN_HOURS: Record<TokenKind, number> = { verify: 24, reset: 1, in
 const RETRY_MINUTES = [1, 5, 15, 60, 240]; // after each failed try; then given up
 const BATCH = 20;
 
+interface QueuedEmailRow { id: number; to_addr: string; subject: string; body: string; attempts: number; kind: string }
+interface OutboxEmailRow {
+  id: number; to_addr: string; subject: string; kind: string; status: string; attempts: number; error: string | null; created_at: string;
+  sent_at: string | null;
+}
 export interface OutboxEmail { id: number; to: string; subject: string; kind: string; status: string; attempts: number; error: string | null; createdAt: string; sentAt: string | null }
-export interface Mailer { sendMail(m: { from: string; to: string; subject: string; text: string }): Promise<unknown> }
+export interface Mailer { sendMail(message: { from: string; to: string; subject: string; text: string }): Promise<unknown> }
 
-const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+const sha = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
 
 // A new link token for the user (earlier unused ones of the same kind stop working). data: e.g. the address being
 // verified. Returns the token (for the link only).
@@ -32,20 +37,24 @@ export async function createToken(store: Store, kind: TokenKind, username: strin
   return token;
 }
 
-// The token's user and data if it is valid, unexpired and of this kind; it is used up either way when found.
-// peek: look without using it up (to show whose invitation it is).
-export async function useToken(store: Store, kind: TokenKind, token: unknown, { peek = false } = {}): Promise<{ username: string; data: string } | null> {
-  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  const sql = peek ? 'SELECT username, data, kind, expires_at FROM email_tokens WHERE token_hash = $1'
-    : 'DELETE FROM email_tokens WHERE token_hash = $1 RETURNING username, data, kind, expires_at';
-  const r = await one<{ username: string; data: string; kind: string; expires_at: string }>(store, sql, [sha(token)]);
-  if (!r || r.kind !== kind || new Date(r.expires_at).getTime() < Date.now()) return null;
-  return { username: r.username, data: r.data };
+type TokenUse = { username: string; data: string } | null;
+
+// The token's user and data if it is valid, unexpired and of this kind; a token of this kind is used up either way
+// when found (one of another kind, e.g. an invitation opened as a password reset, is left as it is).
+export function useToken(store: Store, kind: TokenKind, token: unknown): Promise<TokenUse> {
+  return findToken(store, kind, token, 'DELETE FROM email_tokens WHERE token_hash = $1 AND kind = $2 RETURNING username, data, expires_at');
 }
 
-// Whether the user has an unused, unexpired token of this kind (e.g. an invitation not yet accepted).
-export async function hasToken(store: Store, kind: TokenKind, username: string): Promise<boolean> {
-  return Boolean(await one(store, 'SELECT 1 AS x FROM email_tokens WHERE username = $1 AND kind = $2 AND expires_at > now()', [userKey(username), kind]));
+// The same, without using it up (to show whose invitation it is).
+export function peekToken(store: Store, kind: TokenKind, token: unknown): Promise<TokenUse> {
+  return findToken(store, kind, token, 'SELECT username, data, expires_at FROM email_tokens WHERE token_hash = $1 AND kind = $2');
+}
+
+async function findToken(store: Store, kind: TokenKind, token: unknown, sql: string): Promise<TokenUse> {
+  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+  const row = await one<{ username: string; data: string; expires_at: string }>(store, sql, [sha(token), kind]);
+  if (!row || new Date(row.expires_at).getTime() < Date.now()) return null;
+  return { username: row.username, data: row.data };
 }
 
 export async function deleteExpiredTokens(store: Store): Promise<number> {
@@ -54,9 +63,9 @@ export async function deleteExpiredTokens(store: Store): Promise<number> {
 
 // Queues an email (kind: what it is, for the log). The body is stored encrypted until it is sent.
 export async function queueEmail(store: Store, { to, subject, text, kind }: { to: string; subject: string; text: string; kind: string }): Promise<number> {
-  const r = await one<{ id: number }>(store, `INSERT INTO emails (to_addr, subject, kind, body, status, attempts, next_try, created_at)
+  const row = await one<{ id: number }>(store, `INSERT INTO emails (to_addr, subject, kind, body, status, attempts, next_try, created_at)
     VALUES ($1, $2, $3, $4, 'queued', 0, now(), now()) RETURNING id`, [to, subject, kind, encrypt(store, text)]);
-  return r!.id;
+  return row!.id;
 }
 
 // A failed send: tried again after wait minutes, or given up (wait undefined: the retries are used up).
@@ -71,20 +80,20 @@ async function recordFailure(store: Store, id: number, msg: string, wait: number
 
 // Sends the queued emails that are due. A failure is tried again after RETRY_MINUTES; after the last it is given up.
 // Returns the counts. log(message) gets each failure.
-export async function sendQueued(store: Store, mailer: Mailer, from: string, log: (m: string) => void = () => {}): Promise<{ sent: number; failed: number }> {
+export async function sendQueued(store: Store, mailer: Mailer, from: string, log: (message: string) => void = () => {}): Promise<{ sent: number; failed: number }> {
   const out = { sent: 0, failed: 0 };
-  const due = await all<{ id: number; to_addr: string; subject: string; body: string; attempts: number; kind: string }>(store,
-    `SELECT id, to_addr, subject, body, attempts, kind FROM emails WHERE status = 'queued' AND next_try <= now() ORDER BY id LIMIT ${BATCH}`);
-  for (const e of due) {
+  const due = await all<QueuedEmailRow>(store,
+    `SELECT id, to_addr, subject, body, attempts, kind FROM emails WHERE status = 'queued' AND next_try <= now() ORDER BY id LIMIT $1`, [BATCH]);
+  for (const email of due) {
     try {
-      await mailer.sendMail({ from, to: e.to_addr, subject: e.subject, text: decrypt(store, e.body) });
-      await run(store, "UPDATE emails SET status = 'sent', attempts = attempts + 1, sent_at = now(), body = NULL, error = NULL WHERE id = $1", [e.id]);
+      await mailer.sendMail({ from, to: email.to_addr, subject: email.subject, text: decrypt(store, email.body) });
+      await run(store, "UPDATE emails SET status = 'sent', attempts = attempts + 1, sent_at = now(), body = NULL, error = NULL WHERE id = $1", [email.id]);
       out.sent++;
     } catch (err) {
       const msg = String((err as Error).message || err).slice(0, 300);
-      const wait = RETRY_MINUTES[e.attempts];
-      await recordFailure(store, e.id, msg, wait);
-      log(`Email ${e.id} (${e.kind}) to ${e.to_addr} not sent${wait === undefined ? ', given up' : `, trying again in ${wait} min`}: ${msg}`);
+      const wait = RETRY_MINUTES[email.attempts];
+      await recordFailure(store, email.id, msg, wait);
+      log(`Email ${email.id} (${email.kind}) to ${email.to_addr} not sent${wait === undefined ? ', given up' : `, trying again in ${wait} min`}: ${msg}`);
       out.failed++;
     }
   }
@@ -93,9 +102,9 @@ export async function sendQueued(store: Store, mailer: Mailer, from: string, log
 
 // The most recent emails (without bodies), newest first.
 export async function listEmails(store: Store, limit = 100): Promise<OutboxEmail[]> {
-  return (await all<{ id: number; to_addr: string; subject: string; kind: string; status: string; attempts: number; error: string | null; created_at: string; sent_at: string | null }>(store,
-    `SELECT id, to_addr, subject, kind, status, attempts, error, created_at, sent_at FROM emails ORDER BY id DESC LIMIT ${Number(limit)}`))
-    .map((r) => ({ id: r.id, to: r.to_addr, subject: r.subject, kind: r.kind, status: r.status, attempts: r.attempts, error: r.error, createdAt: r.created_at, sentAt: r.sent_at }));
+  return (await all<OutboxEmailRow>(store,
+    `SELECT id, to_addr, subject, kind, status, attempts, error, created_at, sent_at FROM emails ORDER BY id DESC LIMIT $1`, [limit]))
+    .map((row) => ({ id: row.id, to: row.to_addr, subject: row.subject, kind: row.kind, status: row.status, attempts: row.attempts, error: row.error, createdAt: row.created_at, sentAt: row.sent_at }));
 }
 
 // The SMTP sender for config.email, or null when email is off (no host).

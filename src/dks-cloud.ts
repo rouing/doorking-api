@@ -15,22 +15,22 @@ export interface SessionSeries30Params {
   phoneNumber: Param; relay012Hold: Param; interface1816: Param; antiPassBack: Param; modelNumber: Param; areaCodes: Param;
 }
 
-const escapeXml = (s: unknown): string => String(s)
+const escapeXml = (text: unknown): string => String(text)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
-const unescapeXml = (s: string): string => s
+const unescapeXml = (text: string): string => text
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-  .replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+  .replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
   .replace(/&amp;/g, '&');
 
 // Operations polled while a session runs; only their failures are logged.
 const POLLED = new Set(['GetSessionStatus']);
 
 export class DksCloudClient {
-  url: string;
-  timeoutMs: number;
-  log: (message: string) => void;
+  private readonly url: string;
+  private readonly timeoutMs: number;
+  private readonly log: (message: string) => void;
 
   // log(message): each call's operation, time and outcome (never its parameters, which hold credentials).
   constructor({ url = DEFAULT_URL, timeoutMs = 60000, log = () => {} }:
@@ -87,20 +87,20 @@ export class DksCloudClient {
   }
 
   // Opens a cloud session for a Series 30 board (parameter names/order from the service's WSDL).
-  startSessionSeries30(p: SessionSeries30Params): Promise<string> {
+  startSessionSeries30(params: SessionSeries30Params): Promise<string> {
     return this.call('StartSessionSeries30', {
-      UserID: p.userId,
-      password: p.password,
-      UserTime: p.userTime,
-      DialDelay: p.dialDelay,
-      MasterCode: p.masterCode,
-      MemorySize: p.memorySize,
-      PhoneNumber: p.phoneNumber,
-      Relay012Hold: p.relay012Hold,
-      Interface1816: p.interface1816,
-      AntiPassBack: p.antiPassBack,
-      ModelNumber: p.modelNumber,
-      AreaCodes: p.areaCodes,
+      UserID: params.userId,
+      password: params.password,
+      UserTime: params.userTime,
+      DialDelay: params.dialDelay,
+      MasterCode: params.masterCode,
+      MemorySize: params.memorySize,
+      PhoneNumber: params.phoneNumber,
+      Relay012Hold: params.relay012Hold,
+      Interface1816: params.interface1816,
+      AntiPassBack: params.antiPassBack,
+      ModelNumber: params.modelNumber,
+      AreaCodes: params.areaCodes,
     });
   }
 
@@ -125,7 +125,7 @@ export class DksCloudClient {
       files: Partial<Record<ResidentFile, Uint8Array>>; maps?: Partial<Record<ResidentFile, Uint8Array>>; oldSendStamp?: string;
     },
   ): Promise<string> {
-    const hex = (b: Uint8Array | undefined) => (b ? encodeFileText(b) : '');
+    const hex = (bytes: Uint8Array | undefined) => (bytes ? encodeFileText(bytes) : '');
     return this.call('SendResidentData', {
       SessionID: sessionId,
       OldSendStamp: oldSendStamp,
@@ -150,7 +150,7 @@ export class DksCloudClient {
     return this.call('GetRelays', { UserID: userId, Password: password, PhoneNumber: phoneNumber, MasterCode: masterCode });
   }
 
-  // Sets relay states (no session). `settings` is a 19-char desired-state string ('0' off, '1' hold/active).
+  // Sets relay states (no session). `settings` is 20 characters: a mode letter, then 19 relay states ('0' off, '1' hold/active).
   // This is a live write: an active relay holds the gate open. Not part of the blocked bin-send path.
   setRelays(userId: Param, password: Param, phoneNumber: Param, masterCode: Param, settings: Param): Promise<string> {
     return this.call('SetRelays', { UserID: userId, Password: password, PhoneNumber: phoneNumber, MasterCode: masterCode, Settings: settings });
@@ -173,7 +173,7 @@ export class DksCloudClient {
         return { status, success: status.includes('Success') };
       }
       if (Date.now() > deadline) throw new Error(`Session ${sessionId} timed out. Last status: ${status}`);
-      await new Promise((r) => setTimeout(r, intervalMs));
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   }
 }

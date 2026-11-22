@@ -4,35 +4,28 @@
 // only the events after the overlap are added. Records keep the year inferred when they were first saved (the
 // board stores no year). The pulled rcv_out.bin itself isn't kept; tx_pulls records when the gate was last read.
 import { all, decryptBytes, one, run, transaction, type Store, phoneDigits } from './db.ts';
-import { orderRcvOut, parseRcvOut, type RcvRecord } from './board-files.ts';
+import { hasValidDate, orderRcvOut, parseRcvOut, type RcvRecord } from './board-files.ts';
 
 export interface TxMerge { added: number; kept: number; gap: boolean }
-
-const valid = (record: RcvRecord) => record.month >= 1 && record.month <= 12 && record.day >= 1 && record.day <= 31;
-
-export async function txHistoryCount(store: Store, phone: unknown): Promise<number> {
-  const row = await one<{ n: number }>(store, 'SELECT COUNT(*) AS n FROM tx_history WHERE phone = $1', [phoneDigits(phone)]);
-  return row!.n;
-}
 
 // Adds a pulled rcv_out.bin to the gate's history and records pulledAt as its last transactions pull. The pull starts
 // with the oldest events still on the gate, so the longest run at the end of the saved history that equals the start
 // of the pull is the overlap (kept); the rest is added. gap: nothing overlapped although history existed, so events
 // may be missing between the two (the buffer wrapped past the last pull) or the gate's buffer was cleared.
-export async function mergeTransactions(store: Store, phone: unknown, buf: Buffer, pulledAt: Date = new Date()): Promise<TxMerge> {
+export async function mergeTransactions(store: Store, phone: string, buf: Buffer, pulledAt: Date = new Date()): Promise<TxMerge> {
   const phoneKey = phoneDigits(phone);
-  const pulled = orderRcvOut(buf, pulledAt).filter(valid);
+  const pulled = orderRcvOut(buf, pulledAt).filter(hasValidDate);
   return transaction(store, async (tx) => {
     // One merge per gate at a time: the lock is held until the transaction ends.
     await one(tx, 'SELECT pg_advisory_xact_lock(hashtext($1))', [`tx_history:${phoneKey}`]);
     const tail = (await all<{ raw: string }>(tx, 'SELECT raw FROM tx_history WHERE phone = $1 ORDER BY seq DESC LIMIT $2',
-      [phoneKey, pulled.length])).map((r) => r.raw).reverse();
+      [phoneKey, pulled.length])).map((row) => row.raw).reverse();
     let kept = 0;
     for (let i = 0; i < tail.length && !kept; i++) {
-      const n = tail.length - i;
+      const length = tail.length - i;
       let j = 0;
-      while (j < n && tail[i + j] === pulled[j].raw) j++;
-      if (j === n) kept = n;
+      while (j < length && tail[i + j] === pulled[j].raw) j++;
+      if (j === length) kept = length;
     }
     const fresh = pulled.slice(kept);
     const last = await one<{ seq: number | null }>(tx, 'SELECT MAX(seq) AS seq FROM tx_history WHERE phone = $1', [phoneKey]);
@@ -51,9 +44,9 @@ export async function mergeTransactions(store: Store, phone: unknown, buf: Buffe
 }
 
 // When the gate's transactions were last pulled, or null.
-export async function txPulledAt(store: Store, phone: unknown): Promise<Date | null> {
-  const r = await one<{ pulled_at: string }>(store, 'SELECT pulled_at FROM tx_pulls WHERE phone = $1', [phoneDigits(phone)]);
-  return r ? new Date(r.pulled_at) : null;
+export async function txPulledAt(store: Store, phone: string): Promise<Date | null> {
+  const row = await one<{ pulled_at: string }>(store, 'SELECT pulled_at FROM tx_pulls WHERE phone = $1', [phoneDigits(phone)]);
+  return row ? new Date(row.pulled_at) : null;
 }
 
 // Once: each rcv_out.bin kept in gate_files (until 2026-11-13) is merged into the history as after a pull (events
@@ -74,7 +67,7 @@ export async function migrateRcvOut(store: Store): Promise<{ phone: string; adde
 
 // A page of the saved transactions: the newest `limit` (all when not given) older than seq `before`, oldest first, and
 // next: the `before` that asks for the page older than this one (null when there is none).
-export async function readTransactionPage(store: Store, phone: unknown, { before, limit }: { before?: number; limit?: number } = {}):
+export async function readTransactionPage(store: Store, phone: string, { before, limit }: { before?: number; limit?: number } = {}):
   Promise<{ records: RcvRecord[]; next: number | null }> {
   const rows = await all<{ raw: string; year: number; seq: number }>(store,
     'SELECT raw, year, seq FROM tx_history WHERE phone = $1 AND ($2::integer IS NULL OR seq < $2) ORDER BY seq DESC LIMIT $3',

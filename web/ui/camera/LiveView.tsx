@@ -3,14 +3,21 @@ import { Button, Card, Flex, IconButton, Text } from '@radix-ui/themes';
 import { Choice } from '../panes/fields.tsx';
 import type { CameraSettings } from '../../../src/types.ts';
 import { gateUrl } from '../api.ts';
+import { useBackLayer } from '../back.ts';
 
 const PAUSE_MS = 10 * 60000;
 type Status = { kind: 'connecting' | 'playing' } | { kind: 'stopped'; text: string; retry: boolean };
 
+interface LiveViewProps {
+  phone: string;
+  settings: CameraSettings;
+}
+
 // Live camera: the top-right camera button opens a window with the server's MJPEG stream in an <img>.
 // Closing or minimizing the window ends the stream, and it pauses after 10 minutes.
-export function LiveView({ phone, settings }: { phone: string; settings: CameraSettings }) {
+export function LiveView({ phone, settings }: LiveViewProps) {
   const [dock, setDock] = useState<'closed' | 'min' | 'open'>('closed');
+  useBackLayer(dock === 'open', () => setDock('closed'));
   const [channel, setChannel] = useState(String(settings.channels[0]?.channel ?? 1));
   const [quality, setQuality] = useState('low');
   const [status, setStatus] = useState<Status>({ kind: 'connecting' });
@@ -18,7 +25,7 @@ export function LiveView({ phone, settings }: { phone: string; settings: CameraS
   const img = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
-    if (!settings.channels.some((c) => String(c.channel) === channel)) setChannel(String(settings.channels[0]?.channel ?? 1));
+    if (!settings.channels.some((saved) => String(saved.channel) === channel)) setChannel(String(settings.channels[0]?.channel ?? 1));
   }, [settings, channel]);
 
   // While connecting, watch for the first picture; while streaming, pause after PAUSE_MS.
@@ -44,18 +51,18 @@ export function LiveView({ phone, settings }: { phone: string; settings: CameraS
   return (
     <>
       <IconButton size="3" variant="surface" title="View Camera" aria-label="View Camera" onClick={toggleOpen}
-        style={{ position: 'fixed', top: 10, right: 16, zIndex: 11 }}>
+        className="live-toggle">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M9 4 7.2 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-3.2L15 4H9zm3 4.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9zm0 2a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z" /></svg>
       </IconButton>
       {dock !== 'closed' && (
-        <Card style={{ position: 'fixed', top: 58, right: 16, width: 'min(640px, calc(100vw - 32px))', zIndex: 11 }}>
-          <Flex align="center" gap="2">
+        <Card className="live-window">
+          <Flex align="center" gap="2" wrap="wrap">
             <Text weight="bold">View Camera</Text>
             {settings.channels.length > 1 && (
-              <Choice size="1" title="Channel" value={channel} onChange={(v) => { setChannel(v); start(); }}
-                options={settings.channels.map((c) => [String(c.channel), c.name || `Channel ${c.channel}`] as const)} />
+              <Choice size="1" title="Channel" value={channel} onChange={(value) => { setChannel(value); start(); }}
+                options={settings.channels.map((channel) => [String(channel.channel), channel.name || `Channel ${channel.channel}`] as const)} />
             )}
-            <Choice size="1" title="Quality" value={quality} onChange={(v) => { setQuality(v); start(); }}
+            <Choice size="1" title="Quality" value={quality} onChange={(value) => { setQuality(value); start(); }}
               options={[['low', 'Low quality'], ['high', 'High quality']]} />
             <Flex flexGrow="1" />
             <IconButton size="1" variant="ghost" color="gray" title={dock === 'min' ? 'Restore' : 'Minimize'}

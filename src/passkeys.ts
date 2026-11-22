@@ -10,11 +10,12 @@ import {
 import { all, one, run, type Store } from './db.ts';
 import { userKey } from './users.ts';
 import type { PasskeyInfo } from './types.ts';
-import { httpError } from './errors.ts';
+import { httpError, UnknownPasskeyError } from './errors.ts';
 
 export type { PasskeyInfo };
-// rpID: the site name passkeys are tied to; origin: the page's origin (https://<name>, or http://localhost:<port>).
-export interface RelyingParty { rpID: string; origin: string }
+// rpID: the site name passkeys are tied to; origin: the page's origin (https://<name>, or http://localhost:<port>);
+// challenges: where the challenges handed out are kept until answered.
+export interface RelyingParty { rpID: string; origin: string; challenges: PasskeyChallenges }
 
 const RP_NAME = 'DoorKing Gate Manager';
 const CHALLENGE_MS = 5 * 60000;
@@ -26,65 +27,86 @@ interface PasskeyRow {
   device_type: string; backed_up: boolean; created_at: string; last_used_at: string | null;
 }
 
-const fromRow = (r: PasskeyRow): PasskeyInfo => ({
-  id: r.id, name: r.name, site: r.rp_id, synced: r.device_type === 'multiDevice' && r.backed_up, createdAt: r.created_at, lastUsedAt: r.last_used_at,
+const fromRow = (row: PasskeyRow): PasskeyInfo => ({
+  id: row.id, name: row.name, site: row.rp_id, synced: row.device_type === 'multiDevice' && row.backed_up, createdAt: row.created_at, lastUsedAt: row.last_used_at,
 });
 
-// challenge -> { expires, purpose, username (registration, confirmation; null for sign-in), rpID }
-type Purpose = 'register' | 'signin' | 'confirm';
-const challenges = new Map<string, { expires: number; purpose: Purpose; username: string | null; rpID: string }>();
-function remember(challenge: string, purpose: Purpose, username: string | null, rpID: string): void {
-  const now = Date.now();
-  for (const [c, v] of challenges) if (v.expires < now) challenges.delete(c);
-  while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value!);
-  challenges.set(challenge, { expires: now + CHALLENGE_MS, purpose, username, rpID });
-}
-// True (and forgets it) when the challenge was issued for this purpose, user and site, and hasn't expired.
-function takeChallenge(challenge: string, purpose: Purpose, username: string | null, rpID: string): boolean {
-  const c = challenges.get(challenge);
-  challenges.delete(challenge);
-  return Boolean(c && c.expires >= Date.now() && c.purpose === purpose && c.username === username && c.rpID === rpID);
-}
+type Purpose = 'register' | 'register-auto' | 'signin' | 'confirm';
+interface Challenge { expires: number; purpose: Purpose; username: string | null; rpID: string }
 
-// The user's WebAuthn user handle (random, so the username isn't stored on the authenticator), created when missing.
-async function userHandle(store: Store, username: string): Promise<Uint8Array> {
-  const r = await one<{ webauthn_id: string | null }>(store, 'SELECT webauthn_id FROM users WHERE username = $1', [username]);
-  if (!r) throw httpError(`No user "${username}"`, 404);
-  if (r.webauthn_id) return new Uint8Array(Buffer.from(r.webauthn_id, 'base64url'));
+// The challenges handed out and not yet answered (each server keeps its own: RelyingParty.challenges).
+export class PasskeyChallenges {
+  private readonly pending = new Map<string, Challenge>(); // challenge -> who and what it is for (username null: sign-in)
+
+  remember(challenge: string, purpose: Purpose, username: string | null, rpID: string, now = Date.now()): void {
+    for (const [old, stored] of this.pending) if (stored.expires < now) this.pending.delete(old);
+    while (this.pending.size >= MAX_CHALLENGES) this.pending.delete(this.pending.keys().next().value!);
+    this.pending.set(challenge, { expires: now + CHALLENGE_MS, purpose, username, rpID });
+  }
+
+  // True (and forgets it) when the challenge was issued for this purpose, user and site, and hasn't expired.
+  take(challenge: string, purpose: Purpose, username: string | null, rpID: string): boolean {
+    const stored = this.pending.get(challenge);
+    this.pending.delete(challenge);
+    return Boolean(stored && stored.expires >= Date.now() && stored.purpose === purpose && stored.username === username && stored.rpID === rpID);
+  }
+}
+async function userHandle(store: Store, username: string): Promise<Uint8Array<ArrayBuffer>> {
+  const row = await one<{ webauthn_id: string | null }>(store, 'SELECT webauthn_id FROM users WHERE username = $1', [username]);
+  if (!row) throw httpError(`No user "${username}"`, 404);
+  if (row.webauthn_id) return new Uint8Array(Buffer.from(row.webauthn_id, 'base64url'));
   const id = crypto.randomBytes(32);
   await run(store, 'UPDATE users SET webauthn_id = $2 WHERE username = $1 AND webauthn_id IS NULL', [username, id.toString('base64url')]);
   return userHandle(store, username);
 }
 
-export async function listPasskeys(store: Store, username: unknown): Promise<PasskeyInfo[]> {
+// The user's WebAuthn user handle (base64url), or null when no passkey was ever made for the account. The page passes
+// it to the browser with the account's passkeys, so the phone or computer drops the ones removed here.
+export async function passkeyUserHandle(store: Store, username: string): Promise<string | null> {
+  const row = await one<{ webauthn_id: string | null }>(store, 'SELECT webauthn_id FROM users WHERE username = $1', [userKey(username)]);
+  return row ? row.webauthn_id : null;
+}
+
+export async function listPasskeys(store: Store, username: string): Promise<PasskeyInfo[]> {
   return (await all<PasskeyRow>(store, 'SELECT * FROM passkeys WHERE username = $1 ORDER BY created_at',
     [userKey(username)])).map(fromRow);
 }
 
-// Options for adding a passkey to the user's account (the caller has checked their password).
-export async function registrationOptions(store: Store, username: unknown, relyingParty: RelyingParty) {
+// The two ways a passkey is added: with the browser's prompt (the user is verified), or saved by the browser by itself
+// right after a password sign-in (no prompt, so the device may not verify the user then). Each has its own challenges.
+interface Registration { purpose: 'register' | 'register-auto'; userVerification: 'required' | 'preferred' }
+const PROMPTED: Registration = { purpose: 'register', userVerification: 'required' };
+const AUTOMATIC: Registration = { purpose: 'register-auto', userVerification: 'preferred' };
+
+async function optionsFor(store: Store, username: string, relyingParty: RelyingParty, registration: Registration) {
   const name = userKey(username);
   const existing = await all<{ id: string; transports: string[] | null }>(store, 'SELECT id, transports FROM passkeys WHERE username = $1 AND rp_id = $2',
     [name, relyingParty.rpID]);
   const options = await generateRegistrationOptions({
-    rpName: RP_NAME, rpID: relyingParty.rpID, userName: name, userID: await userHandle(store, name) as never, attestationType: 'none',
-    excludeCredentials: existing.map((c) => ({ id: c.id, transports: c.transports || undefined })),
-    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+    rpName: RP_NAME, rpID: relyingParty.rpID, userName: name, userID: await userHandle(store, name), attestationType: 'none',
+    excludeCredentials: existing.map((credential) => ({ id: credential.id, transports: credential.transports || undefined })),
+    authenticatorSelection: { residentKey: 'required', userVerification: registration.userVerification },
   });
-  remember(options.challenge, 'register', name, relyingParty.rpID);
+  relyingParty.challenges.remember(options.challenge, registration.purpose, name, relyingParty.rpID);
   return options;
 }
 
-// Checks the browser's answer to registrationOptions and saves the passkey under `label`.
-export async function addPasskey(store: Store, username: unknown, response: unknown, label: unknown, relyingParty: RelyingParty): Promise<PasskeyInfo> {
+// Options for adding a passkey with the browser's prompt (the caller has checked their password).
+export const registrationOptions = (store: Store, username: string, relyingParty: RelyingParty) => optionsFor(store, username, relyingParty, PROMPTED);
+// Options for the browser saving a passkey by itself right after a password sign-in.
+export const autoRegistrationOptions = (store: Store, username: string, relyingParty: RelyingParty) =>
+  optionsFor(store, username, relyingParty, AUTOMATIC);
+
+async function savePasskey(store: Store, username: string, response: unknown, label: unknown, relyingParty: RelyingParty,
+  registration: Registration): Promise<PasskeyInfo> {
   const name = userKey(username);
   const title = String(label ?? '').trim() || 'Passkey';
   if (title.length > NAME_MAX) throw httpError(`The passkey name must be at most ${NAME_MAX} characters`);
   let v;
   try {
     v = await verifyRegistrationResponse({
-      response: response as RegistrationResponseJSON, expectedChallenge: (c) => takeChallenge(c, 'register', name, relyingParty.rpID),
-      expectedOrigin: relyingParty.origin, expectedRPID: relyingParty.rpID, requireUserVerification: true,
+      response: response as RegistrationResponseJSON, expectedChallenge: (challenge) => relyingParty.challenges.take(challenge, registration.purpose, name, relyingParty.rpID),
+      expectedOrigin: relyingParty.origin, expectedRPID: relyingParty.rpID, requireUserVerification: registration.userVerification === 'required',
     });
   } catch (err) { throw httpError(`The passkey could not be added: ${(err as Error).message}`); }
   if (!v.verified) throw httpError('The passkey could not be added');
@@ -97,23 +119,32 @@ export async function addPasskey(store: Store, username: unknown, response: unkn
   return fromRow((await one<PasskeyRow>(store, 'SELECT * FROM passkeys WHERE id = $1', [cred.id]))!);
 }
 
+// Checks the browser's answer to registrationOptions and saves the passkey under `label`.
+export const addPasskey = (store: Store, username: string, response: unknown, label: unknown, relyingParty: RelyingParty) =>
+  savePasskey(store, username, response, label, relyingParty, PROMPTED);
+// Checks the browser's answer to autoRegistrationOptions and saves the passkey under `label`.
+export const addAutoPasskey = (store: Store, username: string, response: unknown, label: unknown, relyingParty: RelyingParty) =>
+  savePasskey(store, username, response, label, relyingParty, AUTOMATIC);
+
 // Options for signing in with any passkey made for this site (discoverable passkeys: no username needed).
 export async function authenticationOptions(relyingParty: RelyingParty) {
-  const options = await generateAuthenticationOptions({ rpID: relyingParty.rpID, userVerification: 'required' });
-  remember(options.challenge, 'signin', null, relyingParty.rpID);
+  // timeout: as long as the challenge lasts, so the username box's passkey suggestions wait for it (web/ui/Login.tsx).
+  const options = await generateAuthenticationOptions({ rpID: relyingParty.rpID, userVerification: 'required', timeout: CHALLENGE_MS });
+  relyingParty.challenges.remember(options.challenge, 'signin', null, relyingParty.rpID);
   return options;
 }
 
 // Options for the signed-in user to confirm it's them with one of their passkeys for this site (step-up). 409 when
 // they have none here.
-export async function confirmationOptions(store: Store, username: unknown, relyingParty: RelyingParty) {
+export async function confirmationOptions(store: Store, username: string, relyingParty: RelyingParty) {
   const name = userKey(username);
-  const mine = await all<{ id: string; transports: string[] | null }>(store, 'SELECT id, transports FROM passkeys WHERE username = $1 AND rp_id = $2',
+  const mine = await all<{ id: string }>(store, 'SELECT id FROM passkeys WHERE username = $1 AND rp_id = $2',
     [name, relyingParty.rpID]);
   if (!mine.length) throw httpError(`You have no passkey for ${relyingParty.rpID}. Add one in User Settings.`, 409);
+  // No transports: the browser then also offers a passkey on a phone or tablet nearby (its QR code), not only this device.
   const options = await generateAuthenticationOptions({ rpID: relyingParty.rpID, userVerification: 'required',
-    allowCredentials: mine.map((c) => ({ id: c.id, transports: (c.transports || undefined) as never })) });
-  remember(options.challenge, 'confirm', name, relyingParty.rpID);
+    allowCredentials: mine.map((credential) => ({ id: credential.id })) });
+  relyingParty.challenges.remember(options.challenge, 'confirm', name, relyingParty.rpID);
   return options;
 }
 
@@ -123,12 +154,12 @@ async function checkPasskey(store: Store, response: unknown, relyingParty: Relyi
   const res = response as AuthenticationResponseJSON;
   const row = res && typeof res.id === 'string'
     ? await one<PasskeyRow>(store, 'SELECT * FROM passkeys WHERE id = $1 AND rp_id = $2', [res.id, relyingParty.rpID]) : undefined;
-  if (!row) throw refused('this passkey is not registered here (it may have been removed)');
+  if (!row) throw new UnknownPasskeyError(refused('this passkey is not registered here (it may have been removed)').message);
   if (username !== null && row.username !== username) throw refused('this passkey belongs to another account');
   let v;
   try {
     v = await verifyAuthenticationResponse({
-      response: res, expectedChallenge: (c) => takeChallenge(c, username === null ? 'signin' : 'confirm', username, relyingParty.rpID),
+      response: res, expectedChallenge: (challenge) => relyingParty.challenges.take(challenge, username === null ? 'signin' : 'confirm', username, relyingParty.rpID),
       expectedOrigin: relyingParty.origin, expectedRPID: relyingParty.rpID,
       credential: { id: row.id, publicKey: new Uint8Array(row.public_key), counter: Number(row.counter), transports: row.transports || undefined },
       requireUserVerification: true,
@@ -146,11 +177,11 @@ export function signInWithPasskey(store: Store, response: unknown, relyingParty:
 }
 
 // Checks that the signed-in user confirmed with one of their own passkeys (step-up; see authenticationOptions).
-export async function confirmWithPasskey(store: Store, username: unknown, response: unknown, relyingParty: RelyingParty): Promise<void> {
+export async function confirmWithPasskey(store: Store, username: string, response: unknown, relyingParty: RelyingParty): Promise<void> {
   await checkPasskey(store, response, relyingParty, userKey(username), (why) => httpError(`The passkey confirmation failed: ${why}`, 401));
 }
 
-export async function renamePasskey(store: Store, username: unknown, id: unknown, label: unknown): Promise<void> {
+export async function renamePasskey(store: Store, username: string, id: string, label: unknown): Promise<void> {
   const title = String(label ?? '').trim();
   if (!title || title.length > NAME_MAX) throw httpError(`Give the passkey a name of 1-${NAME_MAX} characters`);
   if (!await run(store, 'UPDATE passkeys SET name = $3 WHERE username = $1 AND id = $2', [userKey(username), String(id), title])) {
@@ -158,8 +189,8 @@ export async function renamePasskey(store: Store, username: unknown, id: unknown
   }
 }
 
-export async function removePasskey(store: Store, username: unknown, id: unknown): Promise<string> {
-  const r = await one<{ name: string }>(store, 'DELETE FROM passkeys WHERE username = $1 AND id = $2 RETURNING name', [userKey(username), String(id)]);
-  if (!r) throw httpError('Passkey not found', 404);
-  return r.name;
+export async function removePasskey(store: Store, username: string, id: string): Promise<string> {
+  const row = await one<{ name: string }>(store, 'DELETE FROM passkeys WHERE username = $1 AND id = $2 RETURNING name', [userKey(username), String(id)]);
+  if (!row) throw httpError('Passkey not found', 404);
+  return row.name;
 }

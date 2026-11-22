@@ -1,19 +1,28 @@
 // Gates a user can open: adding, leaving, DKS login, gate users and API keys.
 import * as dk from '../../index.ts';
+import type { Modules } from '../modules.ts';
 import { G, type Route, route, webOnly } from '../routing.ts';
-import type { Gate } from '../context.ts';
-import type { ContextModule } from '../context.ts';
-import type { EditingModule } from '../editing.ts';
-import type { JobsModule } from '../jobs.ts';
-import type { MailModule } from '../mail.ts';
+import type { Gate, Reply } from '../context.ts';
 import { logger } from '../../src/logging.ts';
 
-export function gatesRoutes(deps: ContextModule & EditingModule & JobsModule & MailModule): Route[] {
-  const { accessEmail, APP, asGate, busy, client, accountBusy, addingJobOf, currentJob, gateConfigFrom, gateFor, gateInfo, gateName, mailer, NO_EMAIL, objectField, roleText, sendInvite, sendVerification, startLoginCheck, startPull, store } = deps;
+export function gatesRoutes(modules: Modules): Route[] {
+  const { APP, asGate, client, gateFor, gateInfo, mailer, NO_EMAIL, objectField, store } = modules.context;
+  const { accessEmail, gateName, sendInvite, sendVerification } = modules.mail;
+  const { gateConfigFrom } = modules.editing;
+  const { accountBusy, addingJobOf, busy, currentJob, roleText, startLoginCheck, startPull } = modules.jobs;
+  // Asks DKS Cloud whether a DKS login works: null when it does, else the reply to send (502: DKS Cloud failed).
+  async function dksLoginRefusal(dksUser: string, dksPassword: string): Promise<Reply | null> {
+    let reply;
+    try { reply = String(await client().checkLogin(dksUser, dksPassword)).trim(); } catch (err) {
+      return [502, { error: `DKS Cloud: ${(err as Error).message}` }];
+    }
+    return reply === 'OK' ? null : [400, { error: `DKS Cloud refused that DKS user and password: ${reply || 'no reply'}` }];
+  }
+
   return [
     // The gate the web UI has open (restored on page reload). API clients can ignore it.
     route('PUT', '/api/session/gate', 'user', async ({ session, body }) => {
-      const gate = await gateFor(session, body.phoneNumber);
+      const gate = await gateFor(session, dk.checkPhone(body.phoneNumber));
       if (session.gate !== gate.phoneNumber) logger('session').info`${session.user} opened gate ${gate.phoneNumber}`;
       await dk.setSessionGate(store, session.tokenHash, gate.phoneNumber);
       return [200, { gate: await gateInfo(gate) }];
@@ -37,20 +46,23 @@ export function gatesRoutes(deps: ContextModule & EditingModule & JobsModule & M
       if (await dk.gateExists(store, phoneNumber)) return [409, { error: dk.ALREADY_ADDED }];
       const adding = asGate({ phoneNumber, masterCode, dksUser, dksPassword, addedBy: session.user, addedAt: new Date().toISOString() }, 'admin', session.user);
       if (accountBusy(adding)) return [409, { error: 'A gate connection is running with this DKS login. Try again when it finishes.' }];
-      let reply;
-      try { reply = String(await client().checkLogin(dksUser, dksPassword)).trim(); } catch (err) {
-        return [502, { error: `DKS Cloud: ${(err as Error).message}` }];
-      }
-      if (reply !== 'OK') return [400, { error: `DKS Cloud refused that DKS user and password: ${reply || 'no reply'}` }];
-      if (accountBusy(adding) || currentJob(phoneNumber).state === 'running' || await dk.gateExists(store, phoneNumber)) return [409, { error: 'Try again in a moment.' }];
-      await dk.setPrefs(store, phoneNumber, { gateConfig });
+      const refused = await dksLoginRefusal(dksUser, dksPassword);
+      if (refused) return refused;
+      if (await dk.gateExists(store, phoneNumber)) return [409, { error: dk.ALREADY_ADDED }];
+      // Checked and claimed with nothing in between, so two adds at once can't both start.
+      if (accountBusy(adding) || currentJob(phoneNumber).state === 'running') return [409, { error: 'Try again in a moment.' }];
       logger('gates').info`${session.user} is adding gate ${phoneNumber}`;
-      startPull(adding, 'residents', { adding: true });
+      startPull(adding, 'residents', { adding: true }, { prepare: () => dk.setPrefs(store, phoneNumber, { gateConfig }) });
       return [202, { ok: true }];
     }),
 
     // The connection that checks the gate the user is adding (or the last one, once finished): { job } or { job: null }.
-    route('GET', '/api/gate-add', 'user', ({ session }) => [200, { job: addingJobOf(session.user) }]),
+    route('GET', '/api/gate-add', 'user', ({ session }) => {
+      const found = addingJobOf(session.user);
+      if (!found) return [200, { job: null }];
+      const { account, ...job } = found; // account: the DKS login
+      return [200, { job }];
+    }),
 
     route('GET', G, 'gate', async ({ gate }) => [200, await gateInfo(gate)]),
 
@@ -74,11 +86,8 @@ export function gatesRoutes(deps: ContextModule & EditingModule & JobsModule & M
       if (!dksUser || !dksPassword) return [400, { error: 'The gate\'s DKS user and password are required' }];
       const loginChanged = dksUser !== gate.dksUser || dksPassword !== gate.dksPassword;
       if (loginChanged) {
-        let reply;
-        try { reply = String(await client().checkLogin(dksUser, dksPassword)).trim(); } catch (err) {
-          return [502, { error: `DKS Cloud: ${(err as Error).message}` }];
-        }
-        if (reply !== 'OK') return [400, { error: `DKS Cloud refused that DKS user and password: ${reply || 'no reply'}` }];
+        const refused = await dksLoginRefusal(dksUser, dksPassword);
+        if (refused) return refused;
       }
       if (masterCode === gate.masterCode) {
         if (!loginChanged) return [200, { dksUser, dksPasswordSet: true, changed: false }];
@@ -98,7 +107,7 @@ export function gatesRoutes(deps: ContextModule & EditingModule & JobsModule & M
     webOnly(route('GET', `${G}/users`, 'gate-admin', async ({ gate }) => [200, { users: await dk.gateUsers(store, gate.phoneNumber) }])),
     webOnly(route('POST', `${G}/users`, 'gate-admin', async ({ session, gate, body }) => {
       const role = dk.checkRole(body.role || 'readonly');
-      if (await dk.getUser(store, body.username)) {
+      if (await dk.getUser(store, String(body.username ?? ''))) {
         return [409, { error: `The username "${dk.userKey(body.username)}" already exists. Share this gate with them instead.`, exists: true }];
       }
       // With an email (and email set up) and no password: an invitation link; otherwise a temporary password (and a
@@ -127,9 +136,9 @@ export function gatesRoutes(deps: ContextModule & EditingModule & JobsModule & M
     })),
     webOnly(route('POST', `${G}/share`, 'gate-admin', async ({ session, gate, body }) => {
       const role = dk.checkRole(body.role || 'readonly');
-      await dk.grantAccess(store, gate.phoneNumber, body.username, role, session.user);
-      const gn = await gateName(gate.phoneNumber);
-      await accessEmail(dk.userKey(body.username), (user) => dk.messages.accessGranted(APP, user.username, session.user, gn, roleText(role)));
+      await dk.grantAccess(store, gate.phoneNumber, String(body.username ?? ''), role, session.user);
+      const name = await gateName(gate.phoneNumber);
+      await accessEmail(dk.userKey(body.username), (user) => dk.messages.accessGranted(APP, user.username, session.user, name, roleText(role)));
       await dk.addEvent(store, gate.phoneNumber, { user: session.user, action: 'access', summary: `Shared the gate with ${dk.userKey(body.username)} (${roleText(role)})` });
       logger('gates').info`${session.user} shared gate ${gate.phoneNumber} with ${dk.userKey(body.username)} (${role})`;
       return [200, { users: await dk.gateUsers(store, gate.phoneNumber) }];
@@ -137,15 +146,15 @@ export function gatesRoutes(deps: ContextModule & EditingModule & JobsModule & M
     webOnly(route('PUT', `${G}/users/:username`, 'gate-admin', async ({ session, gate, params, body }) => {
       const role = dk.checkRole(body.role);
       await dk.setRole(store, gate.phoneNumber, params.username, role);
-      const gn = await gateName(gate.phoneNumber);
-      if (dk.userKey(params.username) !== session.user) await accessEmail(dk.userKey(params.username), (user) => dk.messages.roleChanged(APP, user.username, session.user, gn, roleText(role)));
+      const name = await gateName(gate.phoneNumber);
+      if (dk.userKey(params.username) !== session.user) await accessEmail(dk.userKey(params.username), (user) => dk.messages.roleChanged(APP, user.username, session.user, name, roleText(role)));
       await dk.addEvent(store, gate.phoneNumber, { user: session.user, action: 'access', summary: `Changed ${dk.userKey(params.username)} to ${roleText(role)}` });
       return [200, { users: await dk.gateUsers(store, gate.phoneNumber) }];
     })),
     webOnly(route('DELETE', `${G}/users/:username`, 'gate-admin', async ({ session, gate, params }) => {
       await dk.revokeAccess(store, gate.phoneNumber, params.username);
-      const gn = await gateName(gate.phoneNumber);
-      if (dk.userKey(params.username) !== session.user) await accessEmail(dk.userKey(params.username), (user) => dk.messages.accessRemoved(user.username, session.user, gn));
+      const name = await gateName(gate.phoneNumber);
+      if (dk.userKey(params.username) !== session.user) await accessEmail(dk.userKey(params.username), (user) => dk.messages.accessRemoved(user.username, session.user, name));
       await dk.addEvent(store, gate.phoneNumber, { user: session.user, action: 'access', summary: `Removed ${dk.userKey(params.username)} from the gate` });
       logger('gates').info`${session.user} removed ${dk.userKey(params.username)} from gate ${gate.phoneNumber}`;
       return [200, { users: await dk.gateUsers(store, gate.phoneNumber) }];

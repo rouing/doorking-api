@@ -1,16 +1,16 @@
 // Gate connections (pull, send, login check) and the pulled data views.
 import * as dk from '../../index.ts';
+import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
-import type { EditingModule } from '../editing.ts';
-import type { JobsModule } from '../jobs.ts';
 
-export function connectionsRoutes(deps: EditingModule & JobsModule): Route[] {
-  const { accountBusy, busy, currentJob, gateData, prepareGateSend, startPull, startSend, TX_PAGE, TX_PAGE_MAX } = deps;
+export function connectionsRoutes(modules: Modules): Route[] {
+  const { gateData, TX_PAGE, TX_PAGE_MAX } = modules.editing;
+  const { accountBusy, busy, currentJob, prepareGateSend, startPull, startSend } = modules.jobs;
   return [
     // The gate's current or last connection (one at a time per DKS account). While another gate on the same DKS login
     // has one running, an idle gate shows busyElsewhere.
     route('GET', `${G}/job`, 'gate', ({ gate }) => {
-      const job = currentJob(gate.phoneNumber);
+      const { account, ...job } = currentJob(gate.phoneNumber); // account: the DKS login, admin-only
       return [200, job.state !== 'idle' && !job.adding ? job : { state: 'idle', log: [], busyElsewhere: accountBusy(gate) }];
     }),
 
@@ -34,9 +34,9 @@ export function connectionsRoutes(deps: EditingModule & JobsModule): Route[] {
     // Transactions and settings views from the pulled files.
     // ?limit= (default TX_PAGE, at most TX_PAGE_MAX) newest transactions, ?before= the previous reply's transactions.next.
     route('GET', `${G}/data`, 'gate', async ({ gate, req }) => {
-      const q = new URL(req.url!, 'http://localhost').searchParams;
-      const limit = q.has('limit') ? Number(q.get('limit')) : TX_PAGE;
-      const before = q.has('before') ? Number(q.get('before')) : undefined;
+      const query = new URL(req.url!, 'http://localhost').searchParams;
+      const limit = query.has('limit') ? Number(query.get('limit')) : TX_PAGE;
+      const before = query.has('before') ? Number(query.get('before')) : undefined;
       if (!Number.isInteger(limit) || limit < 1 || limit > TX_PAGE_MAX || (before !== undefined && !(Number.isInteger(before) && before >= 1 && before <= 2147483647))) {
         return [400, { error: `limit must be 1-${TX_PAGE_MAX} and before a positive whole number` }];
       }

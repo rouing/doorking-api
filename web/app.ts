@@ -1,7 +1,6 @@
 // The server as one object: built from its dependencies (no I/O in the constructor), started and stopped explicitly,
 // so tests can run a real server on a test database and a spare port.
 import http from 'node:http';
-import crypto from 'node:crypto';
 import * as dk from '../index.ts';
 import type { Services } from './context.ts';
 import { runStartupMigrations } from './migrations.ts';
@@ -42,33 +41,40 @@ export class Application {
     this.server = http.createServer(createRequestHandler(modules, routes, () => this.stopping));
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject);
-      this.server!.listen(modules.PORT, modules.HOST, () => resolve());
+      this.server!.listen(modules.context.PORT, modules.context.HOST, () => resolve());
     });
     this.announce(modules);
     this.startBackgroundWork(modules);
   }
 
   // Refuses new requests, lets schedules start nothing new, waits up to STOP_WAIT_MS for the running gate connection
-  // (and the schedule it belongs to), stops snapshot runs and camera bridges, and closes the database.
+  // (and the schedule it belongs to), stops snapshot runs and camera bridges, waits (within the same limit) for an email
+  // being sent, and closes the database.
   async stop(reason = 'stop'): Promise<void> {
-    const modules = this.modules;
-    if (!modules || this.stopping) return;
+    if (!this.modules || this.stopping) return;
+    const { context, jobs, mail, snapshots } = this.modules;
     this.stopping = true;
-    const running = modules.runningJobs().map((job) => `${job.what} of gate ${job.phoneNumber}`).join(', ');
+    const running = jobs.runningJobs().map((job) => `${job.what} of gate ${job.phoneNumber}`).join(', ');
     logger('server').info`${reason}: shutting down${running ? `, waiting for the running ${running}` : ''}`;
     for (const timer of this.timers) clearInterval(timer);
-    modules.stopNewJobs();
+    jobs.stopNewJobs();
     this.server?.close();
     this.server?.closeIdleConnections();
-    modules.stopAllSnapshots();
+    snapshots.stopAllSnapshots();
     const until = Date.now() + STOP_WAIT_MS;
-    while (!modules.jobsIdle() && Date.now() < until) await new Promise((r) => { setTimeout(r, 500); });
-    if (!modules.jobsIdle()) {
-      const still = modules.runningJobs().map((job) => `${job.what} of gate ${job.phoneNumber}`).join(', ');
+    while (!jobs.jobsIdle() && Date.now() < until) await new Promise((resolve) => { setTimeout(resolve, 500); });
+    if (!jobs.jobsIdle()) {
+      const still = jobs.runningJobs().map((job) => `${job.what} of gate ${job.phoneNumber}`).join(', ');
       logger('server').warn`Stopped without waiting longer for the ${still || 'scheduled transfer'}`;
     }
-    modules.cameras.stopAll();
-    await dk.closeStore(this.store!).catch(modules.logged('server', 'Database not closed'));
+    context.cameras.stopAll();
+    await Promise.race([mail.mailIdle(), new Promise((resolve) => { setTimeout(resolve, Math.max(0, until - Date.now())).unref(); })]);
+    await dk.closeStore(this.store!).catch(context.logged('server', 'Database not closed'));
+  }
+
+  // The database the server uses (once started), for tests and tools that work alongside it.
+  db(): dk.Store {
+    return this.store!;
   }
 
   // The port the server listens on (useful when the config asked for port 0).
@@ -79,19 +85,22 @@ export class Application {
   // While no account exists, creating the first one needs a code printed only to the console (journalctl), so a
   // stranger reaching a fresh public install can't claim it first.
   private async offerFirstSetup(modules: Modules): Promise<void> {
-    if (await dk.userCount(modules.store) !== 0) return;
-    modules.setup.code = crypto.randomBytes(5).toString('hex');
-    console.log(`No account exists yet. First-account setup code: ${modules.setup.code} (enter it on the page to create the first account, or run: node cli.ts create-admin <username>)`);
+    if (await dk.userCount(modules.context.store) !== 0) return;
+    console.log(`No account exists yet. First-account setup code: ${modules.auth.newSetupCode()} (enter it on the page to create the first account, or run: node cli.ts create-admin <username>)`);
   }
 
   private announce(modules: Modules): void {
-    const { config, PUBLIC_HOST, ROOT } = modules;
+    const { config, PUBLIC_HOST, ROOT } = modules.context;
     console.log(`DoorKing web UI: http://localhost:${this.port()}${PUBLIC_HOST ? ` and https://${PUBLIC_HOST}` : ''}  (config ${config.file || 'none, defaults'}, media in ${ROOT})`);
     logger('server').info`Started on port ${this.port()}: ${JSON.stringify(dk.maskedConfig(config))}`;
   }
 
   private startBackgroundWork(modules: Modules): void {
-    const { checkSchedules, logged, SCHEDULE_TICK_MS, sendEmails, SNAPSHOT_TIDY_MS, store, sweepSessions, tidyAllSnapshots } = modules;
+    const { logged, store } = modules.context;
+    const { checkSchedules, SCHEDULE_TICK_MS } = modules.jobs;
+    const { sendEmails } = modules.mail;
+    const { SNAPSHOT_TIDY_MS, tidyAllSnapshots } = modules.snapshots;
+    const { sweepSessions } = modules.auth;
     const tidy = () => { tidyAllSnapshots().catch(logged('camera', 'Snapshot clean-up failed')); };
     checkSchedules();
     sendEmails();

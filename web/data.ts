@@ -1,6 +1,7 @@
-import { decodeRcvEvent, residentRows, type RcvRecord, type ResidentsData } from '../src/board-files.ts';
-import { DEFAULT_DEVICE_ASSOCIATION, deviceNameFor } from '../src/prefs.ts';
+import { decodeRcvEvent, hasValidDate, residentRows, type RcvRecord, type ResidentsData } from '../src/board-files.ts';
+import { DEFAULT_DEVICE_ASSOCIATION, deviceNameFor } from '../src/shared.ts';
 import { footageApplies, minuteKey } from '../src/camera-log.ts';
+import type { TxRow } from '../src/camera-settings.ts';
 import type { DeviceRange, TransactionRow } from '../src/types.ts';
 import type { WorkingState } from '../src/gate-state.ts';
 
@@ -15,7 +16,7 @@ export function residents(files: GateFiles): (ResidentsData & { updated: Date | 
   const cards = files['cards.bin'] || null;
   if (!names && !phones && !cards) return null;
   const { rows, unassignedCards } = residentRows({ names: names && names.data, phone: phones && phones.data, cards: cards && cards.data });
-  const updated = [names, phones, cards].filter((f) => f !== null).map((f) => f.mtime).sort().pop();
+  const updated = [names, phones, cards].filter((file) => file !== null).map((file) => file.mtime).sort((a, b) => a.getTime() - b.getTime()).pop();
   return { updated, rows, unassignedCards };
 }
 
@@ -38,31 +39,44 @@ function transactions(pulledAt: Date | null, values: WorkingState | null,
     if (card.directoryCode) by.card.set(card.cardNumber, by.directory.get(card.directoryCode) || { name: '', directoryCode: card.directoryCode });
   }
   const rows = (history || [])
-    .filter((record) => record.month >= 1 && record.month <= 12 && record.day >= 1 && record.day <= 31)
+    .filter(hasValidDate)
     .reverse()
     .map((record) => {
-      const ev = decodeRcvEvent(record);
-      const who = ev.lookup ? by[ev.lookup].get(ev.number) : null;
-      const hour24 = (record.hour % 12) + (record.pm ? 12 : 0);
-      const ts = new Date(record.year as number, record.month - 1, record.day, hour24, record.minute).getTime();
+      const event = decodeRcvEvent(record);
+      const who = event.lookup ? by[event.lookup].get(event.number) : null;
+      const ts = recordTime(record);
       return {
         ts,
         minute: minuteKey(ts), // snapshot folder (see cameras.ts)
         date: `${record.year}-${String(record.month).padStart(2, '0')}-${String(record.day).padStart(2, '0')}`,
         time: `${record.hour}:${String(record.minute).padStart(2, '0')} ${record.pm ? 'PM' : 'AM'}`,
-        eventType: ev.eventType === 'Cards' ? deviceNameFor(devices, ev.number as string) : ev.eventType,
-        number: ev.number,
-        lookup: ev.lookup,
-        name: who ? who.name : ev.lookup === 'card' && values ? 'Unknown' : ev.name,
-        access: ev.access,
-        relay: ev.relay,
-        apb: ev.apb,
+        eventType: event.eventType === 'Cards' ? deviceNameFor(devices, event.number as string) : event.eventType,
+        number: event.number,
+        lookup: event.lookup,
+        name: who ? who.name : event.lookup === 'card' && values ? 'Unknown' : event.name,
+        access: event.access,
+        relay: event.relay,
+        apb: event.apb,
         directoryCode: who ? who.directoryCode : '',
-        camera: footageApplies(ev),
+        camera: footageApplies(event),
         raw: record.raw,
       };
     });
   return { updated: pulledAt, rows };
+}
+
+// A transaction record's time (ms, the server's time zone).
+function recordTime(record: RcvRecord): number {
+  const hour24 = (record.hour % 12) + (record.pm ? 12 : 0);
+  return new Date(record.year as number, record.month - 1, record.day, hour24, record.minute).getTime();
+}
+
+// What the camera code needs of each saved transaction (history: oldest first): no names, no Device Association.
+export function cameraRows(history: RcvRecord[]): TxRow[] {
+  return history.filter(hasValidDate).map((record) => {
+    const { eventType, access } = decodeRcvEvent(record);
+    return { ts: recordTime(record), eventType, access };
+  });
 }
 
 export { residentRows };

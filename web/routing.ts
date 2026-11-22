@@ -17,12 +17,13 @@ type Handler<S extends Scope> = (ctx: Ctx<S>) => Reply | undefined | void | Prom
 // webOnly: refused for API keys (gate login, users, API keys, deleting the gate's data, leaving).
 // stepUp: set from STEP_UP (sessions need a recent passkey confirmation).
 export interface Route { method: string; pattern: string; re: RegExp; keys: string[]; scope: Scope; handler: Handler<Scope>; webOnly?: boolean; stepUp?: boolean }
-export const webOnly = (r: Route): Route => ({ ...r, webOnly: true });
+export const webOnly = (route: Route): Route => ({ ...route, webOnly: true });
 
 export function route<S extends Scope>(method: string, pattern: string, scope: S, handler: Handler<S>): Route {
   const keys: string[] = [];
-  const re = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, k: string) => { keys.push(k); return '([^/]+)'; })}$`);
-  return { method, pattern, re, keys, scope, handler: handler as unknown as Handler<Scope> };
+  const re = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, key: string) => { keys.push(key); return '([^/]+)'; })}$`);
+  // The request handler checks the scope first (createRequestHandler), so the context has what scope S promises.
+  return { method, pattern, re, keys, scope, handler: (ctx) => handler(ctx as Ctx<S>) };
 }
 
 export const G = '/api/gates/:phone';

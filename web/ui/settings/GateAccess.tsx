@@ -8,19 +8,24 @@ import { Choice, Field } from '../panes/fields.tsx';
 import { useConfirm } from '../Confirm.tsx';
 import { HelpTip } from '../HelpTip.tsx';
 
+interface GateLoginCardProps {
+  gapi: GateApi;
+  onJobStarted: () => void;
+}
+
 // The gate's DKS login and master code (admins). A new DKS login is checked with DKS Cloud before it is saved; a new
 // master code is checked by pulling residents with it and saved only when that works. Neither is ever shown.
-export function GateLoginCard({ gapi, onJobStarted }: { gapi: GateApi; onJobStarted: () => void }) {
+export function GateLoginCard({ gapi, onJobStarted }: GateLoginCardProps) {
   const [login, setLogin] = useState<GateLogin | null>(null);
-  const [f, setF] = useState({ dksUser: '', dksPassword: '', masterCode: '' });
+  const [form, setForm] = useState({ dksUser: '', dksPassword: '', masterCode: '' });
   const [info, setInfo] = useState('');
-  const load = () => gapi<GateLogin>('GET', '/login').then((l) => { setLogin(l); setF({ dksUser: l.dksUser, dksPassword: '', masterCode: '' }); },
+  const load = () => gapi<GateLogin>('GET', '/login').then((login) => { setLogin(login); setForm({ dksUser: login.dksUser, dksPassword: '', masterCode: '' }); },
     (err) => setInfo(errorText(err)));
   useEffect(() => { load(); }, [gapi]);
   const save = async () => {
     setInfo('Checking with DKS Cloud…');
     try {
-      const reply = await gapi<{ changed?: boolean; checking?: boolean }>('PUT', '/login', f);
+      const reply = await gapi<{ changed?: boolean; checking?: boolean }>('PUT', '/login', form);
       setInfo(reply.checking ? 'Checking the new master code with a residents pull. It is saved when the pull succeeds (see Gate connection).'
         : reply.changed ? 'DKS login saved.' : 'Nothing changed.');
       if (reply.checking) onJobStarted();
@@ -39,27 +44,39 @@ export function GateLoginCard({ gapi, onJobStarted }: { gapi: GateApi; onJobStar
           <Callout.Root color="amber"><Callout.Text>No DKS login saved yet: pulls and sends fail until you set one.</Callout.Text></Callout.Root>
         )}
         <Grid columns={{ initial: '1', sm: '3' }} gap="3">
-          <Field label="DKS user"><TextField.Root value={f.dksUser} autoComplete="off" onChange={(event) => setF({ ...f, dksUser: event.target.value })} /></Field>
-          <Field label="DKS password"><TextField.Root type="password" value={f.dksPassword} autoComplete="new-password"
-            placeholder={login && login.dksPasswordSet ? 'saved (leave empty to keep)' : ''} onChange={(event) => setF({ ...f, dksPassword: event.target.value })} /></Field>
-          <Field label="Master code" help="gateMasterCode"><TextField.Root type="password" value={f.masterCode} inputMode="numeric" maxLength={4}
-            autoComplete="off" placeholder="saved (leave empty to keep)" onChange={(event) => setF({ ...f, masterCode: event.target.value })} /></Field>
+          <Field label="DKS user"><TextField.Root value={form.dksUser} autoComplete="off" onChange={(event) => setForm({ ...form, dksUser: event.target.value })} /></Field>
+          <Field label="DKS password"><TextField.Root type="password" value={form.dksPassword} autoComplete="new-password"
+            placeholder={login && login.dksPasswordSet ? 'saved (leave empty to keep)' : ''} onChange={(event) => setForm({ ...form, dksPassword: event.target.value })} /></Field>
+          <Field label="Master code" help="gateMasterCode"><TextField.Root type="password" value={form.masterCode} inputMode="numeric" maxLength={4}
+            autoComplete="off" placeholder="saved (leave empty to keep)" onChange={(event) => setForm({ ...form, masterCode: event.target.value })} /></Field>
         </Grid>
-        <Flex gap="3" align="center"><Button onClick={save}>Save gate login</Button><Text size="2" color="gray">{info}</Text></Flex>
+        <Flex gap="3" align="center" wrap="wrap"><Button onClick={save}>Save gate login</Button><Text size="2" color="gray">{info}</Text></Flex>
       </Flex>
     </Card>
   );
 }
 
-function RoleSelect({ value, onChange }: { value: GateRole; onChange: (role: GateRole) => void }) {
+interface RoleSelectProps {
+  value: GateRole;
+  onChange: (role: GateRole) => void;
+}
+
+function RoleSelect({ value, onChange }: RoleSelectProps) {
   return (
-    <Choice value={value} onChange={(v) => onChange(v as GateRole)} options={[['readonly', 'Read only'], ['admin', 'Admin']]} />
+    <Choice value={value} onChange={(value) => onChange(value as GateRole)} options={[['readonly', 'Read only'], ['admin', 'Admin']]} />
   );
+}
+
+interface GateUsersCardProps {
+  gapi: GateApi;
+  me: string;
+  emailEnabled: boolean;
+  onSessionChange: () => void;
 }
 
 // Who may use this gate (admins): roles, removing access, creating an account for the gate, and sharing it with an
 // existing account. A gate always keeps at least one admin; nobody can see or set another user's password.
-export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: { gapi: GateApi; me: string; emailEnabled: boolean; onSessionChange: () => void }) {
+export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: GateUsersCardProps) {
   const [users, setUsers] = useState<GateUser[]>([]);
   const [info, setInfo] = useState('');
   const [create, setCreate] = useState({ username: '', password: '', email: '', role: 'readonly' as GateRole });
@@ -68,19 +85,19 @@ export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: { gap
   const [share, setShare] = useState({ username: '', role: 'readonly' as GateRole });
   const [shareInfo, setShareInfo] = useState('');
   const [dialog, confirm] = useConfirm();
-  const load = () => gapi<{ users: GateUser[] }>('GET', '/users').then((r) => setUsers(r.users), (err) => setInfo(errorText(err)));
+  const load = () => gapi<{ users: GateUser[] }>('GET', '/users').then((reply) => setUsers(reply.users), (err) => setInfo(errorText(err)));
   useEffect(() => { load(); }, [gapi]);
-  const act = async (fn: () => Promise<{ users: GateUser[] }>, set: (t: string) => void, done: string) => {
+  const run = async (fn: () => Promise<{ users: GateUser[] }>, set: (text: string) => void, done: string) => {
     try { setUsers((await fn()).users); set(done); return true; } catch (err) { set(errorText(err)); return false; }
   };
   const changeRole = async (user: GateUser, role: GateRole) => {
-    await act(() => gapi('PUT', `/users/${encodeURIComponent(user.username)}`, { role }), setInfo, `${user.username} is now ${role === 'admin' ? 'an admin' : 'read only'}.`);
+    await run(() => gapi('PUT', `/users/${encodeURIComponent(user.username)}`, { role }), setInfo, `${user.username} is now ${role === 'admin' ? 'an admin' : 'read only'}.`);
     if (user.username === me) onSessionChange();
   };
   const remove = async (user: GateUser) => {
     if (!await confirm({ title: `Remove ${user.username} from this gate?`, action: 'Remove', color: 'red',
       body: 'They will no longer see this gate. Their account stays (it may have other gates).' })) return;
-    await act(() => gapi('DELETE', `/users/${encodeURIComponent(user.username)}`), setInfo, `${user.username} removed.`);
+    await run(() => gapi('DELETE', `/users/${encodeURIComponent(user.username)}`), setInfo, `${user.username} removed.`);
     if (user.username === me) onSessionChange();
   };
   const createUser = async () => {
@@ -98,10 +115,10 @@ export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: { gap
       if (err instanceof ApiError && Array.isArray(err.body.users)) setUsers(err.body.users as GateUser[]); // created, but the email failed
     }
   };
-  const resendInvite = (user: GateUser) => act(() => gapi('POST', `/users/${encodeURIComponent(user.username)}/invite`, {}), setInfo,
+  const resendInvite = (user: GateUser) => run(() => gapi('POST', `/users/${encodeURIComponent(user.username)}/invite`, {}), setInfo,
     `Invitation sent again to ${user.pendingEmail}.`);
-  const shareWith = (username: string, role: GateRole, set: (t: string) => void) =>
-    act(() => gapi('POST', '/share', { username, role }), set, `Shared with ${username.trim().toLowerCase()}.`);
+  const shareWith = (username: string, role: GateRole, set: (text: string) => void) =>
+    run(() => gapi('POST', '/share', { username, role }), set, `Shared with ${username.trim().toLowerCase()}.`);
   return (
     <Card>
       {dialog}
@@ -113,7 +130,7 @@ export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: { gap
         </Text>
         <Table.Root size="1">
           <Table.Header>
-            <Table.Row>{['User', 'Email', 'Phone', 'Role', 'Added by', 'Last sign-in', ''].map((h, i) => <Table.ColumnHeaderCell key={i}>{h}</Table.ColumnHeaderCell>)}</Table.Row>
+            <Table.Row>{['User', 'Email', 'Phone', 'Role', 'Added by', 'Last sign-in', ''].map((header, i) => <Table.ColumnHeaderCell key={i}>{header}</Table.ColumnHeaderCell>)}</Table.Row>
           </Table.Header>
           <Table.Body>
             {users.map((user) => (
@@ -121,7 +138,7 @@ export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: { gap
                 <Table.Cell>{user.username}{user.username === me && <Badge ml="2" color="gray">you</Badge>}</Table.Cell>
                 <Table.Cell>
                   {user.email || (user.pendingEmail ? <Text color="gray">{user.pendingEmail} (unconfirmed)</Text> : '')}
-                  {user.invited && <Flex gap="2" align="center" mt="1"><Badge color="amber">invited</Badge>
+                  {user.invited && <Flex gap="2" align="center" wrap="wrap" mt="1"><Badge color="amber">invited</Badge>
                     {emailEnabled && <Button size="1" variant="ghost" onClick={() => resendInvite(user)}>Send again</Button>}</Flex>}
                 </Table.Cell>
                 <Table.Cell>{user.phone ? <a href={`tel:${user.phone}`}>{fmtIntlPhone(user.phone)}</a> : ''}</Table.Cell>
@@ -164,15 +181,20 @@ export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: { gap
   );
 }
 
+interface ApiKeysCardProps {
+  phone: string;
+  gapi: GateApi;
+}
+
 // API keys for scripts and other systems (admins). A key belongs to this gate, not to a person; it is shown once when
 // created and works only on this gate's routes, with its own role. Revoking stops it at once.
-export function ApiKeysCard({ phone, gapi }: { phone: string; gapi: GateApi }) {
+export function ApiKeysCard({ phone, gapi }: ApiKeysCardProps) {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
   const [form, setForm] = useState({ name: '', role: 'readonly' as GateRole, expiresDays: '0' });
   const [created, setCreated] = useState<{ key: string; name: string } | null>(null);
   const [info, setInfo] = useState('');
   const [dialog, confirm] = useConfirm();
-  const load = () => gapi<{ apiKeys: ApiKeyInfo[] }>('GET', '/api-keys').then((r) => setKeys(r.apiKeys), (err) => setInfo(errorText(err)));
+  const load = () => gapi<{ apiKeys: ApiKeyInfo[] }>('GET', '/api-keys').then((reply) => setKeys(reply.apiKeys), (err) => setInfo(errorText(err)));
   useEffect(() => { load(); }, [gapi]);
   const create = async () => {
     try {
@@ -183,10 +205,10 @@ export function ApiKeysCard({ phone, gapi }: { phone: string; gapi: GateApi }) {
       await load();
     } catch (err) { setInfo(errorText(err)); }
   };
-  const revoke = async (k: ApiKeyInfo) => {
-    if (!await confirm({ title: `Revoke the API key "${k.name}"?`, action: 'Revoke', color: 'red',
+  const revoke = async (apiKey: ApiKeyInfo) => {
+    if (!await confirm({ title: `Revoke the API key "${apiKey.name}"?`, action: 'Revoke', color: 'red',
       body: 'Anything using it stops working at once. This can\'t be undone; create a new key if needed.' })) return;
-    try { setKeys((await gapi<{ apiKeys: ApiKeyInfo[] }>('DELETE', `/api-keys/${encodeURIComponent(k.id)}`)).apiKeys); setInfo(`Revoked "${k.name}".`); } catch (err) { setInfo(errorText(err)); }
+    try { setKeys((await gapi<{ apiKeys: ApiKeyInfo[] }>('DELETE', `/api-keys/${encodeURIComponent(apiKey.id)}`)).apiKeys); setInfo(`Revoked "${apiKey.name}".`); } catch (err) { setInfo(errorText(err)); }
   };
   const copy = async () => { try { await navigator.clipboard.writeText(created!.key); setInfo('Copied.'); } catch { setInfo('Copy failed: select the key and copy it.'); } };
   return (
@@ -213,19 +235,19 @@ export function ApiKeysCard({ phone, gapi }: { phone: string; gapi: GateApi }) {
         {keys.length > 0 && (
           <Table.Root size="1">
             <Table.Header>
-              <Table.Row>{['Name', 'Role', 'Created', 'Expires', 'Last used', ''].map((h, i) => <Table.ColumnHeaderCell key={i}>{h}</Table.ColumnHeaderCell>)}</Table.Row>
+              <Table.Row>{['Name', 'Role', 'Created', 'Expires', 'Last used', ''].map((header, i) => <Table.ColumnHeaderCell key={i}>{header}</Table.ColumnHeaderCell>)}</Table.Row>
             </Table.Header>
             <Table.Body>
-              {keys.map((k) => {
-                const expired = Boolean(k.expiresAt && new Date(k.expiresAt).getTime() <= Date.now());
+              {keys.map((apiKey) => {
+                const expired = Boolean(apiKey.expiresAt && new Date(apiKey.expiresAt).getTime() <= Date.now());
                 return (
-                  <Table.Row key={k.id} align="center">
-                    <Table.Cell>{k.name}</Table.Cell>
-                    <Table.Cell>{k.role === 'admin' ? 'Admin' : 'Read only'}</Table.Cell>
-                    <Table.Cell>{fmtTime(k.createdAt)} by {k.createdBy}</Table.Cell>
-                    <Table.Cell>{k.expiresAt ? <Text color={expired ? 'red' : undefined}>{expired ? 'expired ' : ''}{fmtTime(k.expiresAt)}</Text> : 'never'}</Table.Cell>
-                    <Table.Cell>{k.lastUsedAt ? fmtTime(k.lastUsedAt) : 'never'}</Table.Cell>
-                    <Table.Cell><Button size="1" variant="soft" color="red" onClick={() => revoke(k)}>Revoke</Button></Table.Cell>
+                  <Table.Row key={apiKey.id} align="center">
+                    <Table.Cell>{apiKey.name}</Table.Cell>
+                    <Table.Cell>{apiKey.role === 'admin' ? 'Admin' : 'Read only'}</Table.Cell>
+                    <Table.Cell>{fmtTime(apiKey.createdAt)} by {apiKey.createdBy}</Table.Cell>
+                    <Table.Cell>{apiKey.expiresAt ? <Text color={expired ? 'red' : undefined}>{expired ? 'expired ' : ''}{fmtTime(apiKey.expiresAt)}</Text> : 'never'}</Table.Cell>
+                    <Table.Cell>{apiKey.lastUsedAt ? fmtTime(apiKey.lastUsedAt) : 'never'}</Table.Cell>
+                    <Table.Cell><Button size="1" variant="soft" color="red" onClick={() => revoke(apiKey)}>Revoke</Button></Table.Cell>
                   </Table.Row>
                 );
               })}
@@ -236,7 +258,7 @@ export function ApiKeysCard({ phone, gapi }: { phone: string; gapi: GateApi }) {
           <Field label="Name"><TextField.Root value={form.name} maxLength={40} placeholder="e.g. Home Assistant" onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
           <Field label="Role"><RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role: role })} /></Field>
           <Field label="Expires">
-            <Choice value={form.expiresDays} onChange={(v) => setForm({ ...form, expiresDays: v })}
+            <Choice value={form.expiresDays} onChange={(value) => setForm({ ...form, expiresDays: value })}
               options={[['0', 'Never'], ['30', 'In 30 days'], ['90', 'In 90 days'], ['365', 'In 1 year']]} />
           </Field>
           <Button onClick={create}>Create API key</Button>

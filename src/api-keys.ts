@@ -19,39 +19,39 @@ interface ApiKeyRow {
   expires_at: string | null; last_used_at: string | null;
 }
 
-const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest();
-const fromRow = (r: ApiKeyRow): ApiKeyInfo => ({
-  id: r.id, name: r.name, role: r.role, createdBy: r.created_by, createdAt: r.created_at, expiresAt: r.expires_at, lastUsedAt: r.last_used_at,
+const sha256 = (text: string) => crypto.createHash('sha256').update(text).digest();
+const fromRow = (row: ApiKeyRow): ApiKeyInfo => ({
+  id: row.id, name: row.name, role: row.role, createdBy: row.created_by, createdAt: row.created_at, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
 });
 
 // Creates a key for the gate. Returns the key (to show once) and its details.
-export async function createApiKey(store: Store, phone: unknown, { name, role, expiresDays = 0 }: { name: unknown; role: unknown; expiresDays?: unknown },
+export async function createApiKey(store: Store, phone: string, { name, role, expiresDays = 0 }: { name: unknown; role: unknown; expiresDays?: unknown },
   by: string): Promise<{ key: string; apiKey: ApiKeyInfo }> {
   const label = String(name ?? '').trim();
   if (!label || label.length > NAME_MAX) throw httpError(`Give the key a name of 1-${NAME_MAX} characters`);
-  const r = checkRole(role);
+  const checkedRole = checkRole(role);
   const days = Number(expiresDays || 0);
   if (!API_KEY_EXPIRY_DAYS.includes(days)) throw httpError('Expiry must be never, 30, 90 or 365 days');
   const id = crypto.randomBytes(6).toString('hex');
   const key = `dkg_${id}_${crypto.randomBytes(32).toString('base64url')}`;
   const now = new Date();
   await run(store, `INSERT INTO api_keys (id, phone, name, role, secret_hash, created_by, created_at, expires_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [id, phoneDigits(phone), label, r, sha256(key).toString('hex'), userKey(by),
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [id, phoneDigits(phone), label, checkedRole, sha256(key).toString('hex'), userKey(by),
     now.toISOString(), days ? new Date(now.getTime() + days * DAY_MS).toISOString() : null]);
   const row = (await one<ApiKeyRow>(store, 'SELECT * FROM api_keys WHERE id = $1', [id]))!;
   return { key, apiKey: fromRow(row) };
 }
 
 // The gate's keys, newest first (never the key or its hash).
-export async function listApiKeys(store: Store, phone: unknown): Promise<ApiKeyInfo[]> {
+export async function listApiKeys(store: Store, phone: string): Promise<ApiKeyInfo[]> {
   return (await all<ApiKeyRow>(store, 'SELECT * FROM api_keys WHERE phone = $1 ORDER BY created_at DESC', [phoneDigits(phone)])).map(fromRow);
 }
 
 // Revokes (deletes) one of the gate's keys; returns its name.
-export async function revokeApiKey(store: Store, phone: unknown, id: unknown): Promise<string> {
-  const r = await one<{ name: string }>(store, 'DELETE FROM api_keys WHERE phone = $1 AND id = $2 RETURNING name', [phoneDigits(phone), String(id)]);
-  if (!r) throw httpError('API key not found', 404);
-  return r.name;
+export async function revokeApiKey(store: Store, phone: string, id: string): Promise<string> {
+  const removed = await one<{ name: string }>(store, 'DELETE FROM api_keys WHERE phone = $1 AND id = $2 RETURNING name', [phoneDigits(phone), String(id)]);
+  if (!removed) throw httpError('API key not found', 404);
+  return removed.name;
 }
 
 // The key's gate, id, name and role when the key is valid and not expired, else null. last_used_at is written at

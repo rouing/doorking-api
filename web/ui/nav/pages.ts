@@ -1,0 +1,17 @@
+// The gate's pages, in sidebar order.
+export const NAV = [
+  { key: 'residents', label: 'Residents' }, { key: 'vendors', label: 'Vendors' }, { key: 'transactions', label: 'Transactions' },
+  { section: 'System' },
+  { key: 'display', label: 'Display' }, { key: 'relays', label: 'Relays' }, { key: 'holdOpen', label: 'Hold Open' },
+  { key: 'holidays', label: 'Holidays' }, { key: 'security', label: 'Security Levels' }, { key: 'facility', label: 'Facility Codes' },
+  { key: 'elevator', label: 'Elevator Reference' }, { key: 'relayElevator', label: 'Relay / Elevator' }, { key: 'apb', label: 'Anti-Pass Back' },
+] as const;
+// Pinned at the bottom of the sidebar, above Gate connection.
+export const PINNED_NAV = [
+  { key: 'history', label: 'History' }, { key: 'schedules', label: 'Scheduled Transfers' }, { key: 'prefs', label: 'System Settings' },
+] as const;
+export type NavKey = Extract<(typeof NAV)[number], { key: string }>['key'] | (typeof PINNED_NAV)[number]['key'] | 'user';
+// Pages that only edit gate settings: shown with every control disabled for read-only users.
+
+// The elevator pages show only when the gate's Elevators feature is on (System Settings → Gate configuration).
+export const pageShown = (key: NavKey, elevators: boolean) => (key !== 'elevator' && key !== 'relayElevator') || elevators;

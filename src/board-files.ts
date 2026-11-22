@@ -20,8 +20,12 @@ export interface RcvEvent {
   lookup: 'directory' | 'entryCode' | 'card' | null;
 }
 
-const BLOCK_SIZE = 128;
-const NAMES_ENTRY_SIZE = 20;
+// Record sizes and fixed offsets of the board files, used by every module that reads or writes them.
+export const BLOCK_SIZE = 128; // a .map file has one byte per block of this size
+export const NAMES_ENTRY_SIZE = 20; // one directory entry in names.bin
+export const PHONE_RECORD_SIZE = 10; // one phone.bin record
+export const CARD_RECORD_SIZE = 4; // one cards.bin record
+export const NAMES_MIDDLE_POINTER_OFFSET = 0xf8; // 3-byte big-endian offset of the middle shown entry (DoorKing32.exe.c:119433)
 // names.bin layout depends on the gate's "Area codes" setting (DoorKing32 snapshots, 255 vs 10):
 //   255: area-code table at 0xA41 (255 entries), directory at 0xF80.
 //   10:  area-code table at 0x44 (10 entries), directory at 0xC00; the file is 0x380 bytes shorter.
@@ -93,17 +97,17 @@ export function writePhoneFields(
 }
 // Packed decimal digits; 0xF nibbles are padding.
 export function bcd(bytes: Iterable<number>): string | null {
-  let s = '';
-  for (const b of bytes) {
-    for (const n of [b >> 4, b & 0x0f]) {
-      if (n > 9 && n !== 0x0f) return null;
-      if (n <= 9) s += n;
+  let out = '';
+  for (const byte of bytes) {
+    for (const nibble of [byte >> 4, byte & 0x0f]) {
+      if (nibble > 9 && nibble !== 0x0f) return null;
+      if (nibble <= 9) out += nibble;
     }
   }
-  return s;
+  return out;
 }
 
-export const allFF = (bytes: Uint8Array): boolean => bytes.every((b) => b === 0xff);
+export const allFF = (bytes: Uint8Array): boolean => bytes.every((byte) => byte === 0xff);
 
 // phone.bin: 10 bytes per directory code. Bytes 2-5 depend on the area-code mode (see readPhoneFields).
 // Byte 8 is packed: bits 0-4 = security level (0-30), bits 5-7 = elevator reference index
@@ -111,8 +115,8 @@ export const allFF = (bytes: Uint8Array): boolean => bytes.every((b) => b === 0x
 // isolated before/after gate pulls (hide lives in names.bin, not here).
 export function parsePhoneBin(buf: Buffer, areaCodeMode = 255): PhoneEntry[] {
   const entries: PhoneEntry[] = [];
-  for (let offset = 0; offset + 10 <= buf.length; offset += 10) {
-    const rec = buf.subarray(offset, offset + 10);
+  for (let offset = 0; offset + PHONE_RECORD_SIZE <= buf.length; offset += PHONE_RECORD_SIZE) {
+    const rec = buf.subarray(offset, offset + PHONE_RECORD_SIZE);
     if (allFF(rec.subarray(0, 2))) continue;
     const { areaCodeIndex, phone } = readPhoneFields(rec, areaCodeMode);
     entries.push({
@@ -132,8 +136,8 @@ export function parsePhoneBin(buf: Buffer, areaCodeMode = 255): PhoneEntry[] {
 // cards.bin: 4 bytes per card: card number (16-bit big-endian), directory code (BCD, F-padded).
 export function parseCardsBin(buf: Buffer): CardEntry[] {
   const cards: CardEntry[] = [];
-  for (let offset = 0; offset + 4 <= buf.length; offset += 4) {
-    const rec = buf.subarray(offset, offset + 4);
+  for (let offset = 0; offset + CARD_RECORD_SIZE <= buf.length; offset += CARD_RECORD_SIZE) {
+    const rec = buf.subarray(offset, offset + CARD_RECORD_SIZE);
     if (allFF(rec)) continue;
     cards.push({
       cardNumber: String(rec.readUInt16BE(0)).padStart(5, '0'),
@@ -179,8 +183,8 @@ export function parseNamesBin(buf: Buffer) {
 // Code type 0x01 = keypad code (BCD), 0x02 = card number (16-bit big-endian).
 export function parseRcvOut(buf: Buffer): RcvRecord[] {
   const records: RcvRecord[] = [];
-  for (let offset = 0; offset + 10 <= buf.length; offset += 10) {
-    const rec = buf.subarray(offset, offset + 10);
+  for (let offset = 0; offset + PHONE_RECORD_SIZE <= buf.length; offset += PHONE_RECORD_SIZE) {
+    const rec = buf.subarray(offset, offset + PHONE_RECORD_SIZE);
     const codeType = rec[4];
     const codeBytes = rec.subarray(5, 7);
     let code: string | null = null;
@@ -224,23 +228,23 @@ const DEFAULT_RELAY_NAMES = ['Relay 0', 'Entry', 'Exit'];
 // Decodes one parsed rcv_out.bin record into the columns of DoorKing32's transaction view.
 // Byte 2 bit 6 = admit (else deny); byte 7 = relay (0x12 = relay 0, 0 = relay 1, 1 = relay 2,
 // 0xFC-0xFF = combinations). lookup = 'directory' | 'entryCode' | 'card' when the number names a resident.
-export function decodeRcvEvent(t: { raw: string }, relayNames: string[] = DEFAULT_RELAY_NAMES): RcvEvent {
-  const rec = Buffer.from(t.raw, 'hex');
+export function decodeRcvEvent(transaction: { raw: string }, relayNames: string[] = DEFAULT_RELAY_NAMES): RcvEvent {
+  const rec = Buffer.from(transaction.raw, 'hex');
   const type = rec[4];
   const isApb = type >= 0x22 && type <= 0x25;
   const [r0, r1, r2] = relayNames;
-  const ev: RcvEvent = { eventType: '', number: '', name: '', access: '', relay: '', apb: '', lookup: null };
+  const event: RcvEvent = { eventType: '', number: '', name: '', access: '', relay: '', apb: '', lookup: null };
 
-  ev.access = !(rec[2] & 0x40) ? 'Deny' : isApb ? 'Open' : 'Admit';
+  event.access = !(rec[2] & 0x40) ? 'Deny' : isApb ? 'Open' : 'Admit';
   if (!(type === 5 || (type > 0x0c && !isApb))) {
-    const b7 = rec[7];
+    const flags = rec[7];
     const combos: Record<number, string[]> = { 0xfc: [r0, r1], 0xfd: [r0, r2], 0xfe: [r1, r2], 0xff: [r0, r1, r2] };
-    ev.relay = b7 === 0x12 ? r0 : b7 === 0 ? r1 : b7 === 1 ? r2
-      : b7 >= 2 && b7 <= 0x11 ? `Relay code ${b7}`
-        : combos[b7]?.join(', ') || '';
+    event.relay = flags === 0x12 ? r0 : flags === 0 ? r1 : flags === 1 ? r2
+      : flags >= 2 && flags <= 0x11 ? `Relay code ${flags}`
+        : combos[flags]?.join(', ') || '';
   }
 
-  return Object.assign(ev, eventDetails(rec, ev.access));
+  return Object.assign(event, eventDetails(rec, event.access));
 }
 
 // The columns that depend on the record type (byte 4); access: the column as decoded from byte 2.
@@ -252,8 +256,8 @@ function eventDetails(rec: Buffer, access: string): Partial<RcvEvent> {
       ...(access === 'Deny' && { relay: '' }) };
   }
   if (type === 2) {
-    const n = rec.readUInt16BE(5);
-    if (n >= 0xff80) return { number: card, access: '', name: n === 0xff80 ? 'Gate Close Edge Activated' : `Board status ${n - 0xff80}` };
+    const status = rec.readUInt16BE(5);
+    if (status >= 0xff80) return { number: card, access: '', name: status === 0xff80 ? 'Gate Close Edge Activated' : `Board status ${status - 0xff80}` };
     return { eventType: 'Cards', number: card, lookup: 'card' };
   }
   if (type === 4) return { eventType: 'Open Request' };
@@ -270,6 +274,12 @@ function eventDetails(rec: Buffer, access: string): Partial<RcvEvent> {
   return { eventType: `Type 0x${type.toString(16).padStart(2, '0')}`, access: '', relay: '' };
 }
 
+// A transaction record with a real month and day (the board leaves some blank or garbled).
+export const hasValidDate = (record: { month: number; day: number }): boolean =>
+  record.month >= 1 && record.month <= 12 && record.day >= 1 && record.day <= 31;
+
+const CLOCK_AHEAD_MS = 2 * 86400000; // how far ahead of the server's clock the gate's may be (orderRcvOut)
+
 // rcv_out.bin is a 10,000-record ring buffer followed by a 6-byte trailer:
 // byte 0 = 0x99 when the buffer has wrapped, bytes 3-5 = next write address (0xA0000 + index * 10).
 // Returns records oldest -> newest with a year inferred backwards from pulledAt (the board stores no year).
@@ -285,12 +295,19 @@ export function orderRcvOut(buf: Buffer, pulledAt: Date = new Date()): RcvRecord
         : records.slice(0, next);
     }
   }
-  const dayKey = (record: RcvRecord) => record.month * 100 + record.day;
+  // Walking back from the newest, a record dated after the newer one belongs to the year before. A gate clock may run
+  // up to CLOCK_AHEAD_MS ahead of the server's (so the newest records may even be in the next year), and records with
+  // no valid date are skipped (they get the year of the record after them).
+  const dayOf = (year: number, record: RcvRecord) => Date.UTC(year, record.month - 1, record.day);
   let year = pulledAt.getFullYear();
-  let newer = (pulledAt.getMonth() + 1) * 100 + pulledAt.getDate();
+  let newer = Date.UTC(year, pulledAt.getMonth(), pulledAt.getDate()) + CLOCK_AHEAD_MS;
+  const newest = ordered.findLastIndex(hasValidDate);
+  if (newest >= 0 && dayOf(year + 1, ordered[newest]) <= newer) year++;
   for (let i = ordered.length - 1; i >= 0; i--) {
-    if (dayKey(ordered[i]) > newer) year--;
-    newer = dayKey(ordered[i]);
+    if (hasValidDate(ordered[i])) {
+      if (dayOf(year, ordered[i]) > newer) year--;
+      newer = dayOf(year, ordered[i]);
+    }
     ordered[i] = { ...ordered[i], year };
   }
   return ordered;
@@ -299,16 +316,16 @@ export function orderRcvOut(buf: Buffer, pulledAt: Date = new Date()): RcvRecord
 // .MAP: indexes of 128-byte blocks flagged as changed.
 export function parseMap(buf: Buffer): { blocks: number; changedBlocks: number[]; blockSize: number } {
   const changedBlocks: number[] = [];
-  buf.forEach((v, i) => v && changedBlocks.push(i));
+  buf.forEach((changed, i) => changed && changedBlocks.push(i));
   return { blocks: buf.length, changedBlocks, blockSize: BLOCK_SIZE };
 }
 
 // DKS Cloud transfers files as hex text (two digits per byte). Anything else is a message, not a file (for example
 // "Session not found"), and is refused with its start.
 export function decodeFileText(text: unknown): Buffer {
-  const s = String(text).trim();
-  if (/^([0-9a-f]{2})*$/i.test(s)) return Buffer.from(s, 'hex');
-  throw new Error(`DKS Cloud sent something other than a file: ${s.slice(0, 80)}`);
+  const hex = String(text).trim();
+  if (/^([0-9a-f]{2})*$/i.test(hex)) return Buffer.from(hex, 'hex');
+  throw new Error(`DKS Cloud sent something other than a file: ${hex.slice(0, 80)}`);
 }
 
 // Hex text for SendResidentData (DoorKing32 writes two hex digits per byte).
@@ -323,7 +340,7 @@ export const encodeFileText = (buf: Uint8Array): string => Buffer.from(buf).toSt
 // residents + vendors equals the occupied directory size (the binary's memory-fit guard).
 export function namesResidentCounts(buf: Buffer): [number, number] {
   const { directory } = parseNamesBin(buf);
-  const vendors = directory.filter((d) => (d.flag & 1) === 1).length;
+  const vendors = directory.filter((entry) => (entry.flag & 1) === 1).length;
   return [directory.length - vendors, vendors];
 }
 
@@ -346,23 +363,23 @@ export function residentRows(bufs: { names?: Buffer | null; phone?: Buffer | nul
   };
   const namesBin = names && parseNamesBin(names.data);
   // A directory entry's flag byte (byte 15): bit 0 = vendor, bit 5 = shown (clear = hidden).
-  if (namesBin) for (const e of namesBin.directory) Object.assign(row(e.directoryCode), {
-    name: e.name, type: e.vendor ? 'Vendor' : 'Resident', hidden: e.hidden, entryOffset: e.entryOffset,
+  if (namesBin) for (const entry of namesBin.directory) Object.assign(row(entry.directoryCode), {
+    name: entry.name, type: entry.vendor ? 'Vendor' : 'Resident', hidden: entry.hidden, entryOffset: entry.entryOffset,
   });
   if (phones) {
-    for (const p of parsePhoneBin(phones.data, namesBin ? namesBin.areaCodeMode : 255)) {
-      if (p.directoryCode === null) continue; // not decimal: left out (its bytes are kept as they are)
-      const areaCode = (namesBin && p.areaCodeIndex !== null && namesBin.areaCodes[p.areaCodeIndex]) || '';
-      Object.assign(row(p.directoryCode), {
-        areaCode, areaCodeIndex: p.areaCodeIndex, phone: p.phone || '', entryCode: p.entryCode || '',
-        securityLevel: p.securityLevel, elevatorRef: p.elevatorRef, floor: p.floor == null ? '' : p.floor,
-        recordOffset: p.recordOffset,
+    for (const record of parsePhoneBin(phones.data, namesBin ? namesBin.areaCodeMode : 255)) {
+      if (record.directoryCode === null) continue; // not decimal: left out (its bytes are kept as they are)
+      const areaCode = (namesBin && record.areaCodeIndex !== null && namesBin.areaCodes[record.areaCodeIndex]) || '';
+      Object.assign(row(record.directoryCode), {
+        areaCode, areaCodeIndex: record.areaCodeIndex, phone: record.phone || '', entryCode: record.entryCode || '',
+        securityLevel: record.securityLevel, elevatorRef: record.elevatorRef, floor: record.floor == null ? '' : record.floor,
+        recordOffset: record.recordOffset,
       });
     }
   }
   const unassignedCards: string[] = [];
   if (cards) {
-    for (const c of parseCardsBin(cards.data)) (c.directoryCode ? row(c.directoryCode).cards : unassignedCards).push(c.cardNumber);
+    for (const card of parseCardsBin(cards.data)) (card.directoryCode ? row(card.directoryCode).cards : unassignedCards).push(card.cardNumber);
   }
   const list = [...rows.values()].sort((a, b) => a.directoryCode.localeCompare(b.directoryCode));
   return { rows: list, unassignedCards };

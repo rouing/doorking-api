@@ -1,12 +1,12 @@
 // Scheduled transfers.
 import * as dk from '../../index.ts';
+import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
-import type { ContextModule } from '../context.ts';
-import type { JobsModule } from '../jobs.ts';
 import { logger } from '../../src/logging.ts';
 
-export function schedulesRoutes(deps: ContextModule & JobsModule): Route[] {
-  const { isScheduleQueued, queueSchedule, scheduleText, store } = deps;
+export function schedulesRoutes(modules: Modules): Route[] {
+  const { store } = modules.context;
+  const { isScheduleQueued, queueSchedule, scheduleText } = modules.jobs;
   return [
     // Scheduled transfers for this gate, run with the gate's DKS login; saving an entry makes the user its owner
     // (shown as "Saved by"). Body: { days: [0-6], time: 'HH:MM', actions: ['send'|'residents'|'transactions'|'snapshots'], enabled }.
@@ -36,7 +36,7 @@ export function schedulesRoutes(deps: ContextModule & JobsModule): Route[] {
     route('POST', `${G}/schedules/:id/run`, 'gate-admin', async ({ session, gate, params }) => {
       const sch = await dk.getSchedule(store, gate.phoneNumber, params.id);
       if (!sch) return [404, { error: 'Schedule not found' }];
-      if (!await queueSchedule(sch)) return [409, { error: 'This schedule is already queued' }];
+      if (!await queueSchedule(sch, true)) return [409, { error: 'This schedule is already queued' }];
       logger('schedule').info`Gate ${gate.phoneNumber}: schedule ${sch.id} queued to run now by ${session.user}`;
       return [202, { ok: true }];
     }),

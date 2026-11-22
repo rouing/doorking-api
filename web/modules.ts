@@ -25,7 +25,7 @@ export function createModules(services: Services) {
   const editing = createEditing(context);
   const snapshots = createSnapshots({ ...context, ...editing });
   const jobs = createJobs({ ...context, ...editing, ...mail, ...snapshots });
-  return { ...context, ...auth, ...mail, ...editing, ...snapshots, ...jobs };
+  return { context, auth, mail, editing, snapshots, jobs };
 }
 
 export type Modules = ReturnType<typeof createModules>;

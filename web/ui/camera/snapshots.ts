@@ -6,60 +6,57 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CameraSettings, SnapshotMinute, SnapshotRun, SnapshotsReply } from '../../../src/types.ts';
 import { errorText, gateUrl, type GateApi } from '../api.ts';
 import { fmtTime } from '../format.ts';
-import { frameOffsets, posterFile } from '../../../src/snapshot-files.ts';
+import { frameJobs, posterFile } from '../../../src/snapshot-files.ts';
 
-export const isVideo = (f: string) => f.endsWith('.mp4');
+export const isVideo = (file: string) => file.endsWith('.mp4');
 export const posterOf = posterFile;
-export const fileChannel = (f: string) => Number(/^ch(\d+)/.exec(f)![1]);
-export const fmtMinute = (m: string) => `${m.slice(0, 4)}-${m.slice(4, 6)}-${m.slice(6, 8)} ${m.slice(9, 11)}:${m.slice(11)}`;
-const frameSecs = (n: number) => frameOffsets(n).map((s) => String(s).padStart(2, '0'));
+export const fileChannel = (file: string) => Number(/^ch(\d+)/.exec(file)![1]);
+export const fmtMinute = (minute: string) => `${minute.slice(0, 4)}-${minute.slice(4, 6)}-${minute.slice(6, 8)} ${minute.slice(9, 11)}:${minute.slice(11)}`;
 
-export function frameCaption(f: string) {
-  if (isVideo(f)) return '2-minute video';
-  const [, after, s] = /-(a?)(\d+)\.jpg$/.exec(f)!;
-  return `+${Number(s)} s${after ? ' after the minute' : ''}`;
+export function frameCaption(file: string) {
+  if (isVideo(file)) return '2-minute video';
+  const [, after, seconds] = /-(a?)(\d+)\.jpg$/.exec(file)!;
+  return `+${Number(seconds)} s${after ? ' after the minute' : ''}`;
 }
 
 // Gate time (H:MM:SS) of frame f of minute, taken `shift` seconds off its planned time.
-export function shiftedTime(minute: string, f: string, shift: number) {
-  const [, y, mo, d, h, mi] = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(minute)!.map(Number);
-  const [, after, s] = /-(a?)(\d+)\.jpg$/.exec(f)!;
-  return new Date(y, mo - 1, d, h, mi, (after ? 60 : 0) + Number(s) + shift)
+export function shiftedTime(minute: string, file: string, shift: number) {
+  const [, year, month, day, hour, minuteOfHour] = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(minute)!.map(Number);
+  const [, after, seconds] = /-(a?)(\d+)\.jpg$/.exec(file)!;
+  return new Date(year, month - 1, day, hour, minuteOfHour, (after ? 60 : 0) + Number(seconds) + shift)
     .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 }
 
 // Every frame of a minute: the camera settings' frames (or videos) plus any other saved file. A minute saved only
 // in the other mode shows just its saved files; in video mode a minute with a saved video shows only its videos.
-export function snapFiles(c: CameraSettings | null, snapshot: SnapshotMinute): string[] {
-  const video = Boolean(c && c.mode === 'video');
+export function snapFiles(settings: CameraSettings | null, snapshot: SnapshotMinute): string[] {
+  const video = Boolean(settings && settings.mode === 'video');
   let saved = snapshot.files;
   if (video && saved.some(isVideo)) saved = saved.filter(isVideo);
-  let want = !c ? [] : video ? c.channels.map(({ channel }) => `ch${channel}.mp4`)
-    : c.channels.flatMap(({ channel }) => [...frameSecs(c.frames).map((x) => `ch${channel}-${x}.jpg`),
-      ...frameSecs(c.framesAfter || 0).map((x) => `ch${channel}-a${x}.jpg`)]);
-  if (saved.length && !saved.some((f) => isVideo(f) === video)) want = [];
+  let want = settings ? frameJobs(settings).map((job) => job.file) : [];
+  if (saved.length && !saved.some((file) => isVideo(file) === video)) want = [];
   return [...new Set([...want, ...saved])].sort();
 }
 
 // One line about the current or last snapshot run.
-function runText(r: SnapshotRun | null, noun: string): string {
-  if (!r) return '';
-  const p = r.progress;
-  const left = p ? p.minutes - p.minutesDone : 0;
-  const counts = r.result ? `${r.result.done} saved, ${r.result.partial || 0} missing some frames, ${r.result.failed} without a picture` : '';
-  const at = fmtTime(r.finishedAt);
-  if (r.state === 'running') {
-    return `${r.stopping ? 'Stopping' : 'Getting'} camera snapshots… ${p ? `${p.framesDone} of ${p.frames} ${noun}, ${p.minutesDone} of ${p.minutes} minutes. ` : ''}`
-      + (r.log.length ? r.log[r.log.length - 1] : '');
+function runText(run: SnapshotRun | null, noun: string): string {
+  if (!run) return '';
+  const progress = run.progress;
+  const left = progress ? progress.minutes - progress.minutesDone : 0;
+  const counts = run.result ? `${run.result.done} saved, ${run.result.partial || 0} missing some frames, ${run.result.failed} without a picture` : '';
+  const at = fmtTime(run.finishedAt);
+  if (run.state === 'running') {
+    return `${run.stopping ? 'Stopping' : 'Getting'} camera snapshots… ${progress ? `${progress.framesDone} of ${progress.frames} ${noun}, ${progress.minutesDone} of ${progress.minutes} minutes. ` : ''}`
+      + (run.log.length ? run.log[run.log.length - 1] : '');
   }
-  if (r.state === 'failed') return `Camera snapshots failed: ${r.error}`;
-  if (!r.result) return '';
-  if (r.state === 'stopped') return `Camera snapshots stopped: ${counts}; ${left} minutes left for the next run (${at})`;
-  if (!r.result.minutes) {
-    return r.result.error ? `Camera snapshots: ${r.result.error} (${at})`
+  if (run.state === 'failed') return `Camera snapshots failed: ${run.error}`;
+  if (!run.result) return '';
+  if (run.state === 'stopped') return `Camera snapshots stopped: ${counts}; ${left} minutes left for the next run (${at})`;
+  if (!run.result.minutes) {
+    return run.result.error ? `Camera snapshots: ${run.result.error} (${at})`
       : `Camera snapshots: no transactions needing pictures in the look-back period (${at})`;
   }
-  if (r.result.error) return `Camera snapshots ended early: ${r.result.error}. ${counts}; ${left} minutes left for the next run (${at})`;
+  if (run.result.error) return `Camera snapshots ended early: ${run.result.error}. ${counts}; ${left} minutes left for the next run (${at})`;
   return `Camera snapshots: ${counts} (${at})`;
 }
 
@@ -103,17 +100,17 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
     try { setNote(''); await fn(); await load(); } catch (err) { setNote(`${prefix}${errorText(err)}`); }
   };
 
-  const refresh = async (minute: string, f: string) => {
-    const key = `${minute}/${f}`;
-    setRefreshing((r) => ({ ...r, [key]: true }));
+  const refresh = async (minute: string, file: string) => {
+    const key = `${minute}/${file}`;
+    setRefreshing((current) => ({ ...current, [key]: true }));
     setErrors(({ [key]: _, ...rest }) => rest);
     try {
-      const out = await gapi<{ snapshot: SnapshotMinute }>('POST', `/snapshots/${minute}/${encodeURIComponent(f)}/refresh`, {});
-      setSnapshots((s) => ({ ...s, [minute]: out.snapshot }));
-      setVersions((v) => ({ ...v, [key]: Date.now() }));
+      const out = await gapi<{ snapshot: SnapshotMinute }>('POST', `/snapshots/${minute}/${encodeURIComponent(file)}/refresh`, {});
+      setSnapshots((current) => ({ ...current, [minute]: out.snapshot }));
+      setVersions((current) => ({ ...current, [key]: Date.now() }));
     } catch (err) {
-      setErrors((x) => ({ ...x, [key]: errorText(err) }));
-      setNote(`${fmtMinute(minute)} ${frameCaption(f)}: not refreshed (${errorText(err)})`);
+      setErrors((current) => ({ ...current, [key]: errorText(err) }));
+      setNote(`${fmtMinute(minute)} ${frameCaption(file)}: not refreshed (${errorText(err)})`);
     }
     setRefreshing(({ [key]: _, ...rest }) => rest);
   };
@@ -128,7 +125,7 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
     info: note || runText(run, noun),
     byMinute: running && run!.progress ? run!.progress.byMinute : {},
     current: running && run!.progress ? run!.progress.current : null,
-    channelName: (n: number) => (settings && settings.channels.find((channel) => channel.channel === n)?.name) || `Channel ${n}`,
+    channelName: (wanted: number) => (settings && settings.channels.find((channel) => channel.channel === wanted)?.name) || `Channel ${wanted}`,
     runAll: () => act(() => gapi('POST', '/snapshots/run', {})),
     runMinute: (minute: string) => act(() => gapi('POST', '/snapshots/run', { minute }), `${fmtMinute(minute)}: `),
     stop: () => act(() => gapi('POST', '/snapshots/stop', {})),
