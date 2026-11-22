@@ -1,12 +1,28 @@
-// Residents and vendors in the working copy.
+/**
+ * @module web/routes/residents
+ *
+ * Residents and vendors in the working copy.
+ */
 import * as dk from '../../index.ts';
 import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
 
+/**
+ * Residents routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function residentsRoutes(modules: Modules): Route[] {
   const { store } = modules.context;
   const { applyToCache, dropNote, editOpts, editorResidents, saveNote, withHistory } = modules.editing;
-  // A directory code with the leading zeros the gate's codes have (throws 404 when there is no working copy).
+  /**
+   * A directory code with the leading zeros the gate's codes have (throws 404 when there is no working copy).
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param code - Directory code, HTTP status code, or verification code.
+   * @returns Computed result.
+   */
   const fullCode = async (gate: { phoneNumber: string }, code: string) =>
     code.padStart(dk.namesDirDigits((await dk.readCacheFile(store, gate.phoneNumber, 'names.bin')).data), '0');
   return [

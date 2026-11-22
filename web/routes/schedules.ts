@@ -1,9 +1,19 @@
-// Scheduled transfers.
+/**
+ * @module web/routes/schedules
+ *
+ * Scheduled transfers.
+ */
 import * as dk from '../../index.ts';
 import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
 import { logger } from '../../src/logging.ts';
 
+/**
+ * Schedules routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function schedulesRoutes(modules: Modules): Route[] {
   const { store } = modules.context;
   const { isScheduleQueued, queueSchedule, scheduleText } = modules.jobs;

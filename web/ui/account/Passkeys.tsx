@@ -1,4 +1,8 @@
-// Passkeys: the step-up dialog for sensitive actions and the user's passkey list.
+/**
+ * @module web/ui/account/Passkeys
+ *
+ * Passkeys: the step-up dialog for sensitive actions and the user's passkey list.
+ */
 import { useEffect, useState, type FormEvent } from 'react';
 import { AlertDialog, Badge, Button, Card, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes';
 import { browserSupportsWebAuthn, getBrowserCapabilities, sendSignal, startAuthentication, startRegistration } from '@simplewebauthn/browser';
@@ -10,7 +14,12 @@ import { fmtTime } from '../format.ts';
 import { Field } from '../panes/fields.tsx';
 import { ApproveDevice, APPROVAL_KEY } from './ApproveDevice.tsx';
 
-// A readable message for a failed passkey step (the browser's "not allowed" also means the user cancelled).
+/**
+ * A readable message for a failed passkey step (the browser's "not allowed" also means the user cancelled).
+ *
+ * @param err - Caught error value.
+ * @returns `string` result.
+ */
 export function passkeyError(err: unknown): string {
   const name = err instanceof Error ? err.name : '';
   if (name === 'NotAllowedError' || name === 'AbortError') return 'The passkey request was cancelled or timed out.';
@@ -19,8 +28,12 @@ export function passkeyError(err: unknown): string {
 }
 interface PasskeysReply { passkeys: PasskeyInfo[]; userHandle: string | null }
 
-// Tells the browser which of the account's passkeys still work on this site, so the phone or password manager stops
-// offering removed ones (Chrome 132 and later; other browsers skip it).
+/**
+ * Tells the browser which of the account's passkeys still work on this site, so the phone or password manager stops
+ * offering removed ones (Chrome 132 and later; other browsers skip it).
+ *
+ * @param reply - API `PasskeysReply` payload (`{ passkeys, userHandle }`).
+ */
 function syncWithBrowser(reply: PasskeysReply): void {
   if (!reply.userHandle) return;
   const rpID = window.location.hostname;
@@ -28,9 +41,11 @@ function syncWithBrowser(reply: PasskeysReply): void {
     allAcceptedCredentialIDs: reply.passkeys.filter((passkey) => passkey.site === rpID).map((passkey) => passkey.id) }).catch(() => { /* not supported */ });
 }
 
-// Right after a password sign-in: lets the password manager that filled in the password save a passkey by itself,
-// without a prompt (Chrome 136 and later, where the browser supports it). Only the account's first passkey; the
-// server refuses otherwise, and any failure is ignored.
+/**
+ * Right after a password sign-in: lets the password manager that filled in the password save a passkey by itself,
+ * without a prompt (Chrome 136 and later, where the browser supports it). Only the account's first passkey; the
+ * server refuses otherwise, and any failure is ignored.
+ */
 export async function savePasskeyAfterSignIn(): Promise<void> {
   try {
     if (!browserSupportsWebAuthn() || (await getBrowserCapabilities()).conditionalCreate !== 'supported') return;
@@ -40,8 +55,12 @@ export async function savePasskeyAfterSignIn(): Promise<void> {
   } catch { /* not this time */ }
 }
 
-// The "Confirm it's you" dialog for sensitive actions (a 403 { stepUp } reply, see api.ts onStepUp): confirms with
-// one of the user's passkeys, then the action is retried. Without a passkey it says to add one. Render once.
+/**
+ * The "Confirm it's you" dialog for sensitive actions (a 403 { stepUp } reply, see api.ts onStepUp): confirms with
+ * one of the user's passkeys, then the action is retried. Without a passkey it says to add one. Render once.
+ *
+ * @returns Rendered React element.
+ */
 export function StepUpDialog() {
   const [ask, setAsk] = useState<{ hasPasskey: boolean; resolve: (ok: boolean) => void } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -85,8 +104,15 @@ interface PasskeysProps {
   stepUpMinutes: number;
 }
 
-// The user's passkeys: add (after confirming the password, when the account has one), rename, remove. Passkeys work on the
-// site name they were made on: the public HTTPS name, or localhost on the server.
+/**
+ * The user's passkeys: add (after confirming the password, when the account has one), rename, remove. Passkeys work on the
+ * site name they were made on: the public HTTPS name, or localhost on the server.
+ *
+ * @param props - Component props.
+ * @param props.askPassword - Ask password.
+ * @param props.stepUpMinutes - Step up minutes.
+ * @returns Rendered React element.
+ */
 export function Passkeys({ askPassword, stepUpMinutes }: PasskeysProps) {
   const [list, setList] = useState<PasskeyInfo[]>([]);
   const [name, setName] = useState('');

@@ -1,7 +1,9 @@
-// Fixed-date holidays for the WebUI holiday picker. The gate stores only month/day (no year and no name),
-// so names are never persisted: the UI offers this list to fill a row's month/day, and shows a name by
-// looking the stored month/day back up here. Floating holidays (Thanksgiving, Memorial Day, ...) are not
-// listed because they have no constant date; those rows are entered by month/day directly.
+/**
+ * Fixed-date holidays for the WebUI holiday picker. The gate stores only month/day (no year and no name),
+ * so names are never persisted: the UI offers this list to fill a row's month/day, and shows a name by
+ * looking the stored month/day back up here. Floating holidays (Thanksgiving, Memorial Day, ...) are not
+ * listed because they have no constant date; those rows are entered by month/day directly.
+ */
 export interface Holiday { name: string; month: number; day: number }
 
 export const FIXED_HOLIDAYS: Holiday[] = [

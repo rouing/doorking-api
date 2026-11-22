@@ -42,10 +42,18 @@ interface GateAppProps {
   onChange: () => void;
 }
 
-// The open gate: sidebar navigation and gate connection, and the page for the chosen item. On phones the sidebar is a
-// bottom tab bar (Residents, Vendors, Transactions, Gate: the connection sheet, More: the drawer with every other page). Back
-// closes the sheet or drawer, then goes from another page to Residents, then back to the gate list. Read-only users see
-// every page but can't change anything (they can pull and use the cameras).
+/**
+ * The open gate: sidebar navigation and gate connection, and the page for the chosen item. On phones the sidebar is a
+ * bottom tab bar (Residents, Vendors, Transactions, Gate: the connection sheet, More: the drawer with every other page). Back
+ * closes the sheet or drawer, then goes from another page to Residents, then back to the gate list. Read-only users see
+ * every page but can't change anything (they can pull and use the cameras).
+ *
+ * @param props - Component props.
+ * @param props.session - Authenticated user or API-key session.
+ * @param props.gate - Open gate summary (`phoneNumber`, `siteName`, `role`).
+ * @param props.onChange - Callback invoked when the value changes.
+ * @returns Rendered React element.
+ */
 export function GateApp({ session, gate, onChange }: GateAppProps) {
   const gapi = useMemo(() => gateApi(gate.phoneNumber), [gate.phoneNumber]);
   const readOnly = gate.role !== 'admin';
@@ -63,7 +71,7 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
   const [pageKey, setPageKey] = useState(0); // bumped to reload the open page (its settings) after Reset to gate
   const [error, setError] = useState('');
   const [dialog, confirm] = useConfirm();
-  // When a pull or send finishes, the data reloads and its page shows.
+  /** When a pull or send finishes, the data reloads and its page shows. */
   const { job, start: watchJob, stop: stopWatching, started } = useGateJob(gapi, {
     onRunning: () => setDock((current) => (current === 'closed' ? 'open' : current)),
     onFinished: (finished) => { setNav(finished.what === 'transactions' ? 'transactions' : 'residents'); window.scrollTo(0, 0); loadData(); },
@@ -89,13 +97,21 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
   }
 
   const allGates = async () => { await api('DELETE', '/api/session/gate').catch(() => {}); document.title = 'DoorKing Gate Data'; onChange(); };
-  // Opens another of the user's gates (the server session keeps the open gate; App then shows it).
+  /**
+   * Opens another of the user's gates (the server session keeps the open gate; App then shows it).
+   *
+   * @param to - Recipient email address.
+   */
   const switchGate = async (to: GateInfo) => {
     setMenu(false);
     try { await api('PUT', '/api/session/gate', { phoneNumber: to.phoneNumber }); onChange(); } catch (err) { setError(errorText(err)); }
   };
   const signOut = async () => { await api('DELETE', '/api/session').catch(() => {}); onChange(); };
-  // A new page starts at its top (a resident opened from Transactions scrolls itself into view instead).
+  /**
+   * A new page starts at its top (a resident opened from Transactions scrolls itself into view instead).
+   *
+   * @param key - Lookup key, API key, or setting key.
+   */
   const go = (key: NavKey) => { setNav(key); setHighlight(null); setMenu(false); setGateSheet(false); window.scrollTo(0, 0); };
   useBackLayer(true, allGates);
   useBackLayer(nav !== 'residents', () => go('residents'));
@@ -133,8 +149,10 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
     apb: () => <ApbPage gapi={gapi} relayLabels={prefs.relayLabels || {}} relays={relays} />,
   };
   const page = <Fragment key={pageKey}>{pageShown(nav, features.elevators) ? pages[nav]() : directory('residents')}</Fragment>;
-  // The working copy's state under the gate's name (phones: in the top bar), and Reset to gate / Send to gate in the
-  // sidebar's gate connection (phones: the Gate sheet); the pages leave them out.
+  /**
+   * The working copy's state under the gate's name (phones: in the top bar), and Reset to gate / Send to gate in the
+   * sidebar's gate connection (phones: the Gate sheet); the pages leave them out.
+   */
   const workingCopy = workingCopyState(residents ? residents.cache : null);
   const afterReset = async () => { await loadData(); setPageKey((key) => key + 1); };
   const openGateSheet = () => { setMenu(false); setGateSheet(true); };

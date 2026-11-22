@@ -5,11 +5,16 @@ import type { TxRow } from '../src/camera-settings.ts';
 import type { DeviceRange, TransactionRow } from '../src/types.ts';
 import type { WorkingState } from '../src/gate-state.ts';
 
-// A gate file's contents and when it was pulled (the latest pull, from gate_files).
+/** A gate file's contents and when it was pulled (the latest pull, from gate_files). */
 export interface FileRead { data: Buffer; mtime: Date }
 export type GateFiles = Partial<Record<'names.bin' | 'phone.bin' | 'cards.bin', FileRead>>;
 
-// Residents from names.bin + phone.bin + cards.bin, joined on directory code.
+/**
+ * Residents from names.bin + phone.bin + cards.bin, joined on directory code.
+ *
+ * @param files - Map of board filenames to binary buffers.
+ * @returns `(ResidentsData & { updated: Date | undefined }) | null` result.
+ */
 export function residents(files: GateFiles): (ResidentsData & { updated: Date | undefined }) | null {
   const names = files['names.bin'] || null;
   const phones = files['phone.bin'] || null;
@@ -20,10 +25,18 @@ export function residents(files: GateFiles): (ResidentsData & { updated: Date | 
   return { updated, rows, unassignedCards };
 }
 
-// Transactions from the saved history (see tx-history.ts), with resident names looked up in the working copy's values
-// (gate_residents, gate_cards) by directory code, entry code or card. Card events take their Event Type from the
-// Device Association ranges, as DoorKing32 does. updated: the last transactions pull; null (no transactions yet)
-// when the gate was never read.
+/**
+ * Transactions from the saved history (see tx-history.ts), with resident names looked up in the working copy's values
+ * (gate_residents, gate_cards) by directory code, entry code or card. Card events take their Event Type from the
+ * Device Association ranges, as DoorKing32 does. updated: the last transactions pull; null (no transactions yet)
+ * when the gate was never read.
+ *
+ * @param pulledAt - Timestamp of the last pull, or `null`.
+ * @param values - Decoded working-copy values.
+ * @param [devices] - Configured Device Association card ranges.
+ * @param [history] - Ordered transaction records.
+ * @returns `{ updated: Date; rows: TransactionRow[] } | null` result.
+ */
 function transactions(pulledAt: Date | null, values: WorkingState | null,
   devices: DeviceRange[] | null | undefined = DEFAULT_DEVICE_ASSOCIATION,
   history?: RcvRecord[] | null): { updated: Date; rows: TransactionRow[] } | null {
@@ -65,13 +78,23 @@ function transactions(pulledAt: Date | null, values: WorkingState | null,
   return { updated: pulledAt, rows };
 }
 
-// A transaction record's time (ms, the server's time zone).
+/**
+ * A transaction record's time (ms, the server's time zone).
+ *
+ * @param record - Parsed binary record.
+ * @returns `number` result.
+ */
 function recordTime(record: RcvRecord): number {
   const hour24 = (record.hour % 12) + (record.pm ? 12 : 0);
   return new Date(record.year as number, record.month - 1, record.day, hour24, record.minute).getTime();
 }
 
-// What the camera code needs of each saved transaction (history: oldest first): no names, no Device Association.
+/**
+ * What the camera code needs of each saved transaction (history: oldest first): no names, no Device Association.
+ *
+ * @param history - Oldest first.
+ * @returns `TxRow[]` result.
+ */
 export function cameraRows(history: RcvRecord[]): TxRow[] {
   return history.filter(hasValidDate).map((record) => {
     const { eventType, access } = decodeRcvEvent(record);
@@ -81,8 +104,16 @@ export function cameraRows(history: RcvRecord[]): TxRow[] {
 
 export { residentRows };
 
-// pulledAt: the last transactions pull (txPulledAt); values: the working copy's values (loadWorkingState), or null;
-// history: the saved transactions, or a page of them (readTransactionPage), oldest first.
+/**
+ * pulledAt: the last transactions pull (txPulledAt); values: the working copy's values (loadWorkingState), or null;
+ * history: the saved transactions, or a page of them (readTransactionPage), oldest first.
+ *
+ * @param pulledAt - Timestamp of the last transactions pull (`txPulledAt`), or `null`.
+ * @param values - Decoded working-copy values (`loadWorkingState`), or `null`.
+ * @param [devices] - Configured Device Association card ranges.
+ * @param [history] - Saved transaction records, oldest first (`readTransactionPage`).
+ * @returns Operation result.
+ */
 export function loadData(pulledAt: Date | null, values: WorkingState | null, devices?: DeviceRange[] | null, history?: RcvRecord[] | null) {
   return { transactions: transactions(pulledAt, values, devices, history) };
 }

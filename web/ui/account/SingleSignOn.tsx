@@ -1,4 +1,8 @@
-// Single sign-on: starting a provider sign-in and the account's linked sign-ins.
+/**
+ * @module web/ui/account/SingleSignOn
+ *
+ * Single sign-on: starting a provider sign-in and the account's linked sign-ins.
+ */
 import { useEffect, useState } from 'react';
 import { Button, Card, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes';
 import type { SsoIdentityInfo } from '../../../src/types.ts';
@@ -8,8 +12,13 @@ import { fmtTime } from '../format.ts';
 import type { SignedIn } from '../App.tsx';
 import { Field } from '../panes/fields.tsx';
 
-// Starts a single sign-on: asks the server for the provider's address (path: /api/sso/start, or /api/me/sso/start to
-// link), then opens it. The provider sends the browser back to the app.
+/**
+ * Starts a single sign-on: asks the server for the provider's address (path: /api/sso/start, or /api/me/sso/start to
+ * link), then opens it. The provider sends the browser back to the app.
+ *
+ * @param path - /api/sso/start, or /api/me/sso/start to link.
+ * @param body - Parsed JSON request body.
+ */
 export async function startSso(path: string, body: Record<string, unknown>): Promise<void> {
   const { url } = await api<{ url: string }>('POST', path, body);
   window.location.assign(url);
@@ -18,8 +27,14 @@ interface SingleSignOnProps {
   session: SignedIn;
 }
 
-// The account's single sign-on: linked provider accounts (unlink) and Link buttons (the current password first, when the
-// account has one; the provider then sends the browser back here).
+/**
+ * The account's single sign-on: linked provider accounts (unlink) and Link buttons (the current password first, when the
+ * account has one; the provider then sends the browser back here).
+ *
+ * @param props - Component props.
+ * @param props.session - Authenticated user or API-key session.
+ * @returns Rendered React element.
+ */
 export function SingleSignOn({ session }: SingleSignOnProps) {
   const [list, setList] = useState<SsoIdentityInfo[]>([]);
   const [password, setPassword] = useState('');

@@ -1,5 +1,9 @@
-// The working copy: gate data views, settings, relays, edits with History, reverts and preferences.
-import type { ServerResponse } from 'node:http';
+/**
+ * @module web/editing
+ *
+ * The working copy: gate data views, settings, relays, edits with History, reverts and preferences.
+ */
+import type { FastifyReply } from 'fastify';
 import * as dk from '../index.ts';
 import { cameraRows, loadData, residents, residentRows, type GateFiles } from './data.ts';
 import type { BoardBuffers } from '../src/residents-edit.ts';
@@ -12,27 +16,50 @@ import type { Body, Gate, PrefsChange, Reply, Session } from './context.ts';
 import type { ContextModule } from './context.ts';
 import { logger } from '../src/logging.ts';
 
-// Runs fn (returning [status, body]) after the gate's earlier changes and records what it changed in the working copy.
-// ctx: the working copy before the change; applyToCache(..., ctx) uses it and records the result, so History needn't
-// build the files again.
+/**
+ * Runs fn (returning [status, body]) after the gate's earlier changes and records what it changed in the working copy.
+ * ctx: the working copy before the change; applyToCache(..., ctx) uses it and records the result, so History needn't
+ * build the files again.
+ */
 interface EditContext { before: BoardBuffers | null; after?: BoardBuffers }
 
-// The gate's relay rules: which relays are Tracker command relays, which can be switched live, and tone clashes.
+/**
+ * The gate's relay rules: which relays are Tracker command relays, which can be switched live, and tone clashes.
+ *
+ * @param deps - Injected module dependencies.
+ * @returns Operation result.
+ */
 function createRelayRules(deps: ContextModule) {
   const { prefsOf } = deps;
   const TONE_NAMES: Record<string, string> = { ToneMomentary: 'Momentary', ToneHold: 'Hold', ToneRelease: 'Release', ToneHold1Hr: 'Hold 1 Hr' };
-  // Tracker command relays: relay 1 with Tracker 1, relay 2 with Tracker 2 (their row is locked on the Relays page).
+  /**
+   * Tracker command relays: relay 1 with Tracker 1, relay 2 with Tracker 2 (their row is locked on the Relays page).
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @returns Promise resolving to `number[]`.
+   */
   async function commandRelays(phone: string): Promise<number[]> {
     const tracker = (await prefsOf(phone)).tracker;
     return tracker && tracker.enabled ? [...(tracker.tracker1 ? [1] : []), ...(tracker.tracker2 ? [2] : [])] : [];
   }
-  // Relays live control may set: 0-2 except Tracker command relays, plus 3-10 with Tracker 2 and 11-18 with Tracker 1.
+  /**
+   * Relays live control may set: 0-2 except Tracker command relays, plus 3-10 with Tracker 2 and 11-18 with Tracker 1.
+   *
+   * @param cmd - `number[]` value.
+   * @returns `number[]` result.
+   */
   function liveRelays(cmd: number[]): number[] {
     const range = (from: number) => Array.from({ length: 8 }, (_, i) => from + i);
     return [...[0, 1, 2].filter((relay) => !cmd.includes(relay)), ...(cmd.includes(2) ? range(3) : []), ...(cmd.includes(1) ? range(11) : [])];
   }
-  // Tone-open digits used by more than one tone of relays 0-2, e.g. "3 (Relay 0 Momentary, Relay 1 Hold)".
-  // Relays in `skip` are left out.
+  /**
+   * Tone-open digits used by more than one tone of relays 0-2, e.g. "3 (Relay 0 Momentary, Relay 1 Hold)".
+   * Relays in `skip` are left out.
+   *
+   * @param settings - Settings map or configuration.
+   * @param skip - `number[]` value.
+   * @returns `string[]` result.
+   */
   function toneConflicts(settings: GateSetting[], skip: number[]): string[] {
     const uses = new Map<string, string[]>();
     for (const setting of settings) {
@@ -46,24 +73,46 @@ function createRelayRules(deps: ContextModule) {
 }
 type RelayRules = ReturnType<typeof createRelayRules>;
 
-// Reading and changing the working copy: the pages' data, gate settings, duplicate checks and the board buffers.
+/**
+ * Reading and changing the working copy: the pages' data, gate settings, duplicate checks and the board buffers.
+ *
+ * @param deps - Injected module dependencies.
+ * @param relays - `RelayRules` value.
+ * @returns Operation result.
+ */
 function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
-  const { defaults, prefsOf, send, store } = deps;
+  const { defaults, prefsOf, store } = deps;
   const { toneConflicts } = relays;
-  // A page of the transaction list (the saved history, tx-history.ts; GET /data), with names from the working copy's
-  // values and transactions.next for the older page.
+  /**
+   * A page of the transaction list (the saved history, tx-history.ts; GET /data), with names from the working copy's
+   * values and transactions.next for the older page.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @param page - `{ before?: number; limit: number }` value.
+   * @returns Promise resolving to the operation result.
+   */
   const gateData = async (phone: string, page: { before?: number; limit: number }) => {
     const [prefs, tx, pulledAt, working] = await Promise.all([prefsOf(phone), dk.readTransactionPage(store, phone, page),
       dk.txPulledAt(store, phone), dk.loadWorkingState(store, phone)]);
     const data = loadData(pulledAt, working && working.state, prefs.deviceAssociation, tx.records);
     return { transactions: data.transactions && { ...data.transactions, next: tx.next } };
   };
-  // Every saved transaction, as the camera code needs it (time, event type, access).
+  /**
+   * Every saved transaction, as the camera code needs it (time, event type, access).
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @returns Computed result.
+   */
   const cameraTransactions = async (phone: string) => cameraRows((await dk.readTransactionPage(store, phone)).records);
   const TX_PAGE = 2000;
   const TX_PAGE_MAX = 10000;
-  // Gate settings are read from and saved to the working copy (see gate-cache.ts); the base copy stays as the
-  // gate's values. Nothing is sent to the gate.
+  /**
+   * Gate settings are read from and saved to the working copy (see gate-cache.ts); the base copy stays as the
+   * gate's values. Nothing is sent to the gate.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @returns HTTP `[status, body]` reply tuple.
+   */
   async function gateSettings(phone: string): Promise<Reply> {
     const status = await dk.ensureCache(store, phone);
     const names = await dk.readCacheFile(store, phone, 'names.bin');
@@ -73,7 +122,14 @@ function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
       ? { ...setting, value: hide(setting.value), gate: hide(gate[i].value) } : { ...setting, gate: gate[i].value }));
     return [200, { pulled: names.baseTime, saved: names.savedTime, cache: status, fields }];
   }
-  // A save that changes a tone-open digit is refused while two tones share a digit.
+  /**
+   * A save that changes a tone-open digit is refused while two tones share a digit.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param changes - Map of setting keys to new values.
+   * @param cmd - `number[]` value.
+   * @returns HTTP `[status, body]` reply tuple.
+   */
   async function saveSettings(gate: Gate, changes: Body, cmd: number[]): Promise<Reply> {
     const names = await dk.readCacheFile(store, gate.phoneNumber, 'names.bin');
     const { buffer, changed } = dk.applyGateSettings(names.data, changes);
@@ -85,15 +141,25 @@ function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
     const { changedBlocks } = await dk.writeCacheFile(store, gate.phoneNumber, 'names.bin', buffer);
     return [200, { changed, changedBlocks }];
   }
-  // Refuses (409) a send while the working copy has a directory code, entry code or card held by more than one entry.
+  /**
+   * Refuses (409) a send while the working copy has a directory code, entry code or card held by more than one entry.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @throws HTTP 409 error on invalid input or conflict.
+   */
   async function refuseDuplicates(phone: string): Promise<void> {
     const dups = dk.findDuplicates(await readBuffers(phone));
     if (dups.length) {
       throw dk.httpError(`Fix these before sending: ${dups.map((duplicate) => duplicate.text).join('; ')}`, 409);
     }
   }
-  // Residents/vendors read from and saved to the working copy (never the gate). The editor keys on the
-  // directory code; the area-code table lets the UI offer existing area codes. Each row carries its local note.
+  /**
+   * Residents/vendors read from and saved to the working copy (never the gate). The editor keys on the
+   * directory code; the area-code table lets the UI offer existing area codes. Each row carries its local note.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @returns Promise resolving to the operation result.
+   */
   async function editorResidents(gate: Gate) {
     const notes = await dk.getNotes(store, gate.phoneNumber);
     const { files: work, status: cache } = await dk.readCache(store, gate.phoneNumber);
@@ -109,13 +175,25 @@ function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
     return [200, { ...res, rows, areaCodes, emptyCodes, dirDigits, duplicates, cache, pulled: names.baseTime, saved: names.savedTime }] as const;
   }
   const WORK_FILES: (keyof BoardBuffers)[] = ['names', 'phone', 'cards'];
-  // The three working-copy buffers (throws when there is no working copy).
+  /**
+   * The three working-copy buffers (throws when there is no working copy).
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @returns Promise resolving to `BoardBuffers`.
+   */
   async function readBuffers(phone: string): Promise<BoardBuffers> {
     const work = await dk.readCacheFiles(store, phone);
     return { names: work['names.bin'].data, phone: work['phone.bin'].data, cards: work['cards.bin'].data };
   }
-  // Reads the three working-copy buffers (or takes them from ctx.before, as withHistory read them), runs a transform,
-  // and saves the result when it changed anything; ctx.after gets the result, for History.
+  /**
+   * Reads the three working-copy buffers (or takes them from ctx.before, as withHistory read them), runs a transform,
+   * and saves the result when it changed anything; ctx.after gets the result, for History.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @param transform - `(bufs: BoardBuffers) => BoardBuffers` value.
+   * @param [ctx] - `EditContext` value.
+   * @returns Promise resolving to `[number, { changed: Record<string, number[]>; cache: CacheStatus }]`.
+   */
   async function applyToCache(phone: string, transform: (bufs: BoardBuffers) => BoardBuffers, ctx?: EditContext):
     Promise<[number, { changed: Record<string, number[]>; cache: CacheStatus }]> {
     const bufs = ctx?.before || await readBuffers(phone);
@@ -126,7 +204,13 @@ function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
     const saved = await dk.saveCacheFiles(store, phone, Object.fromEntries(WORK_FILES.map((file) => [`${file}.bin`, out[file]])));
     return [200, { changed: Object.fromEntries(names.map((name) => [`${name}.bin`, saved.blocks[`${name}.bin`]])), cache: saved.status }];
   }
-  // The working-copy buffers, or null when there is no working copy yet (other failures are thrown).
+  /**
+   * The working-copy buffers, or null when there is no working copy yet (other failures are thrown).
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @returns Promise resolving to `BoardBuffers | null`.
+   * @throws Error when validation or the underlying operation fails.
+   */
   async function workingBuffers(phone: string): Promise<BoardBuffers | null> {
     try {
       return await readBuffers(phone);
@@ -135,27 +219,42 @@ function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
       throw err;
     }
   }
-  // Area-code slot limit from the gate's saved "Area codes" setting.
+  /**
+   * Area-code slot limit from the gate's saved "Area codes" setting.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @returns Computed result.
+   */
   const editOpts = async (gate: Gate) => ({
     areaCodeSlots: dk.areaCodeLimit(((await prefsOf(gate.phoneNumber)).gateConfig || {}).areaCodes || defaults.areaCodes),
   });
-  // Downloads a working-copy file (.bin, or its change map as .map), built from the database.
-  async function sendFile(res: ServerResponse, phone: string, name: string) {
+  /**
+   * Downloads a working-copy file (.bin, or its change map as .map), built from the database.
+   *
+   * @param reply - Fastify reply object.
+   * @param phone - Gate system phone number (digits or formatted).
+   * @param name - Display name or filename.
+   * @returns Promise resolving to the operation result.
+   */
+  async function sendFile(reply: FastifyReply, phone: string, name: string) {
     const data = await dk.cacheFileData(store, phone, name);
-    if (!data) return send(res, 404, { error: 'File not available' });
-    res.writeHead(200, {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${name}"`,
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-    });
-    return res.end(data);
+    if (!data) return reply.code(404).send({ error: 'File not available' });
+    return reply
+      .header('Content-Disposition', `attachment; filename="${name}"`)
+      .type('application/octet-stream')
+      .send(data);
   }
   return { gateData, cameraTransactions, TX_PAGE, TX_PAGE_MAX, gateSettings, saveSettings, refuseDuplicates, editorResidents, WORK_FILES, applyToCache, workingBuffers, editOpts, sendFile };
 }
 type WorkingCopy = ReturnType<typeof createWorkingCopy>;
 
-// History: what each change did (details, revert data), recording it, notes, and reverting an entry.
+/**
+ * History: what each change did (details, revert data), recording it, notes, and reverting an entry.
+ *
+ * @param deps - Injected module dependencies.
+ * @param working - Decoded working-copy state.
+ * @returns Operation result.
+ */
 function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
   const { prefsOf, serial, store } = deps;
   const { WORK_FILES, workingBuffers } = working;
@@ -166,10 +265,22 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
   const PREF_LABELS: Record<string, string> = { relayLabels: 'Relay names', deviceAssociation: 'Device Association', gateConfig: 'Gate configuration',
     features: 'Floors and elevators shown', tracker: 'Tracker' };
   const MAX_DETAILS = 200;
-  // What changed between two working copies, for the history page: residents/vendors by directory code and
-  // gate settings by field. Secret settings show as changed without their values.
+  /**
+   * What changed between two working copies, for the history page: residents/vendors by directory code and
+   * gate settings by field. Secret settings show as changed without their values.
+   *
+   * @param before - State or buffer before the change.
+   * @param after - State or buffer after the change.
+   * @returns `RecordChange[]` result.
+   */
   function changeDetails(before: BoardBuffers, after: BoardBuffers): RecordChange[] {
-    // A copy that can't be decoded is written to the server log; the entry then lists only what could be compared.
+    /**
+     * A copy that can't be decoded is written to the server log; the entry then lists only what could be compared.
+     *
+     * @param what - Transfer kind (`residents`, `transactions`, `send`, or `snapshots`).
+     * @param decode - `() => T[]` value.
+     * @returns `T[]` result.
+     */
     const decoded = <T,>(what: string, decode: () => T[]): T[] => {
       try { return decode(); } catch (err) { logger('history').error`Change details: ${what} not decoded: ${(err as Error).message}`; return []; }
     };
@@ -202,7 +313,14 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     }
     return out;
   }
-  // Prefs changes as detail rows. Device Association rows are listed as "Row n".
+  /**
+   * Prefs changes as detail rows. Device Association rows are listed as "Row n".
+   *
+   * @param options - Options object.
+   * @param options.before - State or buffer before the change.
+   * @param options.after - State or buffer after the change.
+   * @returns `RecordChange[]` result.
+   */
   function prefsDetails({ before, after }: PrefsChange): RecordChange[] {
     const flat = (value: unknown): Record<string, unknown> => (Array.isArray(value)
       ? Object.fromEntries((value as DeviceRange[]).map((range, i) => [`Row ${i + 1}`, `${range.name} ${range.from}-${range.to}`]))
@@ -216,10 +334,20 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
       return { key, label: PREF_LABELS[key] || key, change: 'changed' as const, fields };
     });
   }
-  // Records a working-copy and/or prefs change in the gate's history, with the patch Revert needs.
-  // Nothing is recorded when nothing changed.
-  // The working copy's change is stored as values (dk.diffStates: residents, cards, settings and layout, before and
-  // after), which Revert undoes.
+  /**
+   * Records a working-copy and/or prefs change in the gate's history, with the patch Revert needs.
+   * Nothing is recorded when nothing changed.
+   * The working copy's change is stored as values (dk.diffStates: residents, cards, settings and layout, before and
+   * after), which Revert undoes.
+   *
+   * @param session - Authenticated user or API-key session.
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param entry - Resident/vendor entry data or history entry.
+   * @param before - State or buffer before the change.
+   * @param [prefs] - Gate-scoped preferences object.
+   * @param [known] - Map of existing snapshot log entries by minute.
+   * @returns Promise resolving to the operation result.
+   */
   async function logChange(session: Session, gate: Gate, entry: Record<string, unknown>, before: BoardBuffers | null, prefs: PrefsChange | null = null,
     known?: BoardBuffers) {
     const after = known || await workingBuffers(gate.phoneNumber);
@@ -249,7 +377,15 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     if (!before) throw dk.httpError('There is no working copy. Pull residents from the gate.', 409);
     return before;
   };
-  // The working-copy files with a values patch undone (only those that change).
+  /**
+   * The working-copy files with a values patch undone (only those that change).
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param before - State or buffer before the change.
+   * @param values - Decoded working-copy values.
+   * @returns Promise resolving to `Record<string, Buffer>`.
+   * @throws HTTP 409 error on invalid input or conflict.
+   */
   async function filesWithValuesUndone(gate: Gate, before: BoardBuffers, values: ValuesPatch): Promise<Record<string, Buffer>> {
     const undone = dk.undoValues(dk.decodeWorking(before), values);
     if (!undone) throw dk.httpError(`Cannot revert: ${LATER_CHANGE}`, 409);
@@ -261,7 +397,13 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     } catch (err) { throw dk.httpError(`Cannot revert: ${(err as Error).message}`, 409); }
     return Object.fromEntries(WORK_FILES.filter((file) => !built[file].equals(before[file])).map((file) => [`${file}.bin`, built[file]]));
   }
-  // Entries from before 2026-11-12 carry byte patches of the files instead.
+  /**
+   * Entries from before 2026-11-12 carry byte patches of the files instead.
+   *
+   * @param before - State or buffer before the change.
+   * @param patches - `Record<string, Patch>` value.
+   * @returns `Record<string, Buffer>` result.
+   */
   function filesWithPatchesUndone(before: BoardBuffers, patches: Record<string, Patch>): Record<string, Buffer> {
     return Object.fromEntries(Object.entries(patches).map(([name, patch]) => {
       const buffer = dk.undoPatch(before[name.replace(/\.bin$/, '') as keyof BoardBuffers], patch);
@@ -269,7 +411,14 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
       return [name, buffer];
     }));
   }
-  // The prefs change that undoes change (refused when a later change touched the same prefs).
+  /**
+   * The prefs change that undoes change (refused when a later change touched the same prefs).
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param change - Preference change `{ before, after }` to undo.
+   * @returns Promise resolving to `PrefsChange`.
+   * @throws HTTP 400 error on invalid input or conflict.
+   */
   async function prefsUndo(gate: Gate, change: PrefsChange): Promise<PrefsChange> {
     const now: Record<string, unknown> = { ...await prefsOf(gate.phoneNumber) };
     const keys = Object.keys(change.after);
@@ -278,8 +427,15 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     }
     return { before: change.after, after: change.before };
   }
-  // Undoes one history entry in the working copy (and prefs) only; the gate changes on the next Send.
-  // Refused when a later change touched the same bytes or prefs.
+  /**
+   * Undoes one history entry in the working copy (and prefs) only; the gate changes on the next Send.
+   * Refused when a later change touched the same bytes or prefs.
+   *
+   * @param session - Authenticated user or API-key session.
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param id - Unique record identifier.
+   * @returns HTTP `[status, body]` reply tuple.
+   */
   async function revertEvent(session: Session, gate: Gate, id: string): Promise<Reply> {
     const { event: entry, revertedBy: done } = await dk.historyEvent(store, gate.phoneNumber, id);
     if (!entry) return [404, { error: 'History entry not found' }];
@@ -299,7 +455,16 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     const event = await logChange(session, gate, { action: 'revert', revertOf: id, summary: `Reverted: ${entry.summary}` }, before, prefs);
     return [200, { id: event && event.id, cache: await dk.cacheStatus(store, gate.phoneNumber) }];
   }
-  // Saves (or, blank, clears) the local note of a directory code and records the change in history.
+  /**
+   * Saves (or, blank, clears) the local note of a directory code and records the change in history.
+   *
+   * @param session - Authenticated user or API-key session.
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param code - Directory code, HTTP status code, or verification code.
+   * @param note - `unknown` value.
+   * @param [why] - Why.
+   * @returns Promise resolving to `string`.
+   */
   async function saveNote(session: Session, gate: Gate, code: string, note: unknown, why = ''): Promise<string> {
     const before = await dk.getNote(store, gate.phoneNumber, code);
     const after = await dk.setNote(store, gate.phoneNumber, code, note, session.user);
@@ -313,7 +478,15 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     }
     return after;
   }
-  // After an entry is deleted or its code removed, its note goes too.
+  /**
+   * After an entry is deleted or its code removed, its note goes too.
+   *
+   * @param session - Authenticated user or API-key session.
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param code - Directory code, HTTP status code, or verification code.
+   * @param out - HTTP `[status, body]` reply from the delete operation.
+   * @returns HTTP `[status, body]` reply tuple.
+   */
   async function dropNote(session: Session, gate: Gate, code: string, out: Reply): Promise<Reply> {
     if (out[0] < 300) await saveNote(session, gate, code, '', ' (entry deleted)');
     return out;
@@ -321,11 +494,25 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
   return { PREF_LABELS, logChange, withHistory, pick, same, revertEvent, saveNote, dropNote };
 }
 
-// Saving the gate's preferences, including an Area codes change that converts the working copy.
+/**
+ * Saving the gate's preferences, including an Area codes change that converts the working copy.
+ *
+ * @param deps - Injected module dependencies.
+ * @param working - Decoded working-copy state.
+ * @returns Operation result.
+ */
 function createPrefsEditor(deps: ContextModule, working: WorkingCopy) {
   const { AREA_CODE_SETTINGS, defaults, GATE_CONFIG_KEYS, logged, objectField, store } = deps;
   const { applyToCache, WORK_FILES, workingBuffers } = working;
-  // Validates and saves gate-scoped prefs. was: the saved prefs. Returns [status, merged prefs].
+  /**
+   * Validates and saves gate-scoped prefs. was: the saved prefs. Returns [status, merged prefs].
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param body - Parsed JSON request body.
+   * @param was - The saved prefs.
+   * @returns HTTP `[status, body]` reply tuple.
+   * @throws Error when validation or the underlying operation fails.
+   */
   async function savePrefs(gate: Gate, body: Body, was: GatePrefs): Promise<Reply> {
     const prefs: { relayLabels?: Record<string, string>; deviceAssociation?: DeviceRange[]; gateConfig?: Record<string, string>;
       features?: GateFeatures; tracker?: GateTracker } = {};
@@ -337,8 +524,10 @@ function createPrefsEditor(deps: ContextModule, working: WorkingCopy) {
       prefs.tracker = { enabled: tracker.enabled === true, tracker1: tracker.tracker1 === true, tracker2: tracker.tracker2 === true,
         prevTime1: time(tracker.prevTime1), prevTime2: time(tracker.prevTime2) };
     }
-    // Only the relays given change (the Relays page saves one name at a time). Relays 0-2 always; Tracker relays
-    // 3-18 only when named.
+    /**
+     * Only the relays given change (the Relays page saves one name at a time). Relays 0-2 always; Tracker relays
+     * 3-18 only when named.
+     */
     const relayLabels = objectField(body, 'relayLabels');
     if (relayLabels) {
       const merged: Record<string, unknown> = { ...(was.relayLabels || {}), ...relayLabels };
@@ -365,7 +554,13 @@ function createPrefsEditor(deps: ContextModule, working: WorkingCopy) {
       throw err;
     }
   }
-  // The gate configuration's values from a request (each up to 40 characters). Throws 400 on a bad Area codes value.
+  /**
+   * The gate configuration's values from a request (each up to 40 characters). Throws 400 on a bad Area codes value.
+   *
+   * @param raw - Raw unparsed input.
+   * @returns `Record<string, string>` result.
+   * @throws HTTP 400 error on invalid input or conflict.
+   */
   function gateConfigFrom(raw: Record<string, unknown>): Record<string, string> {
     const cfg = Object.fromEntries(GATE_CONFIG_KEYS.map((key) => [key, String(raw[key] ?? '').slice(0, 40)]));
     if (cfg.areaCodes && !AREA_CODE_SETTINGS.includes(cfg.areaCodes)) {
@@ -373,9 +568,16 @@ function createPrefsEditor(deps: ContextModule, working: WorkingCopy) {
     }
     return cfg;
   }
-  // Converts the working copy to the names.bin/phone.bin layout of the "Area codes" setting (see
-  // convertAreaCodeMode). Returns the working copy before, when it changed (else null); throws 409 when it can't convert.
-  // "10 Area Codes" needs 10 or fewer area codes in use.
+  /**
+   * Converts the working copy to the names.bin/phone.bin layout of the "Area codes" setting (see
+   * convertAreaCodeMode). Returns the working copy before, when it changed (else null); throws 409 when it can't convert.
+   * "10 Area Codes" needs 10 or fewer area codes in use.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @param setting - `string` value.
+   * @returns Promise resolving to `BoardBuffers | null`.
+   * @throws HTTP 409 error on invalid input or conflict.
+   */
   async function applyAreaCodeSetting(phone: string, setting: string): Promise<BoardBuffers | null> {
     const before = await workingBuffers(phone);
     if (!before) return null; // no working copy yet
@@ -388,6 +590,12 @@ function createPrefsEditor(deps: ContextModule, working: WorkingCopy) {
   return { savePrefs, gateConfigFrom };
 }
 
+/**
+ * Create editing.
+ *
+ * @param deps - Injected module dependencies.
+ * @returns Operation result.
+ */
 export function createEditing(deps: ContextModule) {
   const relays = createRelayRules(deps);
   const working = createWorkingCopy(deps, relays);

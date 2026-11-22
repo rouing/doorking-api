@@ -5,6 +5,12 @@ import type { Job } from '../../src/types.ts';
 export type DockState = 'closed' | 'min' | 'open';
 
 export const JOB_COLORS = { idle: 'gray', running: 'blue', done: 'green', failed: 'red' } as const;
+/**
+ * Job label.
+ *
+ * @param job - `Job | null` value.
+ * @returns Rendered React element.
+ */
 export const jobLabel = (job: Job | null) => (!job || job.state === 'idle' ? '' : `${job.what}: ${job.state}`);
 
 interface JobDockProps {
@@ -13,7 +19,15 @@ interface JobDockProps {
   onState: (state: DockState) => void;
 }
 
-// Gate connection progress: a window in the corner that can be minimized to its title bar or closed.
+/**
+ * Gate connection progress: a window in the corner that can be minimized to its title bar or closed.
+ *
+ * @param props - Component props.
+ * @param props.job - Job.
+ * @param props.state - Current state object.
+ * @param props.onState - On state.
+ * @returns Rendered React element.
+ */
 export function JobDock({ job, state, onState }: JobDockProps) {
   const log = useRef<HTMLPreElement>(null);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [job, state]);

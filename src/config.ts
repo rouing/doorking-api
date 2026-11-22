@@ -1,9 +1,14 @@
-// Server settings: config.json (by default in the project folder; --config or DOORKING_CONFIG for another path),
-// over the built-in defaults. Environment variables and command-line flags override the file (see loadConfig).
-// The file holds the database password, so it must be readable by its owner only (chmod 600), like the encryption
-// key next to it (paths.keyFile). Relative paths in the file are relative to the file's folder.
+/**
+ * @module src/config
+ *
+ * Server settings: config.json (by default in the project folder; --config or DOORKING_CONFIG for another path),
+ * over the built-in defaults, validated with Zod. Environment variables and command-line flags override the file.
+ * The file holds the database password, so it must be readable by its owner only (chmod 600), like the encryption
+ * key next to it (paths.keyFile). Relative paths in the file are relative to the file's folder.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { DEFAULT_URL } from './dks-cloud.ts';
 import { GATE_DEFAULTS } from './gate-pull.ts';
 
@@ -13,28 +18,32 @@ export interface DatabaseConfig {
   poolSize: number;
   testName: string; // database the tests use (one throwaway schema per test), same login
 }
-// A single sign-on provider (OpenID Connect: Entra ID, Google Workspace, Okta, …). id: in its redirect address
-// (/api/sso/<id>/callback); name: on the "Sign in with …" button. allowedDomains: email domains whose accounts may be
-// matched by email, linked or created ([] = none matched by email: only invitations and linking from User Settings).
-// autoCreate: unknown people from allowedDomains get an account (no gate access). passwords: false = accounts linked
-// to this provider can't sign in with a password. maxAgeHours: refuse sign-ins whose authentication at the provider
-// (auth_time) is older than this (0 = no limit).
+/**
+ * A single sign-on provider (OpenID Connect: Entra ID, Google Workspace, Okta, …). id: in its redirect address
+ * (/api/sso/<id>/callback); name: on the "Sign in with …" button. allowedDomains: email domains whose accounts may be
+ * matched by email, linked or created ([] = none matched by email: only invitations and linking from User Settings).
+ * autoCreate: unknown people from allowedDomains get an account (no gate access). passwords: false = accounts linked
+ * to this provider can't sign in with a password. maxAgeHours: refuse sign-ins whose authentication at the provider
+ * (auth_time) is older than this (0 = no limit).
+ */
 export interface SsoProvider {
   id: string; name: string; issuer: string; clientId: string; clientSecret: string;
   allowedDomains: string[]; autoCreate: boolean; passwords: boolean; maxAgeHours: number;
 }
 export interface ServerConfig {
   file: string | null; // the config file read, or null when there was none
-  server: { port: number; publicHost: string };
+  server: { host: string; port: number; publicHost: string; trustProxy: boolean };
   paths: { media: string; logs: string; keyFile: string }; // absolute
   database: DatabaseConfig;
   dks: { url: string };
-  // stepUpMinutes: how long a passkey confirmation covers the sensitive actions (see STEP_UP in server.ts).
+  /** stepUpMinutes: how long a passkey confirmation covers the sensitive actions (see STEP_UP in requests.ts). */
   security: { sessionIdleMinutes: number; sessionMaxHours: number; maxFailedSignIns: number; signInWindowMinutes: number; stepUpMinutes: number };
   schedules: { checkSeconds: number };
   cameras: { ffmpeg: string; tidyMinutes: number }; // ffmpeg: '' = tools/bin, else ffmpeg on the PATH; a path is absolute
-  // SMTP for account emails and gate alerts; host '' = email off. security: 'starttls' (port 587), 'tls' (465) or
-  // 'none'. appUrl: the address links in emails point to ('' = https://<server.publicHost>).
+  /**
+   * SMTP for account emails and gate alerts; host '' = email off. security: 'starttls' (port 587), 'tls' (465) or
+   * 'none'. appUrl: the address links in emails point to ('' = https://<server.publicHost>).
+   */
   email: { host: string; port: number; security: string; user: string; password: string; from: string; appUrl: string };
   sso: { providers: SsoProvider[] };
   gateDefaults: typeof GATE_DEFAULTS;
@@ -43,104 +52,151 @@ export interface ServerConfig {
 const ROOT = path.join(import.meta.dirname, '..');
 export const CONFIG_FILE = path.join(ROOT, 'config.json');
 
-const DEFAULTS = {
-  server: { port: 8080, publicHost: '' },
-  paths: { media: 'media', logs: 'logs', keyFile: 'doorking.key' },
-  database: { url: '', host: '127.0.0.1', port: 5432, name: 'doorking', user: 'doorking', password: '', poolSize: 5, testName: 'doorking_test' },
-  dks: { url: DEFAULT_URL },
-  security: { sessionIdleMinutes: 30, sessionMaxHours: 168, maxFailedSignIns: 5, signInWindowMinutes: 15, stepUpMinutes: 180 },
-  schedules: { checkSeconds: 30 },
-  cameras: { ffmpeg: '', tidyMinutes: 60 },
-  email: { host: '', port: 587, security: 'starttls', user: '', password: '', from: '', appUrl: '' },
-  sso: { providers: [] as SsoProvider[] },
-  gateDefaults: { ...GATE_DEFAULTS },
-};
-type Section = keyof typeof DEFAULTS;
-// Whole numbers and their allowed range; every other setting is text.
-const RANGES: Record<string, [number, number]> = {
-  'server.port': [1, 65535], 'database.port': [1, 65535], 'database.poolSize': [1, 100],
-  'security.sessionIdleMinutes': [1, 1440], 'security.sessionMaxHours': [1, 8760], 'security.maxFailedSignIns': [1, 100], 'security.signInWindowMinutes': [1, 1440], 'security.stepUpMinutes': [5, 1440],
-  'schedules.checkSeconds': [5, 3600], 'cameras.tidyMinutes': [5, 1440], 'email.port': [1, 65535],
-};
+function fail(msg: string): never { throw new Error(msg); }
+const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 
-const fail = (msg: string): never => { throw new Error(msg); };
+const textField = (def: string) => z.string({ error: 'must be text (in quotes)' }).default(def);
+const requiredText = () => z.string({ error: 'must be text (required)' }).trim().min(1, { error: 'must be text (required)' });
+const intRange = (min: number, max: number, def: number) =>
+  z.int({ error: `must be a whole number from ${min} to ${max}` })
+    .min(min, { error: `must be a whole number from ${min} to ${max}` })
+    .max(max, { error: `must be a whole number from ${min} to ${max}` })
+    .default(def);
 
-// Checks one section of the file against the defaults; returns the merged section (each value checked to have its
-// default's kind: a whole number in RANGES, else text).
-function section<S extends Exclude<Section, 'sso'>>(name: S, given: unknown, where: string): (typeof DEFAULTS)[S] {
-  const def = DEFAULTS[name] as Record<string, unknown>;
-  if (given === undefined) return { ...DEFAULTS[name] };
-  if (!given || typeof given !== 'object' || Array.isArray(given)) fail(`${where}: "${name}" must be an object`);
-  const out: Record<string, unknown> = { ...def };
-  for (const [k, v] of Object.entries(given as Record<string, unknown>)) {
-    const key = `${name}.${k}`;
-    if (!(k in def)) fail(`${where}: unknown setting "${key}"`);
-    const range = RANGES[key];
-    if (range && (!Number.isInteger(v) || (v as number) < range[0] || (v as number) > range[1])) {
-      fail(`${where}: "${key}" must be a whole number from ${range[0]} to ${range[1]}`);
+const objError = { error: 'must be an object' };
+
+const SsoProviderSchema = z.strictObject({
+  id: requiredText().transform((value) => value.toLowerCase()).refine((value) => /^[a-z0-9][a-z0-9-]{0,31}$/.test(value), {
+    error: 'must be 1-32 lower-case letters, digits or dashes',
+  }),
+  name: requiredText(),
+  issuer: requiredText().superRefine((value, ctx) => {
+    let url: URL;
+    try { url = new URL(value); } catch { ctx.addIssue({ code: 'custom', message: 'must be a URL' }); return; }
+    const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
+      ctx.addIssue({ code: 'custom', message: 'must be an https:// URL' });
+      return;
     }
-    if (!range && typeof v !== 'string') fail(`${where}: "${key}" must be text (in quotes)`);
-    out[k] = v;
+    if (url.hostname === 'login.microsoftonline.com' && /^\/(common|organizations|consumers)(\/|$)/i.test(url.pathname)) {
+      ctx.addIssue({ code: 'custom', message: 'must name your Entra tenant (https://login.microsoftonline.com/<tenant ID>/v2.0), not common, organizations or consumers' });
+    }
+  }),
+  clientId: requiredText(),
+  clientSecret: z.string({ error: 'must be text' }).trim().default(''),
+  allowedDomains: z.array(z.string().regex(DOMAIN_RE), { error: 'must be a list of domains such as ["example.com"]' })
+    .default([])
+    .transform((list) => list.map((domain) => domain.toLowerCase())),
+  autoCreate: z.boolean({ error: 'must be true or false' }).default(false),
+  passwords: z.boolean({ error: 'must be true or false' }).default(true),
+  maxAgeHours: z.int({ error: 'must be a whole number of hours, 0-720 (0 = no limit)' })
+    .min(0, { error: 'must be a whole number of hours, 0-720 (0 = no limit)' })
+    .max(720, { error: 'must be a whole number of hours, 0-720 (0 = no limit)' })
+    .default(0),
+}, objError).superRefine((provider, ctx) => {
+  if (provider.autoCreate && !provider.allowedDomains.length) {
+    ctx.addIssue({ code: 'custom', path: ['autoCreate'], message: 'needs allowedDomains' });
   }
-  return out as (typeof DEFAULTS)[S];
+});
+
+const SsoSectionSchema = z.strictObject({
+  providers: z.array(SsoProviderSchema, { error: 'must be a list' }).default([]).superRefine((providers, ctx) => {
+    const seen = new Set<string>();
+    for (const provider of providers) {
+      if (seen.has(provider.id)) ctx.addIssue({ code: 'custom', message: `two providers have the id "${provider.id}"` });
+      seen.add(provider.id);
+    }
+  }),
+}, objError).default({ providers: [] });
+
+const ConfigSchema = z.strictObject({
+  server: z.strictObject({
+    host: textField('127.0.0.1'),
+    port: intRange(1, 65535, 8080),
+    publicHost: textField(''),
+    trustProxy: z.boolean({ error: 'must be true or false' }).default(false),
+  }, objError).prefault({}),
+  paths: z.strictObject({
+    media: textField('media'),
+    logs: textField('logs'),
+    keyFile: textField('doorking.key'),
+  }, objError).prefault({}),
+  database: z.strictObject({
+    url: textField(''),
+    host: textField('127.0.0.1'),
+    port: intRange(1, 65535, 5432),
+    name: textField('doorking'),
+    user: textField('doorking'),
+    password: textField(''),
+    poolSize: intRange(1, 100, 5),
+    testName: textField('doorking_test'),
+  }, objError).prefault({}),
+  dks: z.strictObject({
+    url: textField(DEFAULT_URL),
+  }, objError).prefault({}),
+  security: z.strictObject({
+    sessionIdleMinutes: intRange(1, 1440, 30),
+    sessionMaxHours: intRange(1, 8760, 168),
+    maxFailedSignIns: intRange(1, 100, 5),
+    signInWindowMinutes: intRange(1, 1440, 15),
+    stepUpMinutes: intRange(5, 1440, 180),
+  }, objError).prefault({}),
+  schedules: z.strictObject({
+    checkSeconds: intRange(5, 3600, 30),
+  }, objError).prefault({}),
+  cameras: z.strictObject({
+    ffmpeg: textField(''),
+    tidyMinutes: intRange(5, 1440, 60),
+  }, objError).prefault({}),
+  email: z.strictObject({
+    host: textField(''),
+    port: intRange(1, 65535, 587),
+    security: textField('starttls'),
+    user: textField(''),
+    password: textField(''),
+    from: textField(''),
+    appUrl: textField(''),
+  }, objError).prefault({}),
+  sso: SsoSectionSchema,
+  gateDefaults: z.strictObject({
+    siteName: textField(GATE_DEFAULTS.siteName),
+    memorySize: textField(GATE_DEFAULTS.memorySize),
+    areaCodes: textField(GATE_DEFAULTS.areaCodes),
+    modelNumber: textField(GATE_DEFAULTS.modelNumber),
+    antiPassBack: textField(GATE_DEFAULTS.antiPassBack),
+    interface1816: textField(GATE_DEFAULTS.interface1816),
+    dialDelay: textField(GATE_DEFAULTS.dialDelay),
+  }, objError).prefault({}),
+});
+
+function formatPath(parts: PropertyKey[]): string {
+  let out = '';
+  for (const part of parts) {
+    out += typeof part === 'number' ? `[${part}]` : out ? `.${String(part)}` : String(part);
+  }
+  return out;
 }
 
-const PROVIDER_KEYS = ['id', 'name', 'issuer', 'clientId', 'clientSecret', 'allowedDomains', 'autoCreate', 'passwords', 'maxAgeHours'];
-const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-
-// Checks the sso section: { providers: [SsoProvider, …] }.
-function ssoSection(given: unknown, where: string): { providers: SsoProvider[] } {
-  if (given === undefined) return { providers: [] };
-  if (!isObject(given)) fail(`${where}: "sso" must be an object`);
-  const sso = given as Record<string, unknown>;
-  for (const key of Object.keys(sso)) if (key !== 'providers') fail(`${where}: unknown setting "sso.${key}"`);
-  const list = sso.providers ?? [];
-  if (!Array.isArray(list)) fail(`${where}: "sso.providers" must be a list`);
-  const ids = new Set<string>();
-  return { providers: (list as unknown[]).map((item, i): SsoProvider => {
-    const at = `sso.providers[${i}]`;
-    if (!isObject(item)) return fail(`${where}: "${at}" must be an object`);
-    const provider = item;
-    for (const key of Object.keys(provider)) if (!PROVIDER_KEYS.includes(key)) fail(`${where}: unknown setting "${at}.${key}"`);
-    const text = (key: string, required = true): string => {
-      const value = provider[key];
-      if (value === undefined && !required) return '';
-      if (typeof value !== 'string' || (required && !value.trim())) fail(`${where}: "${at}.${key}" must be text${required ? ' (required)' : ''}`);
-      return (value as string).trim();
-    };
-    const flag = (key: string, def: boolean): boolean => {
-      if (provider[key] === undefined) return def;
-      if (typeof provider[key] !== 'boolean') fail(`${where}: "${at}.${key}" must be true or false`);
-      return provider[key] as boolean;
-    };
-    const id = text('id').toLowerCase();
-    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) fail(`${where}: "${at}.id" must be 1-32 lower-case letters, digits or dashes`);
-    if (ids.has(id)) fail(`${where}: two providers have the id "${id}"`);
-    ids.add(id);
-    const issuer = text('issuer');
-    let url: URL | null = null;
-    try { url = new URL(issuer); } catch { fail(`${where}: "${at}.issuer" must be a URL`); }
-    const local = url!.hostname === 'localhost' || url!.hostname === '127.0.0.1';
-    if (url!.protocol !== 'https:' && !(url!.protocol === 'http:' && local)) fail(`${where}: "${at}.issuer" must be an https:// URL`);
-    if (url!.hostname === 'login.microsoftonline.com' && /^\/(common|organizations|consumers)(\/|$)/i.test(url!.pathname)) {
-      fail(`${where}: "${at}.issuer" must name your Entra tenant (https://login.microsoftonline.com/<tenant ID>/v2.0), not common, organizations or consumers`);
-    }
-    const domains = provider.allowedDomains ?? [];
-    if (!Array.isArray(domains) || domains.some((domain) => typeof domain !== 'string' || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(domain))) {
-      fail(`${where}: "${at}.allowedDomains" must be a list of domains such as ["example.com"]`);
-    }
-    const autoCreate = flag('autoCreate', false);
-    const maxAgeHours = provider.maxAgeHours ?? 0;
-    if (!Number.isInteger(maxAgeHours) || (maxAgeHours as number) < 0 || (maxAgeHours as number) > 720) {
-      fail(`${where}: "${at}.maxAgeHours" must be a whole number of hours, 0-720 (0 = no limit)`);
-    }
-    if (autoCreate && !(domains as string[]).length) fail(`${where}: "${at}.autoCreate" needs allowedDomains`);
-    return { id, name: text('name'), issuer, clientId: text('clientId'), clientSecret: text('clientSecret', false),
-      allowedDomains: (domains as string[]).map((domain) => domain.toLowerCase()), autoCreate, passwords: flag('passwords', true), maxAgeHours: maxAgeHours as number };
-  }) };
+function formatConfigError(error: z.ZodError, where: string): string {
+  const issue = error.issues[0];
+  const at = formatPath(issue.path);
+  if (issue.code === 'unrecognized_keys') {
+    const key = issue.keys[0];
+    return at ? `${where}: unknown setting "${at}.${key}"` : `${where}: unknown section "${key}"`;
+  }
+  if (issue.path.includes('allowedDomains')) {
+    const base = formatPath(issue.path.slice(0, issue.path.indexOf('allowedDomains') + 1));
+    return `${where}: "${base}" must be a list of domains such as ["example.com"]`;
+  }
+  if (issue.message.startsWith('two providers')) return `${where}: ${issue.message}`;
+  return at ? `${where}: "${at}" ${issue.message}` : `${where}: ${issue.message}`;
 }
 
-// On Linux/macOS a file holding secrets must not be readable by other users.
+/**
+ * On Linux/macOS a file holding secrets must not be readable by other users.
+ *
+ * @param file - File path or filename.
+ */
 export function checkPrivate(file: string): void {
   if (process.platform === 'win32' || !fs.existsSync(file)) return;
   if (fs.statSync(file).mode & 0o077) fail(`${file} can be read by other users. Run: chmod 600 ${file}`);
@@ -148,43 +204,64 @@ export function checkPrivate(file: string): void {
 
 export interface LoadOptions { file?: string; env?: NodeJS.ProcessEnv; args?: string[] }
 
-// The settings in effect: defaults < the config file < environment variables (PORT, PUBLIC_HOST, DATABASE_URL,
-// DKS_URL) < flags (--port, --public-host, --media, --logs, and the gate defaults --site-name, --memory,
-// --area-codes, --anti-passback, --interface-1816, --model). file: the config file (default --config,
-// DOORKING_CONFIG, else config.json in the project folder); a missing default file means all defaults.
-// Throws with a readable message on a bad file or value.
+/**
+ * Loads and validates the effective server configuration: defaults < config file < environment variables < CLI flags.
+ *
+ * @param [options] - Configuration loader options.
+ * @param [options.file] - Explicit path to `config.json` (defaults to `--config`, `DOORKING_CONFIG`, or project `config.json`).
+ * @param [options.env] - Environment variables map (defaults to `process.env`).
+ * @param [options.args] - Command-line arguments (defaults to `process.argv.slice(2)`).
+ * @returns Validated `ServerConfig`.
+ * @throws Error when the config file, permissions, or any setting value is invalid.
+ */
 export function loadConfig({ file: given, env = process.env, args = process.argv.slice(2) }: LoadOptions = {}): ServerConfig {
   const flag = (name: string): string | undefined => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
   const chosen = given || flag('--config') || env.DOORKING_CONFIG;
   const configFile = path.resolve(chosen || CONFIG_FILE);
-  let raw: Record<string, unknown> = {};
+  let raw: unknown = {};
   if (!fs.existsSync(configFile) && chosen) fail(`Config file ${configFile} not found`);
   if (fs.existsSync(configFile)) {
     try { raw = JSON.parse(fs.readFileSync(configFile, 'utf8')); } catch (err) { fail(`${configFile} is not valid JSON: ${(err as Error).message}`); }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`${configFile} must hold a JSON object`);
     checkPrivate(configFile);
   }
-  for (const name of Object.keys(raw)) if (!(name in DEFAULTS)) fail(`${configFile}: unknown section "${name}"`);
-  const read = <S extends Exclude<Section, 'sso'>>(name: S) => section(name, raw[name], configFile);
-  const sections: Omit<ServerConfig, 'file'> = {
-    server: read('server'), paths: read('paths'), database: read('database'), dks: read('dks'), security: read('security'),
-    schedules: read('schedules'), cameras: read('cameras'), email: read('email'), sso: ssoSection(raw.sso, configFile), gateDefaults: read('gateDefaults'),
-  };
+  const parsed = ConfigSchema.safeParse(raw);
+  if (!parsed.success) fail(formatConfigError(parsed.error, configFile));
+  const sections = parsed.data;
   const dir = path.dirname(configFile);
-  const number = (value: string, key: string) => { const parsed = Number(value); return Number.isInteger(parsed) ? parsed : fail(`${key} must be a whole number`); };
-  if (env.PORT) sections.server.port = number(env.PORT, 'PORT');
+  const parsePort = (value: string, key: string) => {
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) fail(`${key} must be a whole number from 0 to 65535`);
+    return port;
+  };
+  const parseBool = (value: string, key: string) => {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1') return true;
+    if (normalized === 'false' || normalized === '0' || normalized === '') return false;
+    fail(`${key} must be true or false`);
+  };
+  if (env.HOST !== undefined) sections.server.host = env.HOST;
+  if (env.PORT) sections.server.port = parsePort(env.PORT, 'PORT');
   if (env.PUBLIC_HOST !== undefined) sections.server.publicHost = env.PUBLIC_HOST;
+  if (env.TRUST_PROXY !== undefined) sections.server.trustProxy = parseBool(env.TRUST_PROXY, 'TRUST_PROXY');
+  if (env.MEDIA_DIR) sections.paths.media = env.MEDIA_DIR;
+  if (env.LOGS_DIR) sections.paths.logs = env.LOGS_DIR;
+  if (env.KEY_FILE) sections.paths.keyFile = env.KEY_FILE;
   if (env.DATABASE_URL) sections.database.url = env.DATABASE_URL;
   if (env.DKS_URL) sections.dks.url = env.DKS_URL;
-  if (flag('--port')) sections.server.port = number(flag('--port')!, '--port');
+  if (flag('--host') !== undefined) sections.server.host = flag('--host')!;
+  if (flag('--port')) sections.server.port = parsePort(flag('--port')!, '--port');
   if (flag('--public-host') !== undefined) sections.server.publicHost = flag('--public-host')!;
   if (flag('--media')) sections.paths.media = flag('--media')!;
   if (flag('--logs')) sections.paths.logs = flag('--logs')!;
+  if (flag('--key-file')) sections.paths.keyFile = flag('--key-file')!;
   const gateFlags: [string, keyof ServerConfig['gateDefaults']][] = [['--site-name', 'siteName'], ['--memory', 'memorySize'],
     ['--area-codes', 'areaCodes'], ['--anti-passback', 'antiPassBack'], ['--interface-1816', 'interface1816'], ['--model', 'modelNumber']];
   for (const [name, key] of gateFlags) {
     if (flag(name)) sections.gateDefaults[key] = flag(name)!;
   }
+  sections.server.host = String(sections.server.host).trim();
+  if (!sections.server.host) fail(`${configFile}: "server.host" must not be empty`);
   sections.server.publicHost = String(sections.server.publicHost).trim().toLowerCase();
   for (const key of ['media', 'logs', 'keyFile'] as const) sections.paths[key] = path.resolve(dir, sections.paths[key]);
   if (!['starttls', 'tls', 'none'].includes(sections.email.security)) fail(`${configFile}: "email.security" must be starttls, tls or none`);
@@ -197,8 +274,14 @@ export function loadConfig({ file: given, env = process.env, args = process.argv
   return { file: fs.existsSync(configFile) ? configFile : null, ...sections };
 }
 
-// pg connection settings for the configured database, or for database `name` (the tests' testName) with the same
-// login. Throws when no password or URL is configured.
+/**
+ * pg connection settings for the configured database, or for database `name` (the tests' testName) with the same
+ * login. Throws when no password or URL is configured.
+ *
+ * @param db - Database configuration.
+ * @param [name] - Display name or filename.
+ * @returns `{ connectionString: string } | Record<string, unknown>` result.
+ */
 export function connectionSettings(db: DatabaseConfig, name = db.name): { connectionString: string } | Record<string, unknown> {
   if (db.url) {
     if (name === db.name) return { connectionString: db.url };
@@ -210,14 +293,24 @@ export function connectionSettings(db: DatabaseConfig, name = db.name): { connec
   return { host: db.host, port: db.port, user: db.user, password: db.password, database: name };
 }
 
-// The app's login and database name, from database.url when set, else the separate fields.
+/**
+ * The app's login and database name, from database.url when set, else the separate fields.
+ *
+ * @param db - Database configuration.
+ * @returns `{ user: string; password: string; name: string }` result.
+ */
 export function databaseLogin(db: DatabaseConfig): { user: string; password: string; name: string } {
   if (!db.url) return { user: db.user, password: db.password, name: db.name };
   const url = new URL(db.url);
   return { user: decodeURIComponent(url.username), password: decodeURIComponent(url.password), name: decodeURIComponent(url.pathname.slice(1)) };
 }
 
-// The settings with passwords and URLs hidden, for --check-config and the server log.
+/**
+ * The settings with passwords and URLs hidden, for --check-config and the server log.
+ *
+ * @param config - Validated server configuration.
+ * @returns `ServerConfig` result.
+ */
 export function maskedConfig(config: ServerConfig): ServerConfig {
   return {
     ...config,

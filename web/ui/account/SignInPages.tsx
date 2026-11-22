@@ -1,4 +1,8 @@
-// Pages shown before a normal sign-in: email links, forgotten password, first setup, forced password change.
+/**
+ * @module web/ui/account/SignInPages
+ *
+ * Pages shown before a normal sign-in: email links, forgotten password, first setup, forced password change.
+ */
 import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Callout, Card, Container, Flex, Heading, Text, TextField } from '@radix-ui/themes';
 import type { SsoProviderInfo } from '../../../src/types.ts';
@@ -15,9 +19,18 @@ interface EmailLinkProps {
   sso?: SsoProviderInfo[];
 }
 
-// The page an email link opens (#verify=, #reset=, #invite= in the address): confirms the email, or asks for a new
-// password (reset) or the first one (invitation, which also signs in; or accept it with a single sign-on provider, sso).
-// onDone clears the link and reloads the session.
+/**
+ * The page an email link opens (#verify=, #reset=, #invite= in the address): confirms the email, or asks for a new
+ * password (reset) or the first one (invitation, which also signs in; or accept it with a single sign-on provider, sso).
+ * onDone clears the link and reloads the session.
+ *
+ * @param props - Component props.
+ * @param props.kind - Item or operation kind.
+ * @param props.token - One-time link token or session token.
+ * @param props.onDone - Callback invoked when the action completes.
+ * @param [props.sso] - Per-server SSO flow and discovery cache.
+ * @returns Rendered React element.
+ */
 export function EmailLink({ kind, token, onDone, sso = [] }: EmailLinkProps) {
   const [password, setPassword] = useState('');
   const [again, setAgain] = useState('');
@@ -93,8 +106,14 @@ interface ForgotPasswordProps {
   onBack: () => void;
 }
 
-// "Forgot your password?": sends a reset link to the account's confirmed email. The reply never says whether the
-// account exists.
+/**
+ * "Forgot your password?": sends a reset link to the account's confirmed email. The reply never says whether the
+ * account exists.
+ *
+ * @param props - Component props.
+ * @param props.onBack - On back.
+ * @returns Rendered React element.
+ */
 export function ForgotPassword({ onBack }: ForgotPasswordProps) {
   const [id, setId] = useState('');
   const [info, setInfo] = useState('');
@@ -121,7 +140,13 @@ interface FirstSetupProps {
   onDone: () => void;
 }
 
-// First start: no account exists yet. The first account becomes admin of every gate already on this server.
+/**
+ * First start: no account exists yet. The first account becomes admin of every gate already on this server.
+ *
+ * @param props - Component props.
+ * @param props.onDone - Callback invoked when the action completes.
+ * @returns Rendered React element.
+ */
 export function FirstSetup({ onDone }: FirstSetupProps) {
   const [setupCode, setSetupCode] = useState('');
   const [username, setUsername] = useState('');
@@ -173,7 +198,14 @@ interface ForcedPasswordChangeProps {
   onDone: () => void;
 }
 
-// After a gate admin (or the server's operator) set this account's password: the user picks their own first.
+/**
+ * After a gate admin (or the server's operator) set this account's password: the user picks their own first.
+ *
+ * @param props - Component props.
+ * @param props.user - Local account username (or actor name for audit logs).
+ * @param props.onDone - Callback invoked when the action completes.
+ * @returns Rendered React element.
+ */
 export function ForcedPasswordChange({ user, onDone }: ForcedPasswordChangeProps) {
   const signOut = async () => { await api('DELETE', '/api/session').catch(() => {}); onDone(); };
   return (

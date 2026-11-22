@@ -1,11 +1,15 @@
-// Gate camera snapshots. A gate can have a Dahua recorder, reached through Dahua's P2P cloud by the dahua-p2p
-// package's relay tunnel (the bridge, run in this process). After a transactions pull, frames from the recording during each new
-// transaction's minute are saved with ffmpeg to <gate dir>/snapshots/<YYYYMMDD-HHMM>/ch<N>-<SS>.jpg, and frames
-// from the minute after it to ch<N>-a<SS>.jpg. In video mode each channel's recording from the start of the
-// minute for VIDEO_SECS is saved instead, as ch<N>.mp4 with a first-frame picture ch<N>.jpg.
-// Recorder playback takes local time (verified 2026-10-19); clockOffset (seconds) is added to the gate's time.
-// Playback streams at about real-time speed, so a clip takes about VIDEO_SECS to fetch (verified 2026-10-19).
-// The recorder password is encrypted in the database (see db.ts) and given only to ffmpeg (the tunnel needs just the serial).
+/**
+ * @module src/cameras
+ *
+ * Gate camera snapshots. A gate can have a Dahua recorder, reached through Dahua's P2P cloud by the dahua-p2p
+ * package's relay tunnel (the bridge, run in this process). After a transactions pull, frames from the recording during each new
+ * transaction's minute are saved with ffmpeg to <gate dir>/snapshots/<YYYYMMDD-HHMM>/ch<N>-<SS>.jpg, and frames
+ * from the minute after it to ch<N>-a<SS>.jpg. In video mode each channel's recording from the start of the
+ * minute for VIDEO_SECS is saved instead, as ch<N>.mp4 with a first-frame picture ch<N>.jpg.
+ * Recorder playback takes local time (verified 2026-10-19); clockOffset (seconds) is added to the gate's time.
+ * Playback streams at about real-time speed, so a clip takes about VIDEO_SECS to fetch (verified 2026-10-19).
+ * The recorder password is encrypted in the database (see db.ts) and given only to ffmpeg (the tunnel needs just the serial).
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { phoneDigits, run, type Store } from './db.ts';
@@ -17,8 +21,10 @@ import { type CameraConfig, CLIP_TRIES, recorderSettings, type Log, NO_VIDEO_MSG
 import { httpError } from './errors.ts';
 
 type CameraRunner = ReturnType<typeof createCameraRunner>;
-// When the recorder has no recording at a frame's time, these seconds around it are tried (once each) and the
-// first picture saved instead.
+/**
+ * When the recorder has no recording at a frame's time, these seconds around it are tried (once each) and the
+ * first picture saved instead.
+ */
 const NEARBY_SECS = [-2, 2];
 const CLIP_MAX_PARTS = 8; // most parts joined into one video
 const CLIP_GAP_STEP = 5; // seconds a video request moves on past a gap in the recording
@@ -30,7 +36,13 @@ type RecorderConfig = CameraConfig & WithPassword;
 
 type Settled<T> = { value: T; error?: undefined } | { value?: undefined; error: CodedError };
 
-// Runs fns with at most `limit` at a time; returns their settled results in order.
+/**
+ * Runs fns with at most `limit` at a time; returns their settled results in order.
+ *
+ * @param fns - `(() => Promise<T>)[]` value.
+ * @param limit - Maximum number of rows to return.
+ * @returns Promise resolving to `Settled<T>[]`.
+ */
 async function settleAll<T>(fns: (() => Promise<T>)[], limit: number): Promise<Settled<T>[]> {
   const out = new Array<Settled<T>>(fns.length);
   let next = 0;
@@ -44,8 +56,17 @@ async function settleAll<T>(fns: (() => Promise<T>)[], limit: number): Promise<S
   return out;
 }
 
-// The frames of a minute still to grab: { kept, jobs } (kept: files in have that are on disk). Partial videos
-// (short: { [file]: seconds }) are kept and grabbed again.
+/**
+ * The frames of a minute still to grab: { kept, jobs } (kept: files in have that are on disk). Partial videos
+ * (short: { [file]: seconds }) are kept and grabbed again.
+ *
+ * @param cfg - Configuration or settings object.
+ * @param dir - Per-gate media directory on disk.
+ * @param minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @param [have] - `string[]` value.
+ * @param [short] - { [file]: seconds }.
+ * @returns `{ kept: string[]; jobs: FrameJob[] }` result.
+ */
 function missingFrames(cfg: CameraConfig, dir: string, minute: string, have: string[] = [], short: Shifts = {}):
   { kept: string[]; jobs: FrameJob[] } {
   const folder = path.join(dir, 'snapshots', minute);
@@ -59,7 +80,13 @@ const clipQuery = (channel: number, at: number, secs = VIDEO_SECS): string =>
   `${playbackQuery(channel, at)}&endtime=${playbackTime(new Date(at + secs * 1000))}`;
 
 const isShort = (secs: number): boolean => secs < VIDEO_SECS - CLIP_SHORT_SECS;
-// short (file -> seconds) lists the videos that were cut off.
+/**
+ * short (file -> seconds) lists the videos that were cut off.
+ *
+ * @param short - Map of short video filenames to recorded durations in seconds.
+ * @param file - File path or filename.
+ * @param secs - `number` value.
+ */
 const noteShort = (short: Shifts, file: string, secs: number): void => {
   if (!isShort(secs)) {
     delete short[file];
@@ -76,13 +103,24 @@ const dropClip = (file: string): void => { fs.rmSync(file, { force: true }); fs.
 interface ClipOptions { signal?: AbortSignal; onRetry?: (error: Error) => void; log?: Log }
 interface ClipResult { secs: number; error: CodedError | null }
 
-// Saves channel's VIDEO_SECS of video from time at (ms) to outFile (.mp4) and its first frame to
-// posterFile(outFile). When the stream ends early (the P2P connection dropped; seen 2026-10-19) or sends no video
-// (also seen), the rest is asked for from where it stopped (gaps in the recording are skipped; see grabClipOnce),
-// and the parts are joined. A
-// video still more than CLIP_SHORT_SECS short is asked for again from the start, up to cfg.clipTries (default
-// CLIP_TRIES) times; the longest one is kept. Returns { secs, error }: the saved video's seconds and, when it is
-// short, why. Throws when no video was saved. log(message) gets resumes and short videos.
+/**
+ * Saves channel's VIDEO_SECS of video from time at (ms) to outFile (.mp4) and its first frame to
+ * posterFile(outFile). When the stream ends early (the P2P connection dropped; seen 2026-10-19) or sends no video
+ * (also seen), the rest is asked for from where it stopped (gaps in the recording are skipped; see grabClipOnce),
+ * and the parts are joined. A
+ * video still more than CLIP_SHORT_SECS short is asked for again from the start, up to cfg.clipTries (default
+ * CLIP_TRIES) times; the longest one is kept. Returns { secs, error }: the saved video's seconds and, when it is
+ * short, why. Throws when no video was saved. log(message) gets resumes and short videos.
+ *
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param cfg - Configuration or settings object.
+ * @param channel - Recorder camera channel number (1–64).
+ * @param at - Timestamp (`Date` or milliseconds).
+ * @param outFile - Destination file path on disk.
+ * @param [opts] - Optional settings.
+ * @returns Promise resolving to `ClipResult`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 async function grabClip(runner: CameraRunner, cfg: RecorderConfig, channel: number, at: number, outFile: string,
   opts: ClipOptions = {}): Promise<ClipResult> {
   const name = path.basename(outFile);
@@ -114,12 +152,24 @@ async function grabClip(runner: CameraRunner, cfg: RecorderConfig, channel: numb
   return { secs: bestSecs, error: error || new Error(`The recorder sent only ${Math.round(bestSecs)} s of ${VIDEO_SECS} s of video`) };
 }
 
-// grabClip to file, which may already hold a video of have seconds (0: none; VIDEO_SECS when complete): the new
-// video replaces it when complete or longer. Returns { secs, error, saved } for the video in file (saved: the new
-// one). Throws when there is no video in file.
+/**
+ * grabClip to file, which may already hold a video of have seconds (0: none; VIDEO_SECS when complete): the new
+ * video replaces it when complete or longer. Returns { secs, error, saved } for the video in file (saved: the new
+ * one). Throws when there is no video in file.
+ *
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param cfg - Configuration or settings object.
+ * @param channel - Recorder camera channel number (1–64).
+ * @param at - Timestamp (`Date` or milliseconds).
+ * @param file - File path or filename.
+ * @param have - `number` value.
+ * @param [opts] - Optional settings.
+ * @returns Promise resolving to `ClipResult & { saved: boolean }`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 async function saveClip(runner: CameraRunner, cfg: RecorderConfig, channel: number, at: number, file: string, have: number,
   opts: ClipOptions = {}): Promise<ClipResult & { saved: boolean }> {
-  // Always fetched beside the video and moved in when done, so a crash never leaves a cut-off ch<N>.mp4.
+  /** Always fetched beside the video and moved in when done, so a crash never leaves a cut-off ch<N>.mp4. */
   const tmp = file.replace(/\.mp4$/, '.new.mp4');
   const { log = () => {} } = opts;
   let result: ClipResult;
@@ -135,16 +185,38 @@ async function saveClip(runner: CameraRunner, cfg: RecorderConfig, channel: numb
   return { ...result, saved: true };
 }
 
-// Seconds of the video file in a minute's folder: 0 when missing or not in the snapshot log (logged false: a file left
-// by a crash), its short seconds when partial, else VIDEO_SECS.
+/**
+ * Seconds of the video file in a minute's folder: 0 when missing or not in the snapshot log (logged false: a file left
+ * by a crash), its short seconds when partial, else VIDEO_SECS.
+ *
+ * @param folder - `string` value.
+ * @param file - File path or filename.
+ * @param logged - `boolean` value.
+ * @param [short] - Map of short video filenames to recorded durations in seconds.
+ * @returns `number` result.
+ */
 const clipHave = (folder: string, file: string, logged: boolean, short: Shifts = {}): number =>
   (logged && fs.existsSync(path.join(folder, file)) ? short[file] || VIDEO_SECS : 0);
 
-// One try of grabClip; returns the saved video's seconds plus the seconds the recorder has no recording of.
-// A playback stream stops at a gap in the recording (a 404 just after it; a 15 s gap was seen 2026-10-20), so
-// on "No recording" the request moves on CLIP_GAP_STEP seconds (once each) until the recording starts again.
-// The stream also stops a second or two before a gap, so the rest is asked for while each part brings video (up to
-// CLIP_MAX_PARTS parts); CLIP_RESUMES limits only the requests that bring none.
+/**
+ * One try of grabClip; returns the saved video's seconds plus the seconds the recorder has no recording of.
+ * A playback stream stops at a gap in the recording (a 404 just after it; a 15 s gap was seen 2026-10-20), so
+ * on "No recording" the request moves on CLIP_GAP_STEP seconds (once each) until the recording starts again.
+ * The stream also stops a second or two before a gap, so the rest is asked for while each part brings video (up to
+ * CLIP_MAX_PARTS parts); CLIP_RESUMES limits only the requests that bring none.
+ *
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param cfg - Configuration or settings object.
+ * @param channel - Recorder camera channel number (1–64).
+ * @param at - Timestamp (`Date` or milliseconds).
+ * @param outFile - Destination file path on disk.
+ * @param [options] - Options object.
+ * @param [options.signal] - AbortSignal to cancel the operation.
+ * @param [options.onRetry] - On retry.
+ * @param [options.log] - Callback receiving progress or diagnostic messages.
+ * @returns Promise resolving to `number`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 async function grabClipOnce(runner: CameraRunner, cfg: RecorderConfig, channel: number, at: number, outFile: string,
   { signal, onRetry, log = () => {} }: ClipOptions = {}): Promise<number> {
   const name = path.basename(outFile);
@@ -191,8 +263,22 @@ async function grabClipOnce(runner: CameraRunner, cfg: RecorderConfig, channel: 
   }
 }
 
-// Grabs channel's frame at time at (ms); when the recorder has no recording then, tries NEARBY_SECS once each.
-// Returns the seconds the saved picture is from at (0 when taken at at); otherwise throws the first error.
+/**
+ * Grabs channel's frame at time at (ms); when the recorder has no recording then, tries NEARBY_SECS once each.
+ * Returns the seconds the saved picture is from at (0 when taken at at); otherwise throws the first error.
+ *
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param cfg - Configuration or settings object.
+ * @param channel - Recorder camera channel number (1–64).
+ * @param at - Timestamp (`Date` or milliseconds).
+ * @param outFile - Destination file path on disk.
+ * @param [options] - Options object.
+ * @param [options.signal] - AbortSignal to cancel the operation.
+ * @param [options.onRetry] - On retry.
+ * @param [options.log] - Callback receiving progress or diagnostic messages.
+ * @returns Promise resolving to `number`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 async function grabNearby(runner: CameraRunner, cfg: Recorder, channel: number, at: number, outFile: string,
   { signal, onRetry, log = () => {} }: ClipOptions = {}): Promise<number> {
   try {
@@ -215,12 +301,28 @@ async function grabNearby(runner: CameraRunner, cfg: Recorder, channel: number, 
   }
 }
 
-// Frames for one minute: each channel at each frame offset, skipping files already saved (have), one at a
-// time over the tunnel. onFrame runs after each grab; signal stops the minute. Once the recorder cannot be
-// reached (error code NO_CONNECTION) the minute's other frames are not tried. Returns { files, errors,
-// stopped, unreachable, shifts, short } with files including have, shifts { [file]: seconds } for the new pictures
-// taken off their planned time (see grabNearby) and short the minute's partial videos (see listSnapshots; given
-// ones are grabbed again and kept unless a longer one comes). log(message) gets each retried, shifted and failed frame.
+/**
+ * Frames for one minute: each channel at each frame offset, skipping files already saved (have), one at a
+ * time over the tunnel. onFrame runs after each grab; signal stops the minute. Once the recorder cannot be
+ * reached (error code NO_CONNECTION) the minute's other frames are not tried. Returns { files, errors,
+ * stopped, unreachable, shifts, short } with files including have, shifts { [file]: seconds } for the new pictures
+ * taken off their planned time (see grabNearby) and short the minute's partial videos (see listSnapshots; given
+ * ones are grabbed again and kept unless a longer one comes). log(message) gets each retried, shifted and failed frame.
+ *
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param cfg - Configuration or settings object.
+ * @param dir - Per-gate media directory on disk.
+ * @param options - Options object.
+ * @param options.minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @param options.ts - Ts.
+ * @param [have] - `string[]` value.
+ * @param [options6] - Options object.
+ * @param [options6.signal] - AbortSignal to cancel the operation.
+ * @param [options6.onFrame] - On frame.
+ * @param [options6.log] - Callback receiving progress or diagnostic messages.
+ * @param [options6.short] - Map of short video filenames to recorded durations in seconds.
+ * @returns Promise resolving to the operation result.
+ */
 async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: string, { minute, ts }: PendingMinute, have: string[] = [],
   { signal, onFrame = () => {}, log = () => {}, short: given = {} }: { signal?: AbortSignal; onFrame?: () => void; log?: Log; short?: Shifts } = {}) {
   const folder = path.join(dir, 'snapshots', minute);
@@ -267,14 +369,26 @@ async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: st
   return { files, errors, stopped, unreachable: unreachable ? unreachable.message : null, shifts, short };
 }
 
-// Fetches one frame (or video) of a minute again (the picture's refresh button). The new picture replaces the
-// saved one only once it is saved. The snapshot log gets the file; once every frame of the current settings is on disk the
-// minute is done (attempts unchanged). Returns the minute's log entry; when no picture is saved, throws the
-// grab's error with status 502 (the old picture, if any, is kept). A partial video is saved (marked short) only
-// when longer than the saved one. log(message) gets retries and failures.
-// Which saved picture or video: the gate, its media folder, the minute and the file name.
+/**
+ * Fetches one frame (or video) of a minute again (the picture's refresh button). The new picture replaces the
+ * saved one only once it is saved. The snapshot log gets the file; once every frame of the current settings is on disk the
+ * minute is done (attempts unchanged). Returns the minute's log entry; when no picture is saved, throws the
+ * grab's error with status 502 (the old picture, if any, is kept). A partial video is saved (marked short) only
+ * when longer than the saved one. log(message) gets retries and failures.
+ * Which saved picture or video: the gate, its media folder, the minute and the file name.
+ */
 export interface SnapshotFileRef { phone: string; dir: string; minute: string; file: string }
 
+/**
+ * Refresh snapshot.
+ *
+ * @param store - Database store handle.
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param ref - Target snapshot file reference (`phone`, `dir`, `minute`, `file`).
+ * @param [options] - Options object.
+ * @param [options.log] - Callback receiving progress or diagnostic messages.
+ * @returns Promise resolving to `SnapshotMinute | undefined`.
+ */
 export async function refreshSnapshot(store: Store, runner: CameraRunner, ref: SnapshotFileRef,
   { log: logTo = () => {} }: { log?: Log } = {}): Promise<SnapshotMinute | undefined> {
   const target = await refreshTarget(store, ref);
@@ -285,8 +399,10 @@ export async function refreshSnapshot(store: Store, runner: CameraRunner, ref: S
   return (await listSnapshots(store, ref.phone))[ref.minute];
 }
 
-// What refreshSnapshot fetches: the recorder settings, the file's channel and offset, when it was taken (at, ms), the
-// minute's log entry and folder. Only a minute in the snapshot log, from one of the configured cameras.
+/**
+ * What refreshSnapshot fetches: the recorder settings, the file's channel and offset, when it was taken (at, ms), the
+ * minute's log entry and folder. Only a minute in the snapshot log, from one of the configured cameras.
+ */
 interface RefreshTarget extends SnapshotFileRef {
   cfg: RecorderConfig; frame: { channel: number; off: number; video?: boolean }; at: number; snapshot: SnapshotMinute; folder: string;
 }
@@ -302,8 +418,24 @@ async function refreshTarget(store: Store, ref: SnapshotFileRef): Promise<Refres
   return { ...ref, cfg, frame, at: start + (cfg.clockOffset + frame.off) * 1000, snapshot, folder };
 }
 
-// Fetches the file again (a video: the rest of it, noted in short; a picture: the nearest recorded second). 502 when
-// nothing could be saved.
+/**
+ * Fetches the file again (a video: the rest of it, noted in short; a picture: the nearest recorded second). 502 when
+ * nothing could be saved.
+ *
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param options - Options object.
+ * @param options.cfg - Configuration or settings object.
+ * @param options.frame - Frame.
+ * @param options.at - Timestamp (`Date` or milliseconds).
+ * @param options.snapshot - Snapshot.
+ * @param options.folder - Folder.
+ * @param options.minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @param options.file - File path or filename.
+ * @param short - Map of short video filenames to recorded durations in seconds.
+ * @param log - Callback receiving progress or diagnostic messages.
+ * @returns Promise resolving to `{ shift: number; clipError: CodedError | null }`.
+ * @throws HTTP 502 error on invalid input or conflict.
+ */
 async function fetchAgain(runner: CameraRunner, { cfg, frame, at, snapshot, folder, minute, file }: RefreshTarget, short: Shifts,
   log: (message: string) => void): Promise<{ shift: number; clipError: CodedError | null }> {
   fs.mkdirSync(folder, { recursive: true });
@@ -333,15 +465,38 @@ async function fetchAgain(runner: CameraRunner, { cfg, frame, at, snapshot, fold
   }
 }
 
-// The minute's status after a refresh: done once every frame is saved; else partial when this video came short or the
-// minute had failed, otherwise as it was.
+/**
+ * The minute's status after a refresh: done once every frame is saved; else partial when this video came short or the
+ * minute had failed, otherwise as it was.
+ *
+ * @param complete - `boolean` value.
+ * @param clipError - `CodedError | null` value.
+ * @param previous - `string` value.
+ * @returns `string` result.
+ */
 function refreshedStatus(complete: boolean, clipError: CodedError | null, previous: string): string {
   if (complete) return 'done';
   if (clipError || previous === 'failed') return 'partial';
   return previous;
 }
 
-// Records the refreshed file in the minute's log entry.
+/**
+ * Records the refreshed file in the minute's log entry.
+ *
+ * @param store - Database store handle.
+ * @param options - Options object.
+ * @param options.cfg - Configuration or settings object.
+ * @param options.snapshot - Snapshot.
+ * @param options.folder - Folder.
+ * @param options.phone - Gate system phone number (digits or formatted).
+ * @param options.dir - Per-gate media directory on disk.
+ * @param options.minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @param options.file - File path or filename.
+ * @param options3 - Options object.
+ * @param options3.shift - Shift.
+ * @param options3.clipError - Clip error.
+ * @param options3.short - Map of short video filenames to recorded durations in seconds.
+ */
 async function saveRefreshed(store: Store, { cfg, snapshot, folder, phone, dir, minute, file }: RefreshTarget,
   { shift, clipError, short }: { shift: number; clipError: CodedError | null; short: Shifts }): Promise<void> {
   const files = [...new Set([...snapshot.files, file])].filter((name) => fs.existsSync(path.join(folder, name)));
@@ -357,7 +512,14 @@ async function saveRefreshed(store: Store, { cfg, snapshot, folder, phone, dir, 
     JSON.stringify(shiftsOf(files, shifts)), JSON.stringify(shiftsOf(files, short))]);
 }
 
-// A live frame from each channel, to check the settings: <dir>/snapshots/live/ch<N>.jpg.
+/**
+ * A live frame from each channel, to check the settings: <dir>/snapshots/live/ch<N>.jpg.
+ *
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param cfg - Configuration or settings object.
+ * @param dir - Per-gate media directory on disk.
+ * @returns Promise resolving to `(CameraChannel & { error?: string; file?: string })[]`.
+ */
 export async function liveSnapshots(runner: CameraRunner, cfg: RecorderConfig, dir: string):
   Promise<(CameraChannel & { error?: string; file?: string })[]> {
   const folder = path.join(dir, 'snapshots', 'live');
@@ -376,17 +538,33 @@ interface RunSnapshotsOptions {
   now?: number; onStatus?: Log; onProgress?: (progress: SnapshotProgress) => void; signal?: AbortSignal; log?: Log; minute?: string;
 }
 
-// Snapshots the gate's pending minutes (see pendingMinutes). rows: transaction rows. Returns null when the gate
-// has no enabled camera settings, else { minutes, done, partial, failed, stopped }. done: every frame saved or
-// not recorded; partial: some frames saved, others to try again on a later run; failed: no frame saved.
-// onProgress gets { minutes, minutesDone, frames, framesDone, current, byMinute }: current is the minute being
-// fetched (or null), byMinute { "<minute>": { frames, done } } the minutes not finished yet in this run.
-// signal (AbortSignal) stops the run; the minute
-// in progress is not recorded, so the next run does it again. When the recorder cannot be reached the run
-// ends after that minute and the result also has error (the reason); the next run carries on.
-// log(message) gets frame retries and failures, minutes not done, and why the run ended early.
-// minute (YYYYMMDD-HHMM): snapshot only that minute (one transaction's button), whatever its transaction type,
-// age or tries so far; a minute too recent to be recorded yet ends the run with error.
+/**
+ * Snapshots the gate's pending minutes (see pendingMinutes). rows: transaction rows. Returns null when the gate
+ * has no enabled camera settings, else { minutes, done, partial, failed, stopped }. done: every frame saved or
+ * not recorded; partial: some frames saved, others to try again on a later run; failed: no frame saved.
+ * onProgress gets { minutes, minutesDone, frames, framesDone, current, byMinute }: current is the minute being
+ * fetched (or null), byMinute { "<minute>": { frames, done } } the minutes not finished yet in this run.
+ * signal (AbortSignal) stops the run; the minute
+ * in progress is not recorded, so the next run does it again. When the recorder cannot be reached the run
+ * ends after that minute and the result also has error (the reason); the next run carries on.
+ * log(message) gets frame retries and failures, minutes not done, and why the run ended early.
+ * minute (YYYYMMDD-HHMM): snapshot only that minute (one transaction's button), whatever its transaction type,
+ * age or tries so far; a minute too recent to be recorded yet ends the run with error.
+ *
+ * @param store - Database store handle.
+ * @param runner - Camera runner managing dahua-p2p bridges and ffmpeg.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param dir - Per-gate media directory on disk.
+ * @param rows - Transaction rows.
+ * @param [options] - Options object.
+ * @param [options.now] - Reference timestamp in milliseconds (defaults to `Date.now()`).
+ * @param [options.onStatus] - Callback receiving progress lines.
+ * @param [options.onProgress] - Callback receiving snapshot progress updates.
+ * @param [options.signal] - AbortSignal to cancel the operation.
+ * @param [options.log] - Callback receiving progress or diagnostic messages.
+ * @param [options.minute] - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @returns Promise resolving to `SnapshotResult | null`.
+ */
 export async function runSnapshots(store: Store, runner: CameraRunner, phone: string, dir: string, rows: TxRow[],
   { now = Date.now(), onStatus = () => {}, onProgress = () => {}, signal, log: logTo = () => {}, minute }: RunSnapshotsOptions = {}):
   Promise<SnapshotResult | null> {
@@ -416,7 +594,17 @@ export async function runSnapshots(store: Store, runner: CameraRunner, phone: st
   return out;
 }
 
-// The minutes a run fetches: every pending one, or the one asked for (none while it may not be recorded yet: tooRecent).
+/**
+ * The minutes a run fetches: every pending one, or the one asked for (none while it may not be recorded yet: tooRecent).
+ *
+ * @param cfg - Configuration or settings object.
+ * @param rows - List of data rows.
+ * @param known - Map of existing snapshot log entries by minute.
+ * @param minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @param now - Reference timestamp in milliseconds (defaults to `Date.now()`).
+ * @returns `{ pending: PendingMinute[]; tooRecent: boolean }` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 function minutesToFetch(cfg: RecorderConfig, rows: TxRow[], known: Record<string, SnapshotMinute>, minute: string | undefined, now: number):
   { pending: PendingMinute[]; tooRecent: boolean } {
   if (!minute) return { pending: pendingMinutes(cfg, rows, known, now), tooRecent: false };
@@ -427,8 +615,15 @@ function minutesToFetch(cfg: RecorderConfig, rows: TxRow[], known: Record<string
   return { pending: tooRecent ? [] : [{ minute, ts: start }], tooRecent };
 }
 
-// A run's progress, reported (onProgress) as each minute starts, each frame is saved and each minute ends.
-// framesOf(minute): the frames still to fetch for it.
+/**
+ * A run's progress, reported (onProgress) as each minute starts, each frame is saved and each minute ends.
+ * framesOf(minute): the frames still to fetch for it.
+ *
+ * @param pending - `PendingMinute[]` value.
+ * @param framesOf - `(minute: string) => number` value.
+ * @param onProgress - Callback receiving snapshot progress updates.
+ * @returns Operation result.
+ */
 function snapshotProgress(pending: PendingMinute[], framesOf: (minute: string) => number, onProgress: (progress: SnapshotProgress) => void) {
   const byMinute: SnapshotProgress['byMinute'] = Object.fromEntries(pending.map((item) => [item.minute, { frames: framesOf(item.minute), done: 0 }]));
   const state = {

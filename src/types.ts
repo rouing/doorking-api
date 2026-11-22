@@ -1,5 +1,9 @@
-// Shapes shared by the server and the web page (web/ui). Types only: nothing here exists at run time.
-// Times are ISO strings once sent as JSON.
+/**
+ * @module src/types
+ *
+ * Shapes shared by the server and the web page (web/ui). Types only: nothing here exists at run time.
+ * Times are ISO strings once sent as JSON.
+ */
 
 export interface GateConfig {
   siteName: string;
@@ -12,13 +16,17 @@ export interface GateConfig {
 
 export interface DeviceRange { name: string; from: string; to: string }
 
-// Which optional data the page shows for this gate (missing = shown). Page only; nothing on the gate changes.
+/**
+ * Which optional data the page shows for this gate (missing = shown). Page only; nothing on the gate changes.
+ */
 export interface GateFeatures { floors: boolean; elevators: boolean }
 
-// Tracker expansion boards, as in DoorKing32: the System Info "Tracker" box, and on the Relays screen "Additional
-// Relays For Tracker 1" (relays 11-18, commanded by relay 1) and "... Tracker 2" (relays 3-10, commanded by relay 2).
-// Page only: DoorKing32 keeps them in ACCOUNT.DAT (0x312, 0x449, 0x44a), not on the gate; missing = off.
-// prevTime1/prevTime2: the command relay's strike time before its box was ticked, put back when it is unticked.
+/**
+ * Tracker expansion boards, as in DoorKing32: the System Info "Tracker" box, and on the Relays screen "Additional
+ * Relays For Tracker 1" (relays 11-18, commanded by relay 1) and "... Tracker 2" (relays 3-10, commanded by relay 2).
+ * Page only: DoorKing32 keeps them in ACCOUNT.DAT (0x312, 0x449, 0x44a), not on the gate; missing = off.
+ * prevTime1/prevTime2: the command relay's strike time before its box was ticked, put back when it is unticked.
+ */
 export interface GateTracker { enabled: boolean; tracker1: boolean; tracker2: boolean; prevTime1?: string; prevTime2?: string }
 
 export interface GatePrefs {
@@ -29,7 +37,9 @@ export interface GatePrefs {
   tracker?: Partial<GateTracker>;
 }
 
-// A resident or vendor: names.bin + phone.bin + cards.bin joined on directory code ('' where a file has no value).
+/**
+ * A resident or vendor: names.bin + phone.bin + cards.bin joined on directory code ('' where a file has no value).
+ */
 export interface ResidentRow {
   directoryCode: string;
   name: string;
@@ -48,7 +58,7 @@ export interface ResidentRow {
   note?: string; // GET G/residents: the local note (never on the gate)
 }
 
-// A transaction from rcv_out.bin, newest first. minute: the snapshot folder (YYYYMMDD-HHMM).
+/** A transaction from rcv_out.bin, newest first. minute: the snapshot folder (YYYYMMDD-HHMM). */
 export interface TransactionRow {
   ts: number;
   minute: string;
@@ -66,15 +76,19 @@ export interface TransactionRow {
   raw: string;
 }
 
-// GET G/data: views of the pulled files (null where the file isn't there).
-// transactions.next: ask GET /data?before=<next> for the older page (null: none).
+/**
+ * GET G/data: views of the pulled files (null where the file isn't there).
+ * transactions.next: ask GET /data?before=<next> for the older page (null: none).
+ */
 export interface DataReply { transactions: { updated: string; rows: TransactionRow[]; next?: number | null } | null }
 
-// An item changed differently at the gate and in the working copy since the last pull: decided with Keep mine or
-// Take the gate's (POST G/working-copy/conflicts). gate / mine: how the two values differ, in words.
+/**
+ * An item changed differently at the gate and in the working copy since the last pull: decided with Keep mine or
+ * Take the gate's (POST G/working-copy/conflicts). gate / mine: how the two values differ, in words.
+ */
 export interface ConflictView { kind: 'resident' | 'card' | 'setting'; key: string; label: string; gate: string; mine: string }
 
-// GET G/residents: the working copy's residents and vendors.
+/** GET G/residents: the working copy's residents and vendors. */
 export interface ResidentsReply {
   rows: ResidentRow[];
   unassignedCards: string[];
@@ -85,12 +99,14 @@ export interface ResidentsReply {
   cache: { exists: boolean; edited: boolean; conflicts: ConflictView[] };
   pulled: string;
   saved: string;
-  // Directory codes, entry codes and cards held by more than one entry; a send is refused while any exist.
+  /** Directory codes, entry codes and cards held by more than one entry; a send is refused while any exist. */
   duplicates: { kind: 'directoryCode' | 'entryCode' | 'card'; value: string; holders: string[]; text: string }[];
 }
 
-// GET G/settings: gate settings in the working copy's names.bin (value) and the last pull (gate). Secret values are
-// masked.
+/**
+ * GET G/settings: gate settings in the working copy's names.bin (value) and the last pull (gate). Secret values are
+ * masked.
+ */
 export interface GateSettingRow {
   key: string; group: string; name: string; offset: number; size: number; value: string; gate: string;
   editable: boolean; secret: boolean; note: string | null; maxLength: number | null; // maxLength: text settings only
@@ -102,30 +118,38 @@ export interface SettingsReply {
   fields: GateSettingRow[];
 }
 
-// GET G/send: what a send would change.
+/** GET G/send: what a send would change. */
 export interface SendPreview { changedBlocks: Record<string, number[]>; residentCounts: number[] }
 
-// GET /api/gates (master codes are never sent). siteName is '' until the user has connected to the gate.
-// admin: everything, including the gate's users and DKS login; readonly: view, pull and cameras.
+/**
+ * GET /api/gates (master codes are never sent). siteName is '' until the user has connected to the gate.
+ * admin: everything, including the gate's users and DKS login; readonly: view, pull and cameras.
+ */
 export type GateRole = 'admin' | 'readonly';
 export interface GateInfo { phoneNumber: string; siteName: string; addedAt: string; role: GateRole }
-// Someone with access to a gate (G/users, History).
-// email: confirmed; pendingEmail: waiting for its confirmation link; invited: hasn't accepted their invitation yet.
+/**
+ * Someone with access to a gate (G/users, History).
+ * email: confirmed; pendingEmail: waiting for its confirmation link; invited: hasn't accepted their invitation yet.
+ */
 export interface GateUser {
   username: string; email: string; pendingEmail: string; phone: string; invited: boolean; role: GateRole; grantedBy: string; grantedAt: string; lastSignIn: string | null;
 }
-// G/api-keys: an API key of the gate (never the key itself, which is shown once when created).
+/** G/api-keys: an API key of the gate (never the key itself, which is shown once when created). */
 export interface ApiKeyInfo {
   id: string; name: string; role: GateRole; createdBy: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null;
 }
-// /api/me/passkeys: one of the user's passkeys. site: the name it works on (the public name, or localhost); synced:
-// backed up by a passkey provider (iCloud Keychain, Google Password Manager, …), so it is on the user's other devices too.
+/**
+ * /api/me/passkeys: one of the user's passkeys. site: the name it works on (the public name, or localhost); synced:
+ * backed up by a passkey provider (iCloud Keychain, Google Password Manager, …), so it is on the user's other devices too.
+ */
 export interface PasskeyInfo { id: string; name: string; site: string; synced: boolean; createdAt: string; lastUsedAt: string | null }
-// G/login: the gate's DKS login (the password and master code are never sent back).
+/** G/login: the gate's DKS login (the password and master code are never sent back). */
 export interface GateLogin { dksUser: string; dksPasswordSet: boolean }
 
-// setup: no account exists yet, so the page offers to create the first one.
-// A single sign-on provider ("Sign in with <name>") and a sign-in linked to the account.
+/**
+ * setup: no account exists yet, so the page offers to create the first one.
+ * A single sign-on provider ("Sign in with <name>") and a sign-in linked to the account.
+ */
 export interface SsoProviderInfo { id: string; name: string }
 export interface SsoIdentityInfo { provider: string; providerName: string; subject: string; email: string; linkedAt: string; lastUsedAt: string | null }
 
@@ -153,7 +177,7 @@ export type SessionReply =
     holidayList: { name: string; month: number; day: number }[];
   };
 
-// GET G/job: the gate connection (pull or send) and its log lines.
+/** GET G/job: the gate connection (pull or send) and its log lines. */
 export interface Job {
   state: 'idle' | 'running' | 'done' | 'failed';
   what?: string;
@@ -183,7 +207,7 @@ export interface HistoryEvent {
 
 export interface HistoryReply { events: HistoryEvent[]; users: GateUser[] }
 
-// GET G/residents/:code/history: one History change of a directory code (see entryHistory in audit.ts).
+/** GET G/residents/:code/history: one History change of a directory code (see entryHistory in audit.ts). */
 export interface EntryChange {
   id: string; time: string; user: string; action: string; summary: string; change: string;
   fields: { field: string; from: string; to: string }[];
@@ -233,7 +257,7 @@ export interface CameraSettings {
   savedAt: string;
 }
 
-// PUT G/cameras: a blank password keeps the saved one.
+/** PUT G/cameras: a blank password keeps the saved one. */
 export type CameraSettingsInput = Omit<CameraSettings, 'savedBy' | 'savedAt'> & { password?: string };
 
 export interface SnapshotMinute {

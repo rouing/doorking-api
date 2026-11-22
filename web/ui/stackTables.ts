@@ -1,11 +1,20 @@
-// Tables on phones: styles.css shows each body row as a card and each cell as a line with its column's name in front
-// (the cell's data-label). The names are copied from the header rows (colSpan and rowSpan included, so a two-row
-// header gives "Tone to open · 1"), for each table whose rows or header change, nested ones too.
+/**
+ * @module web/ui/stackTables
+ *
+ * Tables on phones: styles.css shows each body row as a card and each cell as a line with its column's name in front
+ * (the cell's data-label). The names are copied from the header rows (colSpan and rowSpan included, so a two-row
+ * header gives "Tone to open · 1"), for each table whose rows or header change, nested ones too.
+ */
 import { phoneQuery } from './phone.ts';
 
 const SORT_MARK = /\s*[▲▼]\s*[12]?\s*$/;
 
-// The name of each column: the header texts above it, top to bottom.
+/**
+ * The name of each column: the header texts above it, top to bottom.
+ *
+ * @param head - `HTMLTableSectionElement` value.
+ * @returns `string[]` result.
+ */
 function columnNames(head: HTMLTableSectionElement): string[] {
   const grid: string[][] = [];
   [...head.rows].forEach((row, rowIndex) => {
@@ -40,8 +49,10 @@ function labelTable(table: HTMLTableElement): void {
   }
 }
 
-// Labels the page's tables while the window is phone-sized: all of them when it becomes phone-sized, then only the
-// tables whose elements change (at most once a frame), so typing elsewhere or the progress log costs nothing.
+/**
+ * Labels the page's tables while the window is phone-sized: all of them when it becomes phone-sized, then only the
+ * tables whose elements change (at most once a frame), so typing elsewhere or the progress log costs nothing.
+ */
 export function stackTablesOnPhones(): void {
   const changed = new Set<HTMLTableElement>();
   let all = true;

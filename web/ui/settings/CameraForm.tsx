@@ -16,8 +16,17 @@ interface CameraFormProps {
   onSaved: () => Promise<void>;
 }
 
-// Gate cameras: a Dahua/Amcrest recorder reached through Dahua's P2P cloud. Up to 4 channels. The password is
-// never sent back; leaving it blank keeps the saved one.
+/**
+ * Gate cameras: a Dahua/Amcrest recorder reached through Dahua's P2P cloud. Up to 4 channels. The password is
+ * never sent back; leaving it blank keeps the saved one.
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.phone - Gate system phone number (digits or formatted).
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onSaved - On saved.
+ * @returns Rendered React element.
+ */
 export function CameraForm({ settings, phone, gapi, onSaved }: CameraFormProps) {
   const saved = settings;
   const [form, setForm] = useState(() => ({
@@ -25,7 +34,7 @@ export function CameraForm({ settings, phone, gapi, onSaved }: CameraFormProps) 
     frames: String(saved?.frames ?? 3), framesAfter: String(saved?.framesAfter ?? 0), clipTries: String(saved?.clipTries ?? 2), events: saved?.events || 'access',
     backfillHours: String(saved?.backfillHours ?? 24), keepDays: String(saved?.keepDays ?? 0), enabled: saved ? saved.enabled !== false : true,
   }));
-  // Four rows, or as many as are saved (up to 8 through the API), so saving keeps every channel.
+  /** Four rows, or as many as are saved (up to 8 through the API), so saving keeps every channel. */
   const [channels, setChannels] = useState(() => Array.from({ length: Math.max(4, saved?.channels?.length || 0) }, (_, i) => {
     const channel = (saved?.channels || [{ channel: 1, name: '' }])[i];
     return { channel: channel ? String(channel.channel) : '', name: channel ? channel.name : '' };

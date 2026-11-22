@@ -12,7 +12,15 @@ interface GateSwitcherProps {
   onAllGates: () => void;
 }
 
-// The gate's name in the sidebar (and the phone's menu): opens a list of the user's gates to switch to, and All gates.
+/**
+ * The gate's name in the sidebar (and the phone's menu): opens a list of the user's gates to switch to, and All gates.
+ *
+ * @param props - Component props.
+ * @param props.gate - Currently open gate summary (`GateInfo`).
+ * @param props.onSwitch - On switch.
+ * @param props.onAllGates - On all gates.
+ * @returns Rendered React element.
+ */
 export function GateSwitcher({ gate, onSwitch, onAllGates }: GateSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [gates, setGates] = useState<GateInfo[] | null>(null);

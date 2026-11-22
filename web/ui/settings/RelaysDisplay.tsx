@@ -21,10 +21,19 @@ interface LiveRelaysProps {
   commandRelays: number[];
 }
 
-// Live relay control: a button per relay (0-2, plus the Tracker relays when their box is ticked; green = held open,
-// red = released, grey = not checked). Refresh reads GetRelays when the page opens and on demand; tapping a button
-// toggles that relay (SetRelays) right away. commandRelays: Tracker command relays, greyed out (use their Tracker
-// relays instead).
+/**
+ * Live relay control: a button per relay (0-2, plus the Tracker relays when their box is ticked; green = held open,
+ * red = released, grey = not checked). Refresh reads GetRelays when the page opens and on demand; tapping a button
+ * toggles that relay (SetRelays) right away. commandRelays: Tracker command relays, greyed out (use their Tracker
+ * relays instead).
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.labels - Labels.
+ * @param props.relays - Relays.
+ * @param props.commandRelays - Relay numbers acting as Tracker command relays (disabled in live control).
+ * @returns Rendered React element.
+ */
 function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
   const [state, setState] = useState<Record<number, string> | null>(null);
   const [busy, setBusy] = useState(false);
@@ -90,8 +99,13 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
   );
 }
 
-// DoorKing32's note for a Tracker command relay (relay 1 commands Tracker 1, relays 11-18; relay 2 commands
-// Tracker 2, relays 3-10), plus the manual's (3.1.3): tones, postal switch and rotary dial 9 go on relay 0.
+/**
+ * DoorKing32's note for a Tracker command relay (relay 1 commands Tracker 1, relays 11-18; relay 2 commands
+ * Tracker 2, relays 3-10), plus the manual's (3.1.3): tones, postal switch and rotary dial 9 go on relay 0.
+ *
+ * @param range - `string` value.
+ * @returns Computed result.
+ */
 const TRACKER_NOTE = (range: string) => `When Additional Relays Feature is selected, the relay time is 00 and cannot be changed. Times for Relays ${range} are set at the hardware. This relay is now a Tracker command relay, so its tone open numbers and entry code range are locked too; set them, and the postal switch and rotary dial 9, on relay 0.`;
 const TRACKERS = [
   { key: 'tracker2', relay: 2, range: '3-10', label: 'Additional Relays For Tracker 2 (relays 3-10)' },
@@ -105,13 +119,28 @@ interface TrackerRelaysProps {
   onReload: () => Promise<void>;
 }
 
-// The Additional Relays boxes (shown when Tracker is on in Gate configuration). Ticking one sets its command relay's
-// strike time to 00 in the working copy, as DoorKing32 does; the boxes themselves are saved for this page only
-// (DoorKing32 keeps them in ACCOUNT.DAT).
+/**
+ * The Additional Relays boxes (shown when Tracker is on in Gate configuration). Ticking one sets its command relay's
+ * strike time to 00 in the working copy, as DoorKing32 does; the boxes themselves are saved for this page only
+ * (DoorKing32 keeps them in ACCOUNT.DAT).
+ *
+ * @param props - Component props.
+ * @param props.prefs - Gate-scoped preferences object.
+ * @param props.settings - Settings map or configuration.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onReload - Callback to reload the gate data.
+ * @returns Rendered React element.
+ */
 function TrackerRelays({ prefs, settings, gapi, onReload }: TrackerRelaysProps) {
   const tracker = trackerOf(prefs);
   const [info, setInfo] = useState('');
-  // Ticking remembers the strike time, then sets it to 00; unticking puts the remembered time back (as DoorKing32 does).
+  /**
+   * Ticking remembers the strike time, then sets it to 00; unticking puts the remembered time back (as DoorKing32 does).
+   *
+   * @param key - Lookup key, API key, or setting key.
+   * @param relay - `1 | 2` value.
+   * @param on - `boolean` value.
+   */
   async function toggle(key: 'tracker1' | 'tracker2', relay: 1 | 2, on: boolean) {
     setInfo('Saving…');
     const prevKey = `prevTime${relay}` as const;
@@ -153,6 +182,14 @@ interface RelaysPageProps extends Common {
   prefs: GatePrefs;
 }
 
+/**
+ * RelaysPage React component.
+ *
+ * @param props - Component props.
+ * @param props.prefs - Gate-scoped preferences object.
+ * @param props.common - Common.
+ * @returns Rendered React element.
+ */
 export function RelaysPage({ prefs, ...common }: RelaysPageProps) {
   const settings = useGateSettings(common.gapi);
   const tracker = trackerOf(prefs);
@@ -175,11 +212,16 @@ export function RelaysPage({ prefs, ...common }: RelaysPageProps) {
   );
 }
 
-// Display: LCD message settings. The layout choice only picks which Display group is shown (the gate stores both;
-// the active mode is set in the DoorKing app). Remembered in this browser.
+/**
+ * Display: LCD message settings. The layout choice only picks which Display group is shown (the gate stores both;
+ * the active mode is set in the DoorKing app). Remembered in this browser.
+ *
+ * @param common - `Common` value.
+ * @returns Rendered React element.
+ */
 export function DisplayPage(common: Common) {
   const settings = useGateSettings(common.gapi);
-  // Stored as plain text (not JSON), so a saved choice from before the React page still reads back.
+  /** Stored as plain text (not JSON), so a saved choice from before the React page still reads back. */
   const [mode, setMode] = useState<'single' | '8line'>(() => {
     try { return localStorage.getItem('dk-display-mode') === '8line' ? '8line' : 'single'; } catch { return 'single'; }
   });

@@ -1,9 +1,19 @@
-// The signed-in user's own settings, password, passkeys and linked sign-ins.
+/**
+ * @module web/routes/account
+ *
+ * The signed-in user's own settings, password, passkeys and linked sign-ins.
+ */
 import * as dk from '../../index.ts';
 import { type Route, route } from '../routing.ts';
 import type { Modules } from '../modules.ts';
 import { logger } from '../../src/logging.ts';
 
+/**
+ * Account routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function accountRoutes(modules: Modules): Route[] {
   const { mailer, NO_EMAIL, store } = modules.context;
   const {

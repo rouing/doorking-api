@@ -1,7 +1,11 @@
-// Passkeys (WebAuthn) as another way to sign in, through @simplewebauthn/server. Table passkeys (see db.ts) keeps
-// each credential's id, public key and signature counter; nothing in it is secret. Passkeys belong to the site name
-// they were made on (the relying party id): the public HTTPS name, or "localhost" when the page is opened on the
-// server itself. Challenges live in memory for 5 minutes and are used once.
+/**
+ * @module src/passkeys
+ *
+ * Passkeys (WebAuthn) as another way to sign in, through @simplewebauthn/server. Table passkeys (see db.ts) keeps
+ * each credential's id, public key and signature counter; nothing in it is secret. Passkeys belong to the site name
+ * they were made on (the relying party id): the public HTTPS name, or "localhost" when the page is opened on the
+ * server itself. Challenges live in memory for 5 minutes and are used once.
+ */
 import crypto from 'node:crypto';
 import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
@@ -13,8 +17,10 @@ import type { PasskeyInfo } from './types.ts';
 import { httpError, UnknownPasskeyError } from './errors.ts';
 
 export type { PasskeyInfo };
-// rpID: the site name passkeys are tied to; origin: the page's origin (https://<name>, or http://localhost:<port>);
-// challenges: where the challenges handed out are kept until answered.
+/**
+ * rpID: the site name passkeys are tied to; origin: the page's origin (https://<name>, or http://localhost:<port>);
+ * challenges: where the challenges handed out are kept until answered.
+ */
 export interface RelyingParty { rpID: string; origin: string; challenges: PasskeyChallenges }
 
 const RP_NAME = 'DoorKing Gate Manager';
@@ -34,17 +40,34 @@ const fromRow = (row: PasskeyRow): PasskeyInfo => ({
 type Purpose = 'register' | 'register-auto' | 'signin' | 'confirm';
 interface Challenge { expires: number; purpose: Purpose; username: string | null; rpID: string }
 
-// The challenges handed out and not yet answered (each server keeps its own: RelyingParty.challenges).
+/** The challenges handed out and not yet answered (each server keeps its own: RelyingParty.challenges). */
 export class PasskeyChallenges {
   private readonly pending = new Map<string, Challenge>(); // challenge -> who and what it is for (username null: sign-in)
 
+  /**
+   * Remember.
+   *
+   * @param challenge - Base64url WebAuthn challenge string.
+   * @param purpose - Challenge purpose (`register`, `register-auto`, `signin`, or `confirm`).
+   * @param username - Local account username.
+   * @param rpID - `string` value.
+   * @param [now] - Reference timestamp in milliseconds (defaults to `Date.now()`).
+   */
   remember(challenge: string, purpose: Purpose, username: string | null, rpID: string, now = Date.now()): void {
     for (const [old, stored] of this.pending) if (stored.expires < now) this.pending.delete(old);
     while (this.pending.size >= MAX_CHALLENGES) this.pending.delete(this.pending.keys().next().value!);
     this.pending.set(challenge, { expires: now + CHALLENGE_MS, purpose, username, rpID });
   }
 
-  // True (and forgets it) when the challenge was issued for this purpose, user and site, and hasn't expired.
+  /**
+   * True (and forgets it) when the challenge was issued for this purpose, user and site, and hasn't expired.
+   *
+   * @param challenge - Base64url WebAuthn challenge string.
+   * @param purpose - Challenge purpose (`register`, `register-auto`, `signin`, or `confirm`).
+   * @param username - Local account username.
+   * @param rpID - `string` value.
+   * @returns True when the condition holds.
+   */
   take(challenge: string, purpose: Purpose, username: string | null, rpID: string): boolean {
     const stored = this.pending.get(challenge);
     this.pending.delete(challenge);
@@ -60,20 +83,35 @@ async function userHandle(store: Store, username: string): Promise<Uint8Array<Ar
   return userHandle(store, username);
 }
 
-// The user's WebAuthn user handle (base64url), or null when no passkey was ever made for the account. The page passes
-// it to the browser with the account's passkeys, so the phone or computer drops the ones removed here.
+/**
+ * The user's WebAuthn user handle (base64url), or null when no passkey was ever made for the account. The page passes
+ * it to the browser with the account's passkeys, so the phone or computer drops the ones removed here.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @returns Promise resolving to `string | null`.
+ */
 export async function passkeyUserHandle(store: Store, username: string): Promise<string | null> {
   const row = await one<{ webauthn_id: string | null }>(store, 'SELECT webauthn_id FROM users WHERE username = $1', [userKey(username)]);
   return row ? row.webauthn_id : null;
 }
 
+/**
+ * List passkeys.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @returns Promise resolving to `PasskeyInfo[]`.
+ */
 export async function listPasskeys(store: Store, username: string): Promise<PasskeyInfo[]> {
   return (await all<PasskeyRow>(store, 'SELECT * FROM passkeys WHERE username = $1 ORDER BY created_at',
     [userKey(username)])).map(fromRow);
 }
 
-// The two ways a passkey is added: with the browser's prompt (the user is verified), or saved by the browser by itself
-// right after a password sign-in (no prompt, so the device may not verify the user then). Each has its own challenges.
+/**
+ * The two ways a passkey is added: with the browser's prompt (the user is verified), or saved by the browser by itself
+ * right after a password sign-in (no prompt, so the device may not verify the user then). Each has its own challenges.
+ */
 interface Registration { purpose: 'register' | 'register-auto'; userVerification: 'required' | 'preferred' }
 const PROMPTED: Registration = { purpose: 'register', userVerification: 'required' };
 const AUTOMATIC: Registration = { purpose: 'register-auto', userVerification: 'preferred' };
@@ -91,9 +129,23 @@ async function optionsFor(store: Store, username: string, relyingParty: RelyingP
   return options;
 }
 
-// Options for adding a passkey with the browser's prompt (the caller has checked their password).
+/**
+ * Options for adding a passkey with the browser's prompt (the caller has checked their password).
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @returns Computed result.
+ */
 export const registrationOptions = (store: Store, username: string, relyingParty: RelyingParty) => optionsFor(store, username, relyingParty, PROMPTED);
-// Options for the browser saving a passkey by itself right after a password sign-in.
+/**
+ * Options for the browser saving a passkey by itself right after a password sign-in.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @returns Computed result.
+ */
 export const autoRegistrationOptions = (store: Store, username: string, relyingParty: RelyingParty) =>
   optionsFor(store, username, relyingParty, AUTOMATIC);
 
@@ -119,37 +171,82 @@ async function savePasskey(store: Store, username: string, response: unknown, la
   return fromRow((await one<PasskeyRow>(store, 'SELECT * FROM passkeys WHERE id = $1', [cred.id]))!);
 }
 
-// Checks the browser's answer to registrationOptions and saves the passkey under `label`.
+/**
+ * Checks the browser's answer to registrationOptions and saves the passkey under `label`.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param response - WebAuthn browser response payload.
+ * @param label - Display label.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @returns Computed result.
+ */
 export const addPasskey = (store: Store, username: string, response: unknown, label: unknown, relyingParty: RelyingParty) =>
   savePasskey(store, username, response, label, relyingParty, PROMPTED);
-// Checks the browser's answer to autoRegistrationOptions and saves the passkey under `label`.
+/**
+ * Checks the browser's answer to autoRegistrationOptions and saves the passkey under `label`.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param response - WebAuthn browser response payload.
+ * @param label - Display label.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @returns Computed result.
+ */
 export const addAutoPasskey = (store: Store, username: string, response: unknown, label: unknown, relyingParty: RelyingParty) =>
   savePasskey(store, username, response, label, relyingParty, AUTOMATIC);
 
-// Options for signing in with any passkey made for this site (discoverable passkeys: no username needed).
+/**
+ * Options for signing in with any passkey made for this site (discoverable passkeys: no username needed).
+ *
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @returns Promise resolving to the operation result.
+ */
 export async function authenticationOptions(relyingParty: RelyingParty) {
-  // timeout: as long as the challenge lasts, so the username box's passkey suggestions wait for it (web/ui/Login.tsx).
+  /**
+   * timeout: as long as the challenge lasts, so the username box's passkey suggestions wait for it (web/ui/Login.tsx).
+   */
   const options = await generateAuthenticationOptions({ rpID: relyingParty.rpID, userVerification: 'required', timeout: CHALLENGE_MS });
   relyingParty.challenges.remember(options.challenge, 'signin', null, relyingParty.rpID);
   return options;
 }
 
-// Options for the signed-in user to confirm it's them with one of their passkeys for this site (step-up). 409 when
-// they have none here.
+/**
+ * Options for the signed-in user to confirm it's them with one of their passkeys for this site (step-up). 409 when
+ * they have none here.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @returns Promise resolving to the operation result.
+ * @throws HTTP 409 error on invalid input or conflict.
+ */
 export async function confirmationOptions(store: Store, username: string, relyingParty: RelyingParty) {
   const name = userKey(username);
   const mine = await all<{ id: string }>(store, 'SELECT id FROM passkeys WHERE username = $1 AND rp_id = $2',
     [name, relyingParty.rpID]);
   if (!mine.length) throw httpError(`You have no passkey for ${relyingParty.rpID}. Add one in User Settings.`, 409);
-  // No transports: the browser then also offers a passkey on a phone or tablet nearby (its QR code), not only this device.
+  /**
+   * No transports: the browser then also offers a passkey on a phone or tablet nearby (its QR code), not only this device.
+   */
   const options = await generateAuthenticationOptions({ rpID: relyingParty.rpID, userVerification: 'required',
     allowCredentials: mine.map((credential) => ({ id: credential.id })) });
   relyingParty.challenges.remember(options.challenge, 'confirm', name, relyingParty.rpID);
   return options;
 }
 
-// Checks a passkey answer to authenticationOptions; returns the passkey's username. Throws 401 on anything wrong
-// (unknown passkey, bad signature, expired challenge, counter gone backwards: a possible copy of the key).
+/**
+ * Checks a passkey answer to authenticationOptions; returns the passkey's username. Throws 401 on anything wrong
+ * (unknown passkey, bad signature, expired challenge, counter gone backwards: a possible copy of the key).
+ *
+ * @param store - Database store handle.
+ * @param response - WebAuthn browser response payload.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @param username - Local account username.
+ * @param refused - `(why: string) => Error` value.
+ * @returns Promise resolving to `string`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 async function checkPasskey(store: Store, response: unknown, relyingParty: RelyingParty, username: string | null, refused: (why: string) => Error): Promise<string> {
   const res = response as AuthenticationResponseJSON;
   const row = res && typeof res.id === 'string'
@@ -171,16 +268,39 @@ async function checkPasskey(store: Store, response: unknown, relyingParty: Relyi
   return row.username;
 }
 
-// Checks a passkey sign-in; returns the username.
+/**
+ * Checks a passkey sign-in; returns the username.
+ *
+ * @param store - Database store handle.
+ * @param response - WebAuthn browser response payload.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ * @returns Promise resolving to `string`.
+ */
 export function signInWithPasskey(store: Store, response: unknown, relyingParty: RelyingParty): Promise<string> {
   return checkPasskey(store, response, relyingParty, null, (why) => httpError(`Passkey sign-in failed: ${why}`, 401));
 }
 
-// Checks that the signed-in user confirmed with one of their own passkeys (step-up; see authenticationOptions).
+/**
+ * Checks that the signed-in user confirmed with one of their own passkeys (step-up; see authenticationOptions).
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param response - WebAuthn browser response payload.
+ * @param relyingParty - WebAuthn relying party (`rpID`, `origin`, `challenges`).
+ */
 export async function confirmWithPasskey(store: Store, username: string, response: unknown, relyingParty: RelyingParty): Promise<void> {
   await checkPasskey(store, response, relyingParty, userKey(username), (why) => httpError(`The passkey confirmation failed: ${why}`, 401));
 }
 
+/**
+ * Rename passkey.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param id - Unique record identifier.
+ * @param label - Display label.
+ * @throws HTTP 400/404 error on invalid input or conflict.
+ */
 export async function renamePasskey(store: Store, username: string, id: string, label: unknown): Promise<void> {
   const title = String(label ?? '').trim();
   if (!title || title.length > NAME_MAX) throw httpError(`Give the passkey a name of 1-${NAME_MAX} characters`);
@@ -189,6 +309,15 @@ export async function renamePasskey(store: Store, username: string, id: string, 
   }
 }
 
+/**
+ * Remove passkey.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param id - Unique record identifier.
+ * @returns Promise resolving to `string`.
+ * @throws HTTP 404 error on invalid input or conflict.
+ */
 export async function removePasskey(store: Store, username: string, id: string): Promise<string> {
   const row = await one<{ name: string }>(store, 'DELETE FROM passkeys WHERE username = $1 AND id = $2 RETURNING name', [userKey(username), String(id)]);
   if (!row) throw httpError('Passkey not found', 404);

@@ -14,9 +14,15 @@ export interface TraTransaction {
 
 export interface TraFile { lastMarker: string; version: string; transactions: TraTransaction[] }
 
-// TRANS*.TRA ("VERSION 54"): transaction log of CTran54Record objects, newest first.
-// The first 12 bytes are the "last received" marker that is sent back to DKS Cloud
-// as TransactionBytes so only newer transactions are downloaded.
+/**
+ * TRANS*.TRA ("VERSION 54"): transaction log of CTran54Record objects, newest first.
+ * The first 12 bytes are the "last received" marker that is sent back to DKS Cloud
+ * as TransactionBytes so only newer transactions are downloaded.
+ *
+ * @param buffer - Binary board file buffer.
+ * @returns `TraFile` result.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export function parseTraFile(buffer: Buffer): TraFile {
   const reader = new ArchiveReader(buffer);
   const lastMarker = reader.bytes(12).toString('hex');
@@ -51,7 +57,13 @@ export function parseTraFile(buffer: Buffer): TraFile {
   return { lastMarker, version, transactions };
 }
 
-// "6/22/26" + "11:39PM" -> "2026-06-22 23:39"
+/**
+ * "6/22/26" + "11:39PM" -> "2026-06-22 23:39"
+ *
+ * @param date - `string` value.
+ * @param time - `string` value.
+ * @returns `string` result.
+ */
 export function toIsoTimestamp(date: string, time: string): string {
   const day = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(date);
   const clock = /^(\d{1,2}):(\d{2})\s*([AP])M$/i.exec(time);
@@ -62,6 +74,12 @@ export function toIsoTimestamp(date: string, time: string): string {
   return `20${day[3]}-${pad(day[1])}-${pad(day[2])} ${pad(hour)}:${clock[2]}`;
 }
 
+/**
+ * Read tra file.
+ *
+ * @param path - `string` value.
+ * @returns `TraFile` result.
+ */
 export function readTraFile(path: string): TraFile {
   return parseTraFile(fs.readFileSync(path));
 }

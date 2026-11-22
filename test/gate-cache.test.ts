@@ -5,6 +5,7 @@ import cp from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import * as dk from '../index.ts';
@@ -43,7 +44,8 @@ test('help page: the user guide renders, every "#section" link has its heading, 
   assert.ok(html.includes('<table>') && html.includes('<blockquote>') && html.includes('<ol>'));
   assert.strictEqual(inline('<script>x</script> **b** `<c>`'), '&lt;script&gt;x&lt;/script&gt; <strong>b</strong> <code>&lt;c&gt;</code>');
   assert.strictEqual(inline('[x](javascript:alert(1))'), '[x](javascript:alert(1))'); // only #… and http(s) links
-  assert.strictEqual(markdownToHtml('- one\n  more\n- two'), '<ul><li>one more</li><li>two</li></ul>');
+  assert.strictEqual(inline('![x](javascript:alert(1))'), '![x](javascript:alert(1))'); // no javascript: images
+  assert.strictEqual(markdownToHtml('- one\n  more\n- two').replace(/\s+/g, ' '), '<ul> <li>one more</li> <li>two</li> </ul>');
 });
 
 function pulledDir() {
@@ -1370,6 +1372,10 @@ test('config: defaults, file, environment and flags, checked values and private 
   assert.throws(() => dk.loadConfig({ file, env: {}, args: [] }), /unknown section "extra"/);
   fs.writeFileSync(file, '{ "server": ');
   assert.throws(() => dk.loadConfig({ file, env: {}, args: [] }), /not valid JSON/);
+  assert.strictEqual(dk.loadConfig({ env: { TRUST_PROXY: 'TRUE' }, args: [] }).server.trustProxy, true);
+  assert.throws(() => dk.loadConfig({ env: { TRUST_PROXY: 'maybe' }, args: [] }), /TRUST_PROXY/);
+  assert.throws(() => dk.loadConfig({ env: { PORT: '99999' }, args: [] }), /PORT/);
+  assert.throws(() => dk.loadConfig({ env: { HOST: '   ' }, args: [] }), /server\.host/);
   write({ database: {} });
   assert.throws(() => dk.connectionSettings(dk.loadConfig({ file, env: {}, args: [] }).database), /No database password/);
   if (process.platform !== 'win32') {
@@ -1400,6 +1406,7 @@ test('database setup: sql/schema.sql, login from config, db-setup on existing ro
 
 test('schedules: validation, due times and missed runs', withStore(async (store) => {
   assert.throws(() => dk.normalizeSchedule({ days: [], time: '02:00', actions: ['send'] }), /day/);
+  assert.throws(() => dk.normalizeSchedule([]), /day/);
   assert.throws(() => dk.normalizeSchedule({ days: [1], time: '24:00', actions: ['send'] }), /Time/);
   assert.throws(() => dk.normalizeSchedule({ days: [1], time: '2:00', actions: ['x'] }), /transfer/);
   assert.deepStrictEqual(dk.normalizeSchedule({ days: [3, 1, 1, 9], time: '2:05', actions: ['snapshots', 'transactions', 'send'] }),
@@ -1436,6 +1443,7 @@ const CAM = { serial: 'TESTSERIAL0001', username: 'viewer', password: 'pw', chan
 
 test('cameras: settings validation, encrypted password, blank password keeps the saved one', withStore(async (store) => {
   assert.throws(() => dk.normalizeCameraSettings({ ...CAM, serial: 'x' }), /serial/);
+  assert.throws(() => dk.normalizeCameraSettings([]), /serial/);
   assert.throws(() => dk.normalizeCameraSettings({ ...CAM, channels: [] }), /channels/);
   assert.throws(() => dk.normalizeCameraSettings({ ...CAM, channels: [{ channel: 1 }, { channel: '1' }] }), /twice/);
   assert.throws(() => dk.normalizeCameraSettings({ ...CAM, frames: 9 }), /Frames/);
@@ -1985,7 +1993,14 @@ test('server: sign-in, wrong passwords limited, and pages need a session', withS
   for (let i = 0; i < 5; i++) assert.strictEqual((await call('POST', '/api/session', { body: { user: 'alice', password: 'wrong password here' } })).status, 401);
   const blocked = await call('POST', '/api/session', { body: { user: 'alice', password: PW } });
   assert.strictEqual(blocked.status, 429);
-  assert.strictEqual((await call('GET', '/api/gates/%E0', { cookie })).status, 404);
+  assert.strictEqual((await call('GET', '/api/gates/%E0', { cookie })).status, 400);
+}));
+
+test('server: simultaneous wrong sign-ins cannot burst past the rate limit', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'bob', password: PW, createdBy: 'test', mustChangePassword: false });
+  const results = await Promise.all(Array.from({ length: 10 }, () => call('POST', '/api/session', { body: { user: 'bob', password: 'wrong password here' } })));
+  assert.strictEqual(results.filter((r) => r.status === 401).length, 5);
+  assert.strictEqual(results.filter((r) => r.status === 429).length, 5);
 }));
 
 test('server: changing your own password needs the current one, and a different new one', withServer(async ({ store, call }) => {
@@ -2084,6 +2099,11 @@ test('server: saved videos: byte ranges, a cancelled request closes the file, a 
   const folder = path.join(media, GATE_A.phoneNumber, 'snapshots', '20261019-0955');
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(folder, 'ch1.mp4'), Buffer.alloc(4 << 20, 7));
+  fs.writeFileSync(path.join(folder, 'ch1-00.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  const jpg = await call('GET', `/api/gates/${GATE_A.phoneNumber}/snapshots/20261019-0955/ch1-00.jpg`, { cookie });
+  assert.strictEqual(jpg.status, 200);
+  const missingJpg = await call('GET', `/api/gates/${GATE_A.phoneNumber}/snapshots/20261019-0955/ch9-00.jpg`, { cookie });
+  assert.deepStrictEqual([missingJpg.status, missingJpg.body], [404, { error: 'Snapshot not found' }]);
   const get = (range, { cancel = false } = {}) => new Promise((resolve, reject) => {
     const req = http.get({ agent: false, host: '127.0.0.1', port: app.port(), path: `/api/gates/${GATE_A.phoneNumber}/snapshots/20261019-0955/ch1.mp4`,
       headers: { Cookie: cookie, ...(range && { Range: range }) } }, (res) => {
@@ -2103,6 +2123,71 @@ test('server: saved videos: byte ranges, a cancelled request closes the file, a 
   fs.rmSync(folder, { recursive: true });
   assert.strictEqual((await get('bytes=0-9')).status, 404);
 }));
+
+test('server: stop() returns promptly even with a paused video download open', withServer(async ({ app, store, call, media }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  const cookie = await signIn(call, 'alice', PW);
+  const folder = path.join(media, GATE_A.phoneNumber, 'snapshots', '20261019-0955');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'ch1.mp4'), Buffer.alloc(16 << 20, 7));
+  const sock = net.connect(app.port(), '127.0.0.1');
+  sock.write(`GET /api/gates/${GATE_A.phoneNumber}/snapshots/20261019-0955/ch1.mp4 HTTP/1.1\r\nHost: 127.0.0.1:${app.port()}\r\nCookie: ${cookie}\r\n\r\n`);
+  await new Promise((resolve) => sock.once('data', resolve));
+  sock.pause();
+  const started = Date.now();
+  await app.stop('test');
+  sock.destroy();
+  assert.ok(Date.now() - started < 2000, `stop() took ${Date.now() - started} ms with a paused stream`);
+}));
+
+test('DksCloudClient: builds escaped SOAP envelopes and parses normal, empty, entity, CDATA and fault replies', async () => {
+  let reply = '';
+  let status = 200;
+  let lastBody = '';
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      lastBody = Buffer.concat(chunks).toString('utf8');
+      res.statusCode = status;
+      res.end(reply);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/DkWebService.asmx`;
+  const env = (inner) => `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>${inner}</soap:Body></soap:Envelope>`;
+  const client = new dk.DksCloudClient({ url });
+  try {
+    reply = env('<CheckLoginResponse xmlns="http://offbyone.org/DkRemoteModemWebService"><CheckLoginResult>OK</CheckLoginResult></CheckLoginResponse>');
+    assert.strictEqual(await client.checkLogin('a&b<c>', '"p\'w"'), 'OK');
+    assert.ok(lastBody.includes('<UserID>a&amp;b&lt;c&gt;</UserID>'));
+    assert.ok(lastBody.includes('<password>&quot;p&apos;w&quot;</password>'));
+
+    reply = env('<GetSessionStatusResponse><GetSessionStatusResult>a &amp; b &lt;c&gt; line&#xD;\n2</GetSessionStatusResult></GetSessionStatusResponse>');
+    assert.strictEqual(await client.getSessionStatus('s1'), 'a & b <c> line\r\n2');
+
+    reply = env('<GetSessionStatusResponse><GetSessionStatusResult /></GetSessionStatusResponse>');
+    assert.strictEqual(await client.getSessionStatus('s1'), '');
+
+    reply = env('<GetSessionStatusResponse><GetSessionStatusResult><![CDATA[00012 & <b>]]></GetSessionStatusResult></GetSessionStatusResponse>');
+    assert.strictEqual(await client.getSessionStatus('s1'), '00012 & <b>');
+
+    status = 500;
+    reply = env('<soap:Fault><faultstring>Bad &amp; broken</faultstring></soap:Fault>');
+    await assert.rejects(() => client.getSessionStatus('s1'), /SOAP fault: Bad & broken/);
+
+    status = 502;
+    reply = '<html><body><h1>502 Bad Gateway</h1><p>truncated';
+    await assert.rejects(() => client.getSessionStatus('s1'), /HTTP 502/);
+
+    status = 200;
+    reply = '<!DOCTYPE foo [<!ENTITY xxe "pwned">]><GetSessionStatusResult>&xxe;</GetSessionStatusResult>';
+    await assert.rejects(() => client.getSessionStatus('s1'), /DOCTYPE/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test('server: a wrong first-account setup code is refused, whatever its characters', withServer(async ({ call }) => {
   for (const setupCode of ['0123456789', 'é'.repeat(10), '']) {

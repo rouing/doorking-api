@@ -1,4 +1,8 @@
-// The phone layout's navigation (GateApp): the top bar, the bottom tab bar, the Gate tab's sheet and the More drawer.
+/**
+ * @module web/ui/nav/PhoneNav
+ *
+ * The phone layout's navigation (GateApp): the top bar, the bottom tab bar, the Gate tab's sheet and the More drawer.
+ */
 import type { ReactNode } from 'react';
 import { Button, Dialog, Flex, Text, VisuallyHidden } from '@radix-ui/themes';
 import { ActivityLogIcon, BackpackIcon, DotsHorizontalIcon, PersonIcon } from '@radix-ui/react-icons';
@@ -7,10 +11,10 @@ import type { GateApi } from '../api.ts';
 import { JOB_COLORS, jobLabel } from '../JobDock.tsx';
 import { useGateActions, type WorkingCopyState } from '../panes/WorkingCopyBar.tsx';
 
-// The pages the tab bar opens (Relays through the Gate sheet's Live relays).
+/** The pages the tab bar opens (Relays through the Gate sheet's Live relays). */
 export type TabPage = 'residents' | 'vendors' | 'transactions' | 'relays';
 export const TAB_PAGES: readonly string[] = ['residents', 'vendors', 'transactions', 'relays'] satisfies TabPage[];
-// The pages with a tab of their own; More is highlighted for every other page (Relays included).
+/** The pages with a tab of their own; More is highlighted for every other page (Relays included). */
 const OWN_TAB: readonly string[] = ['residents', 'vendors', 'transactions'] satisfies TabPage[];
 
 interface PhoneTopBarProps {
@@ -22,7 +26,18 @@ interface PhoneTopBarProps {
   onShowProgress: () => void;
 }
 
-// The gate's name with the working copy's state under it (opens the Gate sheet), and the running connection.
+/**
+ * The gate's name with the working copy's state under it (opens the Gate sheet), and the running connection.
+ *
+ * @param props - Component props.
+ * @param props.gateName - Gate name.
+ * @param props.workingCopy - Working copy.
+ * @param props.job - Job.
+ * @param props.hasCamera - Has camera.
+ * @param props.onOpenGate - On open gate.
+ * @param props.onShowProgress - On show progress.
+ * @returns Rendered React element.
+ */
 export function PhoneTopBar({ gateName, workingCopy, job, hasCamera, onOpenGate, onShowProgress }: PhoneTopBarProps) {
   return (
     <header className={hasCamera ? 'mobile-bar has-camera' : 'mobile-bar'}>
@@ -37,7 +52,11 @@ export function PhoneTopBar({ gateName, workingCopy, job, hasCamera, onOpenGate,
   );
 }
 
-// A gate, drawn like the app icon (web/ui/public/icon.svg), for the Gate tab.
+/**
+ * A gate, drawn like the app icon (web/ui/public/icon.svg), for the Gate tab.
+ *
+ * @returns Rendered React element.
+ */
 function GateIcon() {
   return (
     <svg viewBox="96 126 320 300" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="32" strokeLinecap="round"
@@ -56,7 +75,18 @@ interface TabButtonProps {
   onClick: () => void;
 }
 
-// One tab of the bottom bar.
+/**
+ * One tab of the bottom bar.
+ *
+ * @param props - Component props.
+ * @param props.label - Display label.
+ * @param props.icon - Icon.
+ * @param props.current - Current password or state.
+ * @param props.status - Working-copy status badge text (`matches the gate`, `changes not sent`, etc.).
+ * @param [props.className] - Class name.
+ * @param props.onClick - On click.
+ * @returns Rendered React element.
+ */
 function TabButton({ label, icon, current, status, className = '', onClick }: TabButtonProps) {
   return (
     <button type="button" className={`tab ${className}`} aria-current={current ? 'page' : undefined} aria-label={status && `${label} (${status})`}
@@ -77,7 +107,19 @@ interface PhoneTabBarProps {
   onOpenMore: () => void;
 }
 
-// Residents, Vendors, Transactions, Gate (the sheet) and More (the drawer, current for every other page).
+/**
+ * Residents, Vendors, Transactions, Gate (the sheet) and More (the drawer, current for every other page).
+ *
+ * @param props - Component props.
+ * @param props.page - Page.
+ * @param props.menuOpen - Menu open.
+ * @param props.gateOpen - Gate open.
+ * @param props.running - Running.
+ * @param props.onGo - On go.
+ * @param props.onOpenGate - On open gate.
+ * @param props.onOpenMore - On open more.
+ * @returns Rendered React element.
+ */
 export function PhoneTabBar({ page, menuOpen, gateOpen, running, onGo, onOpenGate, onOpenMore }: PhoneTabBarProps) {
   return (
     <nav className="tab-bar" aria-label="Main">
@@ -106,8 +148,26 @@ interface GateSheetProps {
   onNotify: (text: string) => void; // the outcome of Send / Reset, shown on the page
 }
 
-// The Gate tab: the working copy's state, Send to gate and Reset to gate (admins), the pulls, progress and live relays.
-// Its buttons close the sheet first, so their confirmations show on their own.
+/**
+ * The Gate tab: the working copy's state, Send to gate and Reset to gate (admins), the pulls, progress and live relays.
+ * Its buttons close the sheet first, so their confirmations show on their own.
+ *
+ * @param props - Component props.
+ * @param props.open - Whether the layer/dialog is open.
+ * @param props.onOpenChange - On open change.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.job - Job.
+ * @param props.readOnly - Read only.
+ * @param props.workingCopy - Working copy.
+ * @param props.hasWorkingCopy - Has working copy.
+ * @param props.onPull - On pull.
+ * @param props.onShowProgress - On show progress.
+ * @param props.onLiveRelays - On live relays.
+ * @param props.onReset - On reset.
+ * @param props.onJobStarted - On job started.
+ * @param props.onNotify - On notify.
+ * @returns Rendered React element.
+ */
 export function GateSheet({ open, onOpenChange, gapi, job, readOnly, workingCopy, hasWorkingCopy, onPull, onShowProgress, onLiveRelays, onReset,
   onJobStarted, onNotify }: GateSheetProps) {
   const running = job?.state === 'running';
@@ -151,7 +211,15 @@ interface PhoneMenuProps {
   children: ReactNode;
 }
 
-// The More drawer: the sidebar's items in a dialog at the left edge.
+/**
+ * The More drawer: the sidebar's items in a dialog at the left edge.
+ *
+ * @param props - Component props.
+ * @param props.open - Whether the layer/dialog is open.
+ * @param props.onOpenChange - On open change.
+ * @param props.children - Children.
+ * @returns Rendered React element.
+ */
 export function PhoneMenu({ open, onOpenChange, children }: PhoneMenuProps) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>

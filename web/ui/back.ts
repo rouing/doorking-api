@@ -1,7 +1,11 @@
-// The phone's Back button and back gesture (and the browser's Back) close what is open, topmost first: a dialog, the
-// menu, a form, a page other than Residents, the open gate. Each open layer adds a history entry; Back removes it and
-// closes the layer. A layer closed on the page (✕, Cancel, Save) takes its entry back off, so Back never lands on a
-// stale one. With nothing open, Back leaves the app as usual.
+/**
+ * @module web/ui/back
+ *
+ * The phone's Back button and back gesture (and the browser's Back) close what is open, topmost first: a dialog, the
+ * menu, a form, a page other than Residents, the open gate. Each open layer adds a history entry; Back removes it and
+ * closes the layer. A layer closed on the page (✕, Cancel, Save) takes its entry back off, so Back never lands on a
+ * stale one. With nothing open, Back leaves the app as usual.
+ */
 import { useEffect, useRef } from 'react';
 
 interface Layer { close: () => void; leave?: () => Promise<boolean> }
@@ -51,7 +55,13 @@ window.addEventListener('popstate', () => {
   top.leave().then((ok) => { if (ok) top.close(); });
 });
 
-// While `open`, Back calls `close`. leave: asked first; resolves true to close (for forms that could lose typing).
+/**
+ * While `open`, Back calls `close`. leave: asked first; resolves true to close (for forms that could lose typing).
+ *
+ * @param open - Whether the layer/dialog is open.
+ * @param close - `() => void` value.
+ * @param [leave] - Asked first.
+ */
 export function useBackLayer(open: boolean, close: () => void, leave?: () => Promise<boolean>): void {
   const layer = useRef<Layer>({ close, leave });
   layer.current.close = close;

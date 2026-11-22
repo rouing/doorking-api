@@ -1,5 +1,9 @@
-// Builds the server's modules from its services, each given only what it uses (dependencies flow one way:
-// context <- auth, mail, editing <- snapshots <- jobs <- routes).
+/**
+ * @module web/modules
+ *
+ * Builds the server's modules from its services, each given only what it uses (dependencies flow one way:
+ * context <- auth, mail, editing <- snapshots <- jobs <- routes).
+ */
 import { createAuth } from './auth.ts';
 import { createContext, type Services } from './context.ts';
 import { createEditing } from './editing.ts';
@@ -18,6 +22,12 @@ import { schedulesRoutes } from './routes/schedules.ts';
 import { workingCopyRoutes } from './routes/working-copy.ts';
 import type { Route } from './routing.ts';
 
+/**
+ * Create modules.
+ *
+ * @param services - Core server services (`config`, `store`, `cameras`, `mailer`).
+ * @returns Operation result.
+ */
 export function createModules(services: Services) {
   const context = createContext(services);
   const auth = createAuth(context);
@@ -30,7 +40,12 @@ export function createModules(services: Services) {
 
 export type Modules = ReturnType<typeof createModules>;
 
-// Every route, in matching order (the first match wins).
+/**
+ * Every route, in matching order (the first match wins).
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function createRoutes(modules: Modules): Route[] {
   return [
     ...docsRoutes(modules),

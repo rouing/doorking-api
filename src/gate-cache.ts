@@ -12,20 +12,24 @@ import { withPointer, type BoardBuffers } from './residents-edit.ts';
 import { BLOCK_SIZE } from './board-files.ts';
 import { httpError } from './errors.ts';
 
-// The gate's working copy. Nothing here talks to the gate.
-// gate_files (encrypted: names.bin holds the master code) keeps per gate and file the base: the latest residents
-// pull, i.e. what the gate holds (rcv_out.bin isn't kept: its events go into tx_history, see tx-history.ts). Until
-// 2026-11-13 a newer pull waited in a separate `pulled` copy until Reset to gate; migratePulledCopies converts those.
-// The working copy itself is values in tables (gate_residents, gate_cards, gate_settings, gate_working; see
-// gate-state.ts). Its board files are built from base + values whenever they are read; a write is decoded into
-// values and stored only when the files rebuild from them byte for byte. A file's change map (one byte per 128-byte
-// block, 1 = block differs from base: the blocks a send uploads) is worked out from base and working copy.
-// Each residents pull becomes the base at once (applyPull); unsent changes are put back on top of it, and items both
-// sides changed differently become conflicts that must be decided before a send.
+/**
+ * The gate's working copy. Nothing here talks to the gate.
+ * gate_files (encrypted: names.bin holds the master code) keeps per gate and file the base: the latest residents
+ * pull, i.e. what the gate holds (rcv_out.bin isn't kept: its events go into tx_history, see tx-history.ts). Until
+ * 2026-11-13 a newer pull waited in a separate `pulled` copy until Reset to gate; migratePulledCopies converts those.
+ * The working copy itself is values in tables (gate_residents, gate_cards, gate_settings, gate_working; see
+ * gate-state.ts). Its board files are built from base + values whenever they are read; a write is decoded into
+ * values and stored only when the files rebuild from them byte for byte. A file's change map (one byte per 128-byte
+ * block, 1 = block differs from base: the blocks a send uploads) is worked out from base and working copy.
+ * Each residents pull becomes the base at once (applyPull); unsent changes are put back on top of it, and items both
+ * sides changed differently become conflicts that must be decided before a send.
+ */
 export const CACHE_FILES = ['names.bin', 'phone.bin', 'cards.bin'];
 const NAMES_MODE_DELTA = 0x380; // names.bin size difference between the 255 and 10 area-code layouts
 
-// pulled: the gate's file is stored. A conflict as shown: { kind, key, label, gate, mine } (the two values in words).
+/**
+ * pulled: the gate's file is stored. A conflict as shown: { kind, key, label, gate, mine } (the two values in words).
+ */
 export type CacheFileStatus =
   | { name: string; cached: false; pulled: boolean }
   | { name: string; cached: true; changedBlocks: number[]; baseTime: Date; savedTime: Date };
@@ -36,11 +40,25 @@ type Copy = 'pulled' | 'base' | 'working';
 type Copies = Record<Copy, Map<string, StoredFile>>;
 
 
-// Sizes allowed for a working-copy file: the pulled size, or for names.bin the other area-code layout's size.
+/**
+ * Sizes allowed for a working-copy file: the pulled size, or for names.bin the other area-code layout's size.
+ *
+ * @param name - Display name or filename.
+ * @param base - Base (last-pulled) board buffers.
+ * @param data - Binary or structured payload.
+ * @returns True when the condition holds.
+ */
 const sizeOk = (name: string, base: Buffer, data: Buffer): boolean => data.length === base.length
   || (name === 'names.bin' && Math.abs(data.length - base.length) === NAMES_MODE_DELTA);
 const mapName = (name: string) => name.replace(/\.bin$/, '.map');
 
+/**
+ * Block map.
+ *
+ * @param base - Base (last-pulled) board buffers.
+ * @param work - `Buffer` value.
+ * @returns `Buffer` result.
+ */
 export function blockMap(base: Buffer, work: Buffer): Buffer {
   const map = Buffer.alloc(Math.ceil(work.length / BLOCK_SIZE));
   for (let i = 0; i < work.length; i++) if (work[i] !== base[i]) map[Math.floor(i / BLOCK_SIZE)] = 1;
@@ -48,7 +66,14 @@ export function blockMap(base: Buffer, work: Buffer): Buffer {
 }
 const changed = (map: Buffer): number[] => [...map.keys()].filter((i) => map[i]);
 
-// The stored files (copies as kept in gate_files).
+/**
+ * The stored files (copies as kept in gate_files).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param names - Raw `names.bin` buffer.
+ * @returns Promise resolving to `Copies`.
+ */
 async function loadFiles(store: Store, phone: string, names: string[]): Promise<Copies> {
   const rows = await all<{ copy: Copy; name: string; data: Buffer; saved_at: string }>(store,
     'SELECT copy, name, data, saved_at FROM gate_files WHERE phone = $1 AND name = ANY($2)', [phoneDigits(phone), names]);
@@ -62,14 +87,18 @@ const boardOf = (files: Map<string, StoredFile>): BoardBuffers => ({
 });
 const hasAll = (files: Map<string, StoredFile>) => CACHE_FILES.every((file) => files.has(file));
 
-// The base from gate_files; working built from base and the working copy's values, with the master code saved with
-// the gate's login (managed_gates; for a gate not managed here the base's bytes stay). conflicts: as stored.
-// hasWorking: a working copy exists; build false skips building its files (c.working stays empty).
+/**
+ * The base from gate_files; working built from base and the working copy's values, with the master code saved with
+ * the gate's login (managed_gates; for a gate not managed here the base's bytes stay). conflicts: as stored.
+ * hasWorking: a working copy exists; build false skips building its files (c.working stays empty).
+ */
 type Loaded = Copies & { baseOk: boolean; masterCode?: string; conflicts: Conflict[]; hasWorking: boolean };
 async function loadCopies(store: Store, phone: string, names: string[] = CACHE_FILES, { build = true } = {}): Promise<Loaded> {
   const files = await loadFiles(store, phone, [...new Set([...names, ...CACHE_FILES])]);
   files.working = new Map();
-  // One query after another: store may be a transaction's single connection (no queries at the same time on it).
+  /**
+   * One query after another: store may be a transaction's single connection (no queries at the same time on it).
+   */
   const working = await loadWorkingState(store, phone);
   const gate = await getGate(store, phone);
   const masterCode = gate ? gate.masterCode : undefined;
@@ -98,7 +127,12 @@ function statusOf(copies: Loaded): CacheStatus {
   return { exists: cached.length > 0, edited: cached.some((file) => file.changedBlocks.length), conflicts: liveConflicts(copies), files };
 }
 
-// The stored conflicts whose item still differs between the working copy and the gate, with both values in words.
+/**
+ * The stored conflicts whose item still differs between the working copy and the gate, with both values in words.
+ *
+ * @param copies - `Loaded` value.
+ * @returns `ConflictView[]` result.
+ */
 function liveConflicts(copies: Loaded): ConflictView[] {
   if (!copies.conflicts.length || !hasAll(copies.working) || !hasAll(copies.base)) return [];
   const [mine, gate] = [itemsOf(decodeWorking(boardOf(copies.working))), itemsOf(decodeWorking(boardOf(copies.base)))];
@@ -107,19 +141,37 @@ function liveConflicts(copies: Loaded): ConflictView[] {
     return sameItem(conflict.kind, yours, theirs) ? [] : [{ ...conflict, ...describeConflict(conflict.kind, theirs, yours) }];
   });
 }
-// Per file: whether it is cached and the changed blocks; whether anything is unsent; the conflicts to decide.
+/**
+ * Per file: whether it is cached and the changed blocks; whether anything is unsent; the conflicts to decide.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `CacheStatus`.
+ */
 export async function cacheStatus(store: Store, phone: string): Promise<CacheStatus> {
   return statusOf(await loadCopies(store, phone));
 }
 
-// The gate's files as stored (the latest residents pull), or null when one is missing.
+/**
+ * The gate's files as stored (the latest residents pull), or null when one is missing.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `BoardBuffers | null`.
+ */
 export async function readBaseFiles(store: Store, phone: string): Promise<BoardBuffers | null> {
   const files = await loadFiles(store, phone, CACHE_FILES);
   return hasAll(files.base) ? boardOf(files.base) : null;
 }
 
-// Makes files the base and the working copy their values (no unsent changes, no conflicts). A missing file drops the
-// working copy. When the files fail the round-trip check, editing stays locked (baseOk false).
+/**
+ * Makes files the base and the working copy their values (no unsent changes, no conflicts). A missing file drops the
+ * working copy. When the files fail the round-trip check, editing stays locked (baseOk false).
+ *
+ * @param tx - Active database transaction store.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param files - Map of board filenames to binary buffers.
+ */
 async function setBase(tx: Store, phone: string, files: Map<string, StoredFile>): Promise<void> {
   for (const name of CACHE_FILES) {
     const file = files.get(name);
@@ -138,13 +190,27 @@ async function setBase(tx: Store, phone: string, files: Map<string, StoredFile>)
 const fileMap = (files: Record<string, Buffer>, at: Date) => new Map(Object.entries(files)
   .filter(([name]) => CACHE_FILES.includes(name.toLowerCase())).map(([name, data]) => [name.toLowerCase(), { data, savedAt: at }]));
 
-// Makes pulled files the base and the working copy (unsent changes are dropped), as after a send the gate confirmed.
+/**
+ * Makes pulled files the base and the working copy (unsent changes are dropped), as after a send the gate confirmed.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param files - Map of board filenames to binary buffers.
+ * @param [at] - Timestamp (`Date` or milliseconds).
+ * @returns Promise resolving to `CacheStatus`.
+ */
 export async function replaceBase(store: Store, phone: string, files: Record<string, Buffer>, at: Date = new Date()): Promise<CacheStatus> {
   await transaction(store, (tx) => setBase(tx, phone, fileMap(files, at)));
   return cacheStatus(store, phone);
 }
 
-// Reset to gate: drops the unsent changes and conflicts; the working copy becomes the gate's files again.
+/**
+ * Reset to gate: drops the unsent changes and conflicts; the working copy becomes the gate's files again.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `CacheStatus`.
+ */
 export async function resetCache(store: Store, phone: string): Promise<CacheStatus> {
   await transaction(store, async (tx) => {
     const files = await loadFiles(tx, phone, CACHE_FILES);
@@ -154,11 +220,13 @@ export async function resetCache(store: Store, phone: string): Promise<CacheStat
   return cacheStatus(store, phone);
 }
 
-// What a residents pull did to the working copy. outcome: new (no working copy before), unchanged (the gate holds
-// the same files), refreshed (no unsent changes: the working copy is the pull), rebased (unsent changes put back on
-// top of the pull), dropped (unsent changes dropped: reason). kept: changes put back; fromGate: items the gate changed
-// that the working copy now shows; conflicts: items both changed differently (the working copy's value kept);
-// notKept: changes that couldn't be put back (the gate's value kept), with why.
+/**
+ * What a residents pull did to the working copy. outcome: new (no working copy before), unchanged (the gate holds
+ * the same files), refreshed (no unsent changes: the working copy is the pull), rebased (unsent changes put back on
+ * top of the pull), dropped (unsent changes dropped: reason). kept: changes put back; fromGate: items the gate changed
+ * that the working copy now shows; conflicts: items both changed differently (the working copy's value kept);
+ * notKept: changes that couldn't be put back (the gate's value kept), with why.
+ */
 export interface PullResult {
   outcome: 'new' | 'unchanged' | 'refreshed' | 'rebased' | 'dropped';
   kept: number; fromGate: number; conflicts: Conflict[];
@@ -166,11 +234,25 @@ export interface PullResult {
   dropped?: { count: number; reason: string };
 }
 
-// Builds the working copy for a rebase: every change at once, else one at a time, leaving out those the files can't
-// take (for example an entry code the gate now gives to someone else). The middle-entry pointer is worked out again
-// when the directory differs from the pull's.
+/**
+ * Builds the working copy for a rebase: every change at once, else one at a time, leaving out those the files can't
+ * take (for example an entry code the gate now gives to someone else). The middle-entry pointer is worked out again
+ * when the directory differs from the pull's.
+ *
+ * @param base - Base (last-pulled) board buffers.
+ * @param plan - `RebasePlan` value.
+ * @param [masterCode] - 4-digit gate master code.
+ * @returns `{ state: WorkingState; notKept: PullResult['notKept'] }` result.
+ * @throws Error when validation or the underlying operation fails.
+ */
 function buildRebase(base: BoardBuffers, plan: RebasePlan, masterCode?: string): { state: WorkingState; notKept: PullResult['notKept'] } {
-  // The working copy those values build into; throws when they can't be built, or don't rebuild the same.
+  /**
+   * The working copy those values build into; throws when they can't be built, or don't rebuild the same.
+   *
+   * @param working - Decoded working-copy state.
+   * @returns `WorkingState` result.
+   * @throws Error when validation or the underlying operation fails.
+   */
   const build = (working: WorkingState): WorkingState => {
     const built = withPointer(base.names, buildFiles(base, working, { masterCode }));
     const state = decodeWorking(built);
@@ -194,16 +276,30 @@ function buildRebase(base: BoardBuffers, plan: RebasePlan, masterCode?: string):
   }
 }
 
-// How many items a values patch changes.
+/**
+ * How many items a values patch changes.
+ *
+ * @param working - Decoded working-copy state.
+ * @param after - State or buffer after the change.
+ * @returns `number` result.
+ */
 const patchSize = (working: WorkingState, after: WorkingState): number => {
   const patch = diffStates(working, after);
   return patch ? ['residents', 'cards', 'settings'].reduce((total, key) => total + Object.keys((patch as Record<string, object>)[key] || {}).length, 0) : 0;
 };
 
-// A residents pull: its files become the base (what the gate holds) at once, and the working copy follows. Unsent
-// changes are put back on top of the pull (see rebasePlan); when the gate's or the working copy's directory code
-// digits or area-code mode changed, or the pull can't be edited (round-trip check), the gate's version is taken
-// and the changes are dropped. Other files (rcv_out.bin) are ignored. Run it while no edit is being saved.
+/**
+ * A residents pull: its files become the base (what the gate holds) at once, and the working copy follows. Unsent
+ * changes are put back on top of the pull (see rebasePlan); when the gate's or the working copy's directory code
+ * digits or area-code mode changed, or the pull can't be edited (round-trip check), the gate's version is taken
+ * and the changes are dropped. Other files (rcv_out.bin) are ignored. Run it while no edit is being saved.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param files - Map of board filenames to binary buffers.
+ * @param [at] - Timestamp (`Date` or milliseconds).
+ * @returns Promise resolving to `PullResult & { status: CacheStatus }`.
+ */
 export async function applyPull(store: Store, phone: string, files: Record<string, Buffer>, at: Date = new Date()):
   Promise<PullResult & { status: CacheStatus }> {
   const pulled = fileMap(files, at);
@@ -238,8 +334,19 @@ export async function applyPull(store: Store, phone: string, files: Record<strin
   return { ...result, status: await cacheStatus(store, phone) };
 }
 
-// Decides a conflict: mine keeps the working copy's value; gate takes the gate's (saved like any edit). Returns the
-// status.
+/**
+ * Decides a conflict: mine keeps the working copy's value; gate takes the gate's (saved like any edit). Returns the
+ * status.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param options - Options object.
+ * @param options.kind - Item or operation kind.
+ * @param options.key - Lookup key, API key, or setting key.
+ * @param options.choice - Choice.
+ * @returns Promise resolving to `CacheStatus`.
+ * @throws HTTP 400/404/409 error on invalid input or conflict.
+ */
 export async function resolveConflict(store: Store, phone: string, { kind, key, choice }: { kind: unknown; key: unknown; choice: unknown }): Promise<CacheStatus> {
   if (choice !== 'mine' && choice !== 'gate') throw httpError('choice must be "mine" or "gate"', 400);
   const copies = await loadCopies(store, phone);
@@ -258,13 +365,25 @@ export async function resolveConflict(store: Store, phone: string, { kind, key, 
   return cacheStatus(store, phone);
 }
 
-// Makes the working copy when there is none yet.
+/**
+ * Makes the working copy when there is none yet.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `CacheStatus`.
+ */
 export async function ensureCache(store: Store, phone: string): Promise<CacheStatus> {
   const status = await cacheStatus(store, phone);
   return status.exists ? status : resetCache(store, phone);
 }
 
-// { data, base, savedTime, baseTime } for each working-copy file (throws 404 when one is missing).
+/**
+ * { data, base, savedTime, baseTime } for each working-copy file (throws 404 when one is missing).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `CacheFiles`.
+ */
 export async function readCacheFiles(store: Store, phone: string): Promise<CacheFiles> {
   return filesOf(await loadCopies(store, phone));
 }
@@ -278,15 +397,29 @@ function filesOf(copies: Loaded): CacheFiles {
   }));
 }
 
-// The working copy's files (see readCacheFiles) and status (see cacheStatus) from one build, making the working copy
-// first when there is none yet (see ensureCache).
+/**
+ * The working copy's files (see readCacheFiles) and status (see cacheStatus) from one build, making the working copy
+ * first when there is none yet (see ensureCache).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `{ files: CacheFiles; status: CacheStatus }`.
+ */
 export async function readCache(store: Store, phone: string): Promise<{ files: CacheFiles; status: CacheStatus }> {
   let copies = await loadCopies(store, phone);
   if (!statusOf(copies).exists) { await resetCache(store, phone); copies = await loadCopies(store, phone); }
   return { files: filesOf(copies), status: statusOf(copies) };
 }
 
-// { data, base, savedTime, baseTime } for one cached file.
+/**
+ * { data, base, savedTime, baseTime } for one cached file.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param name - Display name or filename.
+ * @returns Promise resolving to `{ data: Buffer; base: Buffer; savedTime: Date; baseTime: Date }`.
+ * @throws HTTP 404 error on invalid input or conflict.
+ */
 export async function readCacheFile(store: Store, phone: string, name: string):
   Promise<{ data: Buffer; base: Buffer; savedTime: Date; baseTime: Date }> {
   const copies = CACHE_FILES.includes(name) ? await loadCopies(store, phone, [name]) : null;
@@ -296,14 +429,29 @@ export async function readCacheFile(store: Store, phone: string, name: string):
   return { data: work.data, base: base.data, savedTime: work.savedAt, baseTime: base.savedAt };
 }
 
-// Saves working-copy files (names.bin, phone.bin and/or cards.bin; the others stay as they are). Each must keep the
-// base file's size, except names.bin, which may switch area-code layout (see sizeOk). The files are decoded into
-// the working copy's values, which are stored only when the files rebuild from them byte for byte; otherwise
-// nothing is saved (409). Refused (409) while the base failed the round-trip check. Returns the changed blocks.
+/**
+ * Saves working-copy files (names.bin, phone.bin and/or cards.bin; the others stay as they are). Each must keep the
+ * base file's size, except names.bin, which may switch area-code layout (see sizeOk). The files are decoded into
+ * the working copy's values, which are stored only when the files rebuild from them byte for byte; otherwise
+ * nothing is saved (409). Refused (409) while the base failed the round-trip check. Returns the changed blocks.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param files - Map of board filenames to binary buffers.
+ * @returns Promise resolving to `Record<string, number[]>`.
+ */
 export async function writeCacheFiles(store: Store, phone: string, files: Record<string, Buffer>): Promise<Record<string, number[]>> {
   return (await saveCacheFiles(store, phone, files)).blocks;
 }
-// writeCacheFiles that also returns the new status. With all three files given, the old working copy isn't built.
+/**
+ * writeCacheFiles that also returns the new status. With all three files given, the old working copy isn't built.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param files - Map of board filenames to binary buffers.
+ * @returns Promise resolving to `{ blocks: Record<string, number[]>; status: CacheStatus }`.
+ * @throws HTTP 404/409 error on invalid input or conflict.
+ */
 export async function saveCacheFiles(store: Store, phone: string, files: Record<string, Buffer>):
   Promise<{ blocks: Record<string, number[]>; status: CacheStatus }> {
   const copies = await loadCopies(store, phone, CACHE_FILES, { build: !CACHE_FILES.every((file) => file in files) });
@@ -339,13 +487,26 @@ export async function saveCacheFiles(store: Store, phone: string, files: Record<
   };
 }
 
-// Saves one working-copy file (see writeCacheFiles).
+/**
+ * Saves one working-copy file (see writeCacheFiles).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param name - Display name or filename.
+ * @param data - Binary or structured payload.
+ * @returns Promise resolving to `{ changedBlocks: number[] }`.
+ */
 export async function writeCacheFile(store: Store, phone: string, name: string, data: Buffer): Promise<{ changedBlocks: number[] }> {
   return { changedBlocks: (await writeCacheFiles(store, phone, { [name]: data }))[name] };
 }
 
-// Once per gate: a working copy stored as files (gate_files 'working', before the values tables) becomes values.
-// It must rebuild byte for byte from base + values; the files are deleted only then. Returns the gates converted.
+/**
+ * Once per gate: a working copy stored as files (gate_files 'working', before the values tables) becomes values.
+ * It must rebuild byte for byte from base + values; the files are deleted only then. Returns the gates converted.
+ *
+ * @param store - Database store handle.
+ * @returns Promise resolving to `string[]`.
+ */
 export async function migrateWorkingFiles(store: Store): Promise<string[]> {
   const phones = (await all<{ phone: string }>(store, "SELECT DISTINCT phone FROM gate_files WHERE copy = 'working'")).map((row) => row.phone);
   for (const phone of phones) {
@@ -365,9 +526,14 @@ export async function migrateWorkingFiles(store: Store): Promise<string[]> {
   return phones;
 }
 
-// Values the app learned to store after a working copy was saved (setting rows, the extra bytes, the file sizes) are
-// added, decoded from the working copy's files (where such bytes still come from the base); the rest is kept.
-// Returns the gates that got values.
+/**
+ * Values the app learned to store after a working copy was saved (setting rows, the extra bytes, the file sizes) are
+ * added, decoded from the working copy's files (where such bytes still come from the base); the rest is kept.
+ * Returns the gates that got values.
+ *
+ * @param store - Database store handle.
+ * @returns Promise resolving to `string[]`.
+ */
 export async function addMissingValues(store: Store): Promise<string[]> {
   const done: string[] = [];
   for (const { phone, complete } of await all<{ phone: string; complete: boolean }>(store,
@@ -388,8 +554,13 @@ export async function addMissingValues(store: Store): Promise<string[]> {
   return done;
 }
 
-// Once per gate: a newer pull kept in the `pulled` copy (until 2026-11-13) is applied like a residents pull now
-// (applyPull), then the copy is deleted. Returns { phone, outcome }.
+/**
+ * Once per gate: a newer pull kept in the `pulled` copy (until 2026-11-13) is applied like a residents pull now
+ * (applyPull), then the copy is deleted. Returns { phone, outcome }.
+ *
+ * @param store - Database store handle.
+ * @returns Promise resolving to `{ phone: string; outcome: PullResult['outcome'] | 'removed' }[]`.
+ */
 export async function migratePulledCopies(store: Store): Promise<{ phone: string; outcome: PullResult['outcome'] | 'removed' }[]> {
   const out: { phone: string; outcome: PullResult['outcome'] | 'removed' }[] = [];
   for (const { phone } of await all<{ phone: string }>(store, "SELECT DISTINCT phone FROM gate_files WHERE copy = 'pulled' ORDER BY phone")) {
@@ -405,7 +576,14 @@ export async function migratePulledCopies(store: Store): Promise<{ phone: string
   return out;
 }
 
-// A working-copy file (.bin) or its change map (.map) for download, or null.
+/**
+ * A working-copy file (.bin) or its change map (.map) for download, or null.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param name - Display name or filename.
+ * @returns Promise resolving to `Buffer | null`.
+ */
 export async function cacheFileData(store: Store, phone: string, name: string): Promise<Buffer | null> {
   const bin = CACHE_FILES.find((file) => file === name || mapName(file) === name);
   if (!bin) return null;
@@ -416,8 +594,14 @@ export async function cacheFileData(store: Store, phone: string, name: string): 
   return name === bin ? work.data : blockMap(base.data, work.data);
 }
 
-// Files and maps (keyed by .bin name) for a send. Refused when nothing changed, a file is missing, or conflicts with
-// the gate are still to be decided (Keep mine or Take the gate's).
+/**
+ * Files and maps (keyed by .bin name) for a send. Refused when nothing changed, a file is missing, or conflicts with
+ * the gate are still to be decided (Keep mine or Take the gate's).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to the operation result.
+ */
 export async function prepareSend(store: Store, phone: string) {
   const copies = await loadCopies(store, phone);
   const status = statusOf(copies);
@@ -442,8 +626,16 @@ export async function prepareSend(store: Store, phone: string) {
   return { files, maps, changedBlocks };
 }
 
-// Compares files pulled after a send with the working copy, or with sent (the files that were sent) when given.
-// differentBlocks lists the 128-byte blocks per file.
+/**
+ * Compares files pulled after a send with the working copy, or with sent (the files that were sent) when given.
+ * differentBlocks lists the 128-byte blocks per file.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param pulled - `Record<string, Buffer | undefined>` value.
+ * @param [sent] - `Record<string, Buffer>` value.
+ * @returns Promise resolving to the operation result.
+ */
 export async function verifySend(store: Store, phone: string, pulled: Record<string, Buffer | undefined>, sent?: Record<string, Buffer>) {
   const work = sent ? null : await readCacheFiles(store, phone);
   const differentBlocks: Record<string, number[] | 'size differs'> = {};
@@ -457,16 +649,24 @@ export async function verifySend(store: Store, phone: string, pulled: Record<str
   return { matches: !Object.keys(differentBlocks).length, differentBlocks };
 }
 
-// After a send whose check pull holds what was sent: when the working copy is still what was sent, the pull becomes
-// the base and the working copy (null); when edits were saved during the send, the pull is applied like any residents
-// pull, so they stay on top as unsent changes (its result). Run it while no edit is being saved.
+/**
+ * After a send whose check pull holds what was sent: when the working copy is still what was sent, the pull becomes
+ * the base and the working copy (null); when edits were saved during the send, the pull is applied like any residents
+ * pull, so they stay on top as unsent changes (its result). Run it while no edit is being saved.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param pulled - `Record<string, Buffer>` value.
+ * @param sent - `Record<string, Buffer>` value.
+ * @returns Promise resolving to `(PullResult & { status: CacheStatus }) | null`.
+ */
 export async function acceptSentPull(store: Store, phone: string, pulled: Record<string, Buffer>, sent: Record<string, Buffer>):
   Promise<(PullResult & { status: CacheStatus }) | null> {
   if ((await verifySend(store, phone, sent)).matches) { await replaceBase(store, phone, pulled); return null; }
   return applyPull(store, phone, pulled);
 }
 
-// Pulled files kept in gate_files. Board files (names/phone/cards) and the transaction ring buffer.
+/** Pulled files kept in gate_files. Board files (names/phone/cards) and the transaction ring buffer. */
 const PULLED_FILES = [...CACHE_FILES, 'rcv_out.bin'];
 
 function findFile(dir: string, name: string): string | null {
@@ -474,9 +674,16 @@ function findFile(dir: string, name: string): string | null {
   return found ? path.join(dir, found) : null;
 }
 
-// One-time move of the board files kept on disk before gate_files (<root>/<phone>/*.bin, cache/base/*.bin,
-// cache/*.bin and cache/*.map): each copy is stored with its file time, read back and compared, then the files are
-// deleted (camera pictures in <root>/<phone>/snapshots stay). Returns { phone: files moved }, or null when it already ran.
+/**
+ * One-time move of the board files kept on disk before gate_files (<root>/<phone>/*.bin, cache/base/*.bin,
+ * cache/*.bin and cache/*.map): each copy is stored with its file time, read back and compared, then the files are
+ * deleted (camera pictures in <root>/<phone>/snapshots stay). Returns { phone: files moved }, or null when it already ran.
+ *
+ * @param store - Database store handle.
+ * @param root - `string` value.
+ * @returns Promise resolving to `Record<string, number> | null`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export async function importGateFiles(store: Store, root: string): Promise<Record<string, number> | null> {
   if (await getMeta(store, 'gateFilesImported')) return null;
   const moved: Record<string, number> = {};

@@ -1,17 +1,29 @@
-// Transaction history: every event ever pulled from a gate, oldest first, in the database's tx_history table.
-// A transactions pull reads the gate's whole ring buffer (rcv_out.bin), which drops its oldest events as new ones
-// arrive. Like DoorKing32's TRANS files, the history keeps them: each pull is matched against the saved tail and
-// only the events after the overlap are added. Records keep the year inferred when they were first saved (the
-// board stores no year). The pulled rcv_out.bin itself isn't kept; tx_pulls records when the gate was last read.
+/**
+ * @module src/tx-history
+ *
+ * Transaction history: every event ever pulled from a gate, oldest first, in the database's tx_history table.
+ * A transactions pull reads the gate's whole ring buffer (rcv_out.bin), which drops its oldest events as new ones
+ * arrive. Like DoorKing32's TRANS files, the history keeps them: each pull is matched against the saved tail and
+ * only the events after the overlap are added. Records keep the year inferred when they were first saved (the
+ * board stores no year). The pulled rcv_out.bin itself isn't kept; tx_pulls records when the gate was last read.
+ */
 import { all, decryptBytes, one, run, transaction, type Store, phoneDigits } from './db.ts';
 import { hasValidDate, orderRcvOut, parseRcvOut, type RcvRecord } from './board-files.ts';
 
 export interface TxMerge { added: number; kept: number; gap: boolean }
 
-// Adds a pulled rcv_out.bin to the gate's history and records pulledAt as its last transactions pull. The pull starts
-// with the oldest events still on the gate, so the longest run at the end of the saved history that equals the start
-// of the pull is the overlap (kept); the rest is added. gap: nothing overlapped although history existed, so events
-// may be missing between the two (the buffer wrapped past the last pull) or the gate's buffer was cleared.
+/**
+ * Adds a pulled rcv_out.bin to the gate's history and records pulledAt as its last transactions pull. The pull starts
+ * with the oldest events still on the gate, so the longest run at the end of the saved history that equals the start
+ * of the pull is the overlap (kept); the rest is added. gap: nothing overlapped although history existed, so events
+ * may be missing between the two (the buffer wrapped past the last pull) or the gate's buffer was cleared.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param buf - Binary board file buffer.
+ * @param [pulledAt] - Timestamp of the last pull, or `null`.
+ * @returns Promise resolving to `TxMerge`.
+ */
 export async function mergeTransactions(store: Store, phone: string, buf: Buffer, pulledAt: Date = new Date()): Promise<TxMerge> {
   const phoneKey = phoneDigits(phone);
   const pulled = orderRcvOut(buf, pulledAt).filter(hasValidDate);
@@ -43,14 +55,25 @@ export async function mergeTransactions(store: Store, phone: string, buf: Buffer
   });
 }
 
-// When the gate's transactions were last pulled, or null.
+/**
+ * When the gate's transactions were last pulled, or null.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `Date | null`.
+ */
 export async function txPulledAt(store: Store, phone: string): Promise<Date | null> {
   const row = await one<{ pulled_at: string }>(store, 'SELECT pulled_at FROM tx_pulls WHERE phone = $1', [phoneDigits(phone)]);
   return row ? new Date(row.pulled_at) : null;
 }
 
-// Once: each rcv_out.bin kept in gate_files (until 2026-11-13) is merged into the history as after a pull (events
-// already saved are kept, not added again), its pull time recorded, and the file deleted. Returns { phone, added }.
+/**
+ * Once: each rcv_out.bin kept in gate_files (until 2026-11-13) is merged into the history as after a pull (events
+ * already saved are kept, not added again), its pull time recorded, and the file deleted. Returns { phone, added }.
+ *
+ * @param store - Database store handle.
+ * @returns Promise resolving to `{ phone: string; added: number }[]`.
+ */
 export async function migrateRcvOut(store: Store): Promise<{ phone: string; added: number }[]> {
   const out: { phone: string; added: number }[] = [];
   const rows = await all<{ phone: string; data: Buffer; saved_at: string }>(store,
@@ -65,8 +88,17 @@ export async function migrateRcvOut(store: Store): Promise<{ phone: string; adde
   return out;
 }
 
-// A page of the saved transactions: the newest `limit` (all when not given) older than seq `before`, oldest first, and
-// next: the `before` that asks for the page older than this one (null when there is none).
+/**
+ * A page of the saved transactions: the newest `limit` (all when not given) older than seq `before`, oldest first, and
+ * next: the `before` that asks for the page older than this one (null when there is none).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param [options] - Options object.
+ * @param [options.before] - State or buffer before the change.
+ * @param [options.limit] - Maximum number of rows to return.
+ * @returns Promise resolving to `{ records: RcvRecord[]; next: number | null }`.
+ */
 export async function readTransactionPage(store: Store, phone: string, { before, limit }: { before?: number; limit?: number } = {}):
   Promise<{ records: RcvRecord[]; next: number | null }> {
   const rows = await all<{ raw: string; year: number; seq: number }>(store,

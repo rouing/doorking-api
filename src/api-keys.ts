@@ -1,7 +1,11 @@
-// API keys (table api_keys, see db.ts): each belongs to one gate, not to a person; the admin who created it is only
-// recorded. A key is "dkg_<id>_<secret>" (id: 12 hex digits, secret: 32 random bytes, base64url), shown once when it
-// is created; only its SHA-256 is stored. Role 'admin' or 'readonly' like people's; optional expiry. Scripts send it
-// as "Authorization: Bearer <key>" (web/requests.ts and the route scopes in web/routes/ decide which routes a key may use).
+/**
+ * @module src/api-keys
+ *
+ * API keys (table api_keys, see db.ts): each belongs to one gate, not to a person; the admin who created it is only
+ * recorded. A key is "dkg_<id>_<secret>" (id: 12 hex digits, secret: 32 random bytes, base64url), shown once when it
+ * is created; only its SHA-256 is stored. Role 'admin' or 'readonly' like people's; optional expiry. Scripts send it
+ * as "Authorization: Bearer <key>" (web/requests.ts and the route scopes in web/routes/ decide which routes a key may use).
+ */
 import crypto from 'node:crypto';
 import { all, one, run, type Store, phoneDigits } from './db.ts';
 import { checkRole, type GateRole } from './gate-list.ts';
@@ -24,7 +28,19 @@ const fromRow = (row: ApiKeyRow): ApiKeyInfo => ({
   id: row.id, name: row.name, role: row.role, createdBy: row.created_by, createdAt: row.created_at, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
 });
 
-// Creates a key for the gate. Returns the key (to show once) and its details.
+/**
+ * Creates a key for the gate. Returns the key (to show once) and its details.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param options - Options object.
+ * @param options.name - Display name or filename.
+ * @param options.role - Gate access role (`admin` or `readonly`).
+ * @param [options.expiresDays] - Expires days.
+ * @param by - Username of the user performing the action.
+ * @returns Promise resolving to `{ key: string; apiKey: ApiKeyInfo }`.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export async function createApiKey(store: Store, phone: string, { name, role, expiresDays = 0 }: { name: unknown; role: unknown; expiresDays?: unknown },
   by: string): Promise<{ key: string; apiKey: ApiKeyInfo }> {
   const label = String(name ?? '').trim();
@@ -42,20 +58,40 @@ export async function createApiKey(store: Store, phone: string, { name, role, ex
   return { key, apiKey: fromRow(row) };
 }
 
-// The gate's keys, newest first (never the key or its hash).
+/**
+ * The gate's keys, newest first (never the key or its hash).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `ApiKeyInfo[]`.
+ */
 export async function listApiKeys(store: Store, phone: string): Promise<ApiKeyInfo[]> {
   return (await all<ApiKeyRow>(store, 'SELECT * FROM api_keys WHERE phone = $1 ORDER BY created_at DESC', [phoneDigits(phone)])).map(fromRow);
 }
 
-// Revokes (deletes) one of the gate's keys; returns its name.
+/**
+ * Revokes (deletes) one of the gate's keys; returns its name.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param id - Unique record identifier.
+ * @returns Promise resolving to `string`.
+ * @throws HTTP 404 error on invalid input or conflict.
+ */
 export async function revokeApiKey(store: Store, phone: string, id: string): Promise<string> {
   const removed = await one<{ name: string }>(store, 'DELETE FROM api_keys WHERE phone = $1 AND id = $2 RETURNING name', [phoneDigits(phone), String(id)]);
   if (!removed) throw httpError('API key not found', 404);
   return removed.name;
 }
 
-// The key's gate, id, name and role when the key is valid and not expired, else null. last_used_at is written at
-// most once a minute.
+/**
+ * The key's gate, id, name and role when the key is valid and not expired, else null. last_used_at is written at
+ * most once a minute.
+ *
+ * @param store - Database store handle.
+ * @param key - Lookup key, API key, or setting key.
+ * @returns Promise resolving to `{ id: string; phone: string; name: string; role: GateRole } | null`.
+ */
 export async function findApiKey(store: Store, key: unknown): Promise<{ id: string; phone: string; name: string; role: GateRole } | null> {
   const match = /^dkg_([0-9a-f]{12})_[A-Za-z0-9_-]{43}$/.exec(String(key ?? ''));
   if (!match) return null;

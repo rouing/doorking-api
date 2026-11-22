@@ -13,8 +13,15 @@ interface HistoryProps {
   onReverted: () => void;
 }
 
-// The gate's users with their last sign-in, then this gate's events (newest first). Rows with details expand on click, one at a
-// time; Revert undoes that change in the working copy only.
+/**
+ * The gate's users with their last sign-in, then this gate's events (newest first). Rows with details expand on click, one at a
+ * time; Revert undoes that change in the working copy only.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onReverted - On reverted.
+ * @returns Rendered React element.
+ */
 export function History({ gapi, onReverted }: HistoryProps) {
   const readOnly = useReadOnly();
   const [history, setHistory] = useState<HistoryReply | null>(null);

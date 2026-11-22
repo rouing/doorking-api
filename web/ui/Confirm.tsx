@@ -4,8 +4,12 @@ import { useBackLayer } from './back.ts';
 
 interface Ask { title: string; body?: ReactNode; action: string; color?: 'red' | 'blue' }
 
-// A confirmation dialog: `confirm({ title, body, action })` resolves true when the action button is clicked.
-// Render `dialog` once in the component.
+/**
+ * A confirmation dialog: `confirm({ title, body, action })` resolves true when the action button is clicked.
+ * Render `dialog` once in the component.
+ *
+ * @returns `[ReactNode, (ask: Ask) => Promise<boolean>]` result.
+ */
 export function useConfirm(): [ReactNode, (ask: Ask) => Promise<boolean>] {
   const [ask, setAsk] = useState<Ask | null>(null);
   const resolve = useRef<(ok: boolean) => void>(() => {});

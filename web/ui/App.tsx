@@ -12,17 +12,25 @@ import { UpdateNotice } from './UpdateNotice.tsx';
 
 export type SignedIn = Extract<SessionReply, { loggedIn: true }>;
 
-// First-account setup, sign-in, a forced password change, then the gate list, then the open gate. The open gate is
-// kept in the server session, so a reload opens the same gate. Dark mode is an account setting; this browser
-// remembers the last one for the sign-in page.
-// An email link in the address (#verify=, #reset=, #invite=), read once when the page opens.
+/**
+ * First-account setup, sign-in, a forced password change, then the gate list, then the open gate. The open gate is
+ * kept in the server session, so a reload opens the same gate. Dark mode is an account setting; this browser
+ * remembers the last one for the sign-in page.
+ * An email link in the address (#verify=, #reset=, #invite=), read once when the page opens.
+ *
+ * @returns `{ kind: 'verify' | 'reset' | 'invite'; token: string } | null` result.
+ */
 function linkInAddress(): { kind: 'verify' | 'reset' | 'invite'; token: string } | null {
   const match = /^#(verify|reset|invite)=([A-Za-z0-9_-]+)$/.exec(window.location.hash);
   return match ? { kind: match[1] as 'verify' | 'reset' | 'invite', token: match[2] } : null;
 }
 
-// An approval code from a scanned QR code (#approve=<code>, account/ApproveDevice.tsx): kept for User Settings →
-// Passkeys and removed from the address. True when there was one.
+/**
+ * An approval code from a scanned QR code (#approve=<code>, account/ApproveDevice.tsx): kept for User Settings →
+ * Passkeys and removed from the address. True when there was one.
+ *
+ * @returns True when the condition holds.
+ */
 function approvalInAddress(): boolean {
   const match = /^#approve=([A-Za-z0-9-]{8,12})$/.exec(window.location.hash);
   if (!match) return false;
@@ -31,7 +39,11 @@ function approvalInAddress(): boolean {
   return true;
 }
 
-// The result of a single sign-on redirect in the address (#sso=linked, #sso-error=<message>), read once and removed.
+/**
+ * The result of a single sign-on redirect in the address (#sso=linked, #sso-error=<message>), read once and removed.
+ *
+ * @returns `{ ok: boolean; text: string } | null` result.
+ */
 function ssoInAddress(): { ok: boolean; text: string } | null {
   const match = /^#sso(-error)?=(.*)$/.exec(window.location.hash);
   if (!match) return null;
@@ -41,6 +53,11 @@ function ssoInAddress(): { ok: boolean; text: string } | null {
   return match[1] ? { ok: false, text } : { ok: true, text: 'The sign-in was linked to your account.' };
 }
 
+/**
+ * App React component.
+ *
+ * @returns Rendered React element.
+ */
 export function App() {
   const [link, setLink] = useState(linkInAddress);
   const [ssoNotice, setSsoNotice] = useState(ssoInAddress);
@@ -73,7 +90,7 @@ export function App() {
   // system-based colours until now).
   useEffect(() => {
     document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
-    // Read once the theme has applied its colours (after this paint).
+    /** Read once the theme has applied its colours (after this paint). */
     const frame = requestAnimationFrame(() => {
       const themed = document.querySelector(dark ? '.radix-themes.dark' : '.radix-themes.light') || document.querySelector('.radix-themes');
       const panel = themed ? getComputedStyle(themed).getPropertyValue('--color-panel-solid').trim() : '';

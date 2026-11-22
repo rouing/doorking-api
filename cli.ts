@@ -2,48 +2,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { Command } from 'commander';
+import promptPassword from '@inquirer/password';
 import * as dk from './index.ts';
-
-const USAGE = `Usage: node cli.ts <command> [args] [--out <file>]
-
-Local files (read-only):
-  transactions <TRANSnnn.TRA>       Transaction log as CSV
-  board <folder>                    Summary of names/phone/cards .bin and RCV_OUT.BIN
-  phones <phone.bin>                phone.bin as CSV
-  cards <cards.bin>                 cards.bin as CSV
-  directory <names.bin>             names.bin directory as CSV
-  rcvout <RCV_OUT.BIN>              Raw board transactions as CSV
-
-DKS Cloud (read-only; credentials from DKS_USER / DKS_PASSWORD, URL from DKS_URL):
-  cloud-login                       Check the login
-  cloud-status <sessionId>          Show a session's status
-  cloud-download <sessionId> <rcv_out.bin|names.bin|phone.bin|cards.bin>   Save a session file
-  cloud-pull <transactions|residents> [--dir pulls] [--phone <sys phone>] [--site-name <tag>]
-             [--memory 1000|2000|3000] [--area-codes 255|10] [--model 1834] [--marker <24 hex>]
-             [--anti-passback Y|N] [--interface-1816 Y|N] [--dry-run]
-                                    Start a session, read from the gate, download the files
-                                    (master code from DKS_MASTER_CODE, system phone from --phone or DKS_PHONE)
-
-Database (for whoever runs the server):
-  db-setup [--test-db]              Create config.json's login role and database (and the tests' database with
-                                    --test-db) through a PostgreSQL admin connection, then load sql/schema.sql and
-                                    create the encryption key. Asks (hidden) for the admin connection URL, or reads
-                                    DATABASE_ADMIN_URL. Safe to run again: existing roles, databases, tables are kept.
-
-Accounts (for whoever runs the server; uses config.json's database; the password is asked for, not typed on the
-command line):
-  create-admin <username>           Create an account that becomes admin of every gate without an admin
-  reset-password <username>         Set a temporary password (the user must choose a new one at sign-in)
-  grant <username> <gate phone> <admin|readonly>   Give an account access to a gate (or change its role)
-  test-email <address>              Send a test email now with config.json's email settings (shows the SMTP error, if any)
-  sso-check                         Contact each single sign-on provider in config.json (sso.providers) and show the
-                                    redirect address to register there
-  emails                            The last 20 emails in the outbox (to, subject, status, error)
-
-Web UI and REST API: node web/server.ts [--config config.json] [--check-config] [--port 8080] [--public-host <name>]
-                           [--media media] [--logs logs]
-                           [--site-name <tag>] [--memory 1000|2000|3000] [--area-codes "255 Area Codes"|"10 Area Codes"]
-                           [--anti-passback Y|N] [--interface-1816 Y|N] [--model 1834]   (see docs/INSTALL.md)`;
 
 const csvCell = (value: unknown): string => {
   const text = value == null ? '' : String(value);
@@ -53,21 +14,25 @@ const toCsv = (columns: [string, string][], rows: object[]): string => [columns.
   ...rows.map((row) => columns.map((column) => (row as Record<string, unknown>)[column[1]]))]
   .map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 
-// Area-code mode of a phone.bin, from the names.bin in the same folder (255 when there is none).
+/**
+ * Area-code mode of a phone.bin, from the names.bin in the same folder (255 when there is none).
+ *
+ * @param file - File path or filename.
+ * @returns Operation result.
+ */
 function phoneModeFor(file: string) {
   const dir = path.dirname(file);
   const names = fs.readdirSync(dir).find((name) => name.toLowerCase() === 'names.bin');
   return names ? dk.namesLayout(fs.readFileSync(path.join(dir, names))).areaCodeMode : 255;
 }
 
-function output(text: string, args: string[]) {
-  const file = args[args.indexOf('--out') + 1];
-  if (!args.includes('--out') || !file) {
+function output(text: string, outFile?: string) {
+  if (!outFile) {
     process.stdout.write(text);
     return;
   }
-  fs.writeFileSync(file, text);
-  console.error(`Wrote ${file}`);
+  fs.writeFileSync(outFile, text);
+  console.error(`Wrote ${outFile}`);
 }
 
 function cloudClient() {
@@ -80,74 +45,78 @@ function credentials(): [string, string] {
   return [DKS_USER, DKS_PASSWORD];
 }
 
-const serverConfig = () => dk.loadConfig({ args: process.argv.slice(2).filter((arg, i, all) => arg === '--config' || all[i - 1] === '--config') });
-
-// The server's database (config.json).
-async function openDatabase(): Promise<dk.Store> {
-  const cfg = serverConfig();
-  return dk.openStore({ connection: dk.connectionSettings(cfg.database), keyFile: cfg.paths.keyFile, poolSize: 1 });
-}
-
-// Reads a line from the terminal without showing it (or from standard input when that is not a terminal).
-function askHidden(prompt: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const input = process.stdin;
-    if (!input.isTTY) {
+/**
+ * Reads a line from the terminal without echoing it (`@inquirer/password`), or from stdin when piped.
+ *
+ * @param message - Prompt message.
+ * @returns Promise resolving to the entered text.
+ * @throws Error when cancelled or stdin fails.
+ */
+async function askHidden(message: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    return new Promise((resolve, reject) => {
       let data = '';
-      input.setEncoding('utf8');
-      input.on('data', (chunk) => { data += chunk; });
-      input.on('end', () => resolve(data.split(/\r?\n/)[0]));
-      input.on('error', reject);
-      return;
-    }
-    process.stderr.write(prompt);
-    input.setRawMode(true);
-    input.setEncoding('utf8');
-    let text = '';
-    const done = (value: string | null) => {
-      input.setRawMode(false);
-      input.pause();
-      input.removeListener('data', onData);
-      process.stderr.write('\n');
-      if (value === null) {
-        reject(new Error('Cancelled'));
-        return;
-      }
-      resolve(value);
-    };
-    const onData = (chunk: string) => {
-      for (const char of chunk) {
-        if (char === '\r' || char === '\n') return done(text);
-        if (char === '\u0003') return done(null);
-        text = char === '\u007f' || char === '\b' ? text.slice(0, -1) : text + char;
-      }
-    };
-    input.on('data', onData);
-    input.resume();
-  });
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => { data += chunk; });
+      process.stdin.on('end', () => resolve(data.split(/\r?\n/)[0]));
+      process.stdin.on('error', reject);
+    });
+  }
+  try {
+    return await promptPassword({ message, mask: '*' }, { output: process.stderr });
+  } catch (err) {
+    if ((err as Error).name === 'ExitPromptError') throw new Error('Cancelled');
+    throw err;
+  }
 }
 
-// A new password, asked twice on a terminal.
+/**
+ * A new password, asked twice on a terminal.
+ *
+ * @returns Promise resolving to `string`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 async function newPassword(): Promise<string> {
-  const password = await askHidden(`New password (at least ${dk.PASSWORD_MIN} characters): `);
+  const password = await askHidden(`New password (at least ${dk.PASSWORD_MIN} characters):`);
   dk.checkPassword(password);
-  if (process.stdin.isTTY && await askHidden('Again: ') !== password) throw new Error('The two passwords differ');
+  if (process.stdin.isTTY && await askHidden('Again:') !== password) throw new Error('The two passwords differ');
   return password;
 }
 
+const program = new Command()
+  .name('node cli.ts')
+  .description('DoorKing Gate Manager CLI — local board parsers, DKS Cloud tools, database setup and account management')
+  .option('--config <file>', 'Server config file (default config.json)')
+  .option('--out <file>', 'Write command output to a file instead of stdout')
+  .addHelpText('after', '\nWeb UI and REST API: node web/server.ts [--config config.json] [--check-config] [--port 8080] [--public-host <name>]\n'
+    + '                           [--media media] [--logs logs] [--site-name <tag>] [--memory 1000|2000|3000]\n'
+    + '                           [--area-codes "255 Area Codes"|"10 Area Codes"] [--anti-passback Y|N]\n'
+    + '                           [--interface-1816 Y|N] [--model 1834]   (see docs/INSTALL.md)');
+
+const serverConfig = () => {
+  const cfgPath = program.opts<{ config?: string }>().config;
+  return dk.loadConfig({ args: cfgPath ? ['--config', cfgPath] : [] });
+};
+
+const outOpt = () => program.opts<{ out?: string }>().out;
+
 async function withDatabase(fn: (store: dk.Store) => Promise<void>): Promise<void> {
-  const store = await openDatabase();
+  const cfg = serverConfig();
+  const store = await dk.openStore({ connection: dk.connectionSettings(cfg.database), keyFile: cfg.paths.keyFile, poolSize: 1 });
   try { await fn(store); } finally { await dk.closeStore(store); }
 }
 
-const COMMANDS: Record<string, (positional: string[], args: string[]) => void | Promise<void>> = {
-  'db-setup': async (_, args) => {
+// Database & accounts
+program.command('db-setup')
+  .description('Create config.json login role, database(s), load sql/schema.sql and create doorking.key')
+  .option('--test-db', 'Also create the test database (doorking_test)')
+  .action(async (opts: { testDb?: boolean }) => {
     const cfg = serverConfig();
     const login = dk.databaseLogin(cfg.database);
     const admin = process.env.DATABASE_ADMIN_URL
-      || await askHidden('PostgreSQL admin connection URL (for example postgres://postgres:<password>@127.0.0.1:5432/postgres): ');
+      || await askHidden('PostgreSQL admin connection URL (for example postgres://postgres:<password>@127.0.0.1:5432/postgres):');
     if (!admin.trim()) throw new Error('No admin connection URL');
-    const databases = [login.name, ...(args.includes('--test-db') ? [cfg.database.testName] : [])];
+    const databases = [login.name, ...(opts.testDb ? [cfg.database.testName] : [])];
     for (const step of await dk.setupDatabase({ connectionString: admin.trim() }, { ...login, databases })) console.error(step);
     const hadKey = fs.existsSync(cfg.paths.keyFile);
     await withDatabase(async (store) => {
@@ -155,36 +124,50 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
       console.error(`Schema: ${path.relative(process.cwd(), dk.SCHEMA_FILE)} loaded into ${login.name} as ${login.user} (${tables[0].n} tables)`);
     });
     console.error(`Encryption key: ${cfg.paths.keyFile} (${hadKey ? 'already there' : 'created; back it up with the database'})`);
-  },
+  });
 
-  'create-admin': ([username]) => withDatabase(async (store) => {
-    if (!username) throw new Error('Usage: create-admin <username>');
+program.command('create-admin <username>')
+  .description('Create an account that becomes admin of every gate without an admin')
+  .action((username: string) => withDatabase(async (store) => {
     dk.checkUsername(username);
     if (await dk.getUser(store, username)) throw new Error(`The username "${dk.userKey(username)}" already exists`);
     const user = await dk.createUser(store, { username, password: await newPassword(), createdBy: 'cli', mustChangePassword: false });
     const gates = await dk.adoptAdminlessGates(store, user.username);
     console.error(`Created ${user.username}; admin of ${gates.length} gate(s)${gates.length ? `: ${gates.join(', ')}` : ''}`);
-  }),
+  }));
 
-  'reset-password': ([username]) => withDatabase(async (store) => {
-    if (!username) throw new Error('Usage: reset-password <username>');
+program.command('reset-password <username>')
+  .description('Set a temporary password (the user must choose a new one at sign-in)')
+  .action((username: string) => withDatabase(async (store) => {
     const user = await dk.getUser(store, username);
     if (!user) throw new Error(`There is no user "${dk.userKey(username)}"`);
     await dk.setPassword(store, user.username, await newPassword(), { mustChange: true });
     console.error(`Password of ${user.username} reset; they must choose a new one at their next sign-in. Their sessions were ended.`);
-  }),
+  }));
 
-  'test-email': async ([to]) => {
-    if (!to) throw new Error('Usage: test-email <address>');
+program.command('grant <username> <gatePhone> <role>')
+  .description('Give an account access to a gate (admin or readonly), or change its role')
+  .action((username: string, phone: string, role: string) => withDatabase(async (store) => {
+    const checked = dk.checkRole(role);
+    if (!await dk.getGate(store, phone)) throw new Error(`Gate ${phone} is not managed here`);
+    await (await dk.accessOf(store, phone, username) ? dk.setRole(store, phone, username, checked) : dk.grantAccess(store, phone, username, checked, 'cli'));
+    console.error(`${dk.userKey(username)} is now ${checked} of gate ${dk.checkPhone(phone)}`);
+  }));
+
+program.command('test-email <address>')
+  .description('Send a test email now with config.json email settings')
+  .action(async (to: string) => {
     const cfg = serverConfig();
     const mailer = dk.createMailer(cfg.email);
     if (!mailer) throw new Error('Email is off: set email.host (and from, user, password) in config.json');
     await mailer.sendMail({ from: cfg.email.from, to, subject: 'DoorKing Gate Manager test email',
       text: `This is a test from DoorKing Gate Manager (${cfg.email.appUrl}). Email is working.` });
     console.error(`Sent to ${to} through ${cfg.email.host}:${cfg.email.port} (${cfg.email.security})`);
-  },
+  });
 
-  'sso-check': async () => {
+program.command('sso-check')
+  .description('Contact each single sign-on provider in config.json and show its redirect address')
+  .action(async () => {
     const cfg = serverConfig();
     if (!cfg.sso.providers.length) throw new Error('No single sign-on providers in config.json (sso.providers)');
     const origin = cfg.server.publicHost ? `https://${cfg.server.publicHost}` : `http://localhost:${cfg.server.port}`;
@@ -201,46 +184,53 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
       console.log(`  allowed domains: ${provider.allowedDomains.join(', ') || 'none (invitations and linking only)'}; new accounts: ${provider.autoCreate ? 'yes' : 'no'}; passwords: ${provider.passwords ? 'allowed' : 'off'}`);
     }
     if (failed) process.exitCode = 1;
-  },
+  });
 
-  emails: () => withDatabase(async (store) => {
+program.command('emails')
+  .description('Show the last 20 emails in the outbox')
+  .action(() => withDatabase(async (store) => {
     for (const email of (await dk.listEmails(store, 20)).reverse()) {
       console.log(`${email.createdAt}  ${email.status.padEnd(6)}  ${email.kind.padEnd(8)}  ${email.to}  "${email.subject}"${email.error ? `  (${email.attempts} tries: ${email.error})` : ''}`);
     }
-  }),
+  }));
 
-  grant: ([username, phone, role]) => withDatabase(async (store) => {
-    if (!username || !phone || !role) throw new Error('Usage: grant <username> <gate phone> <admin|readonly>');
-    const checked = dk.checkRole(role);
-    if (!await dk.getGate(store, phone)) throw new Error(`Gate ${phone} is not managed here`);
-    await (await dk.accessOf(store, phone, username) ? dk.setRole(store, phone, username, checked) : dk.grantAccess(store, phone, username, checked, 'cli'));
-    console.error(`${dk.userKey(username)} is now ${checked} of gate ${dk.checkPhone(phone)}`);
-  }),
-
-  transactions: ([file], args) => output(toCsv([
+// Local board file parsers (read-only)
+program.command('transactions <file>')
+  .description('Export a TRANSnnn.TRA transaction log as CSV')
+  .action((file: string) => output(toCsv([
     ['Timestamp', 'timestamp'], ['Date', 'date'], ['Time', 'time'], ['Type', 'type'],
     ['Code / Card', 'code'], ['Name', 'name'], ['Result', 'result'], ['Relay', 'relay'],
-  ], dk.readTraFile(file).transactions), args),
+  ], dk.readTraFile(file).transactions), outOpt()));
 
-  phones: ([file], args) => output(toCsv([
+program.command('phones <file>')
+  .description('Export phone.bin as CSV')
+  .action((file: string) => output(toCsv([
     ['Directory Code', 'directoryCode'], ['Area Code Index', 'areaCodeIndex'], ['Phone', 'phone'],
     ['Entry Code', 'entryCode'], ['Security Level', 'securityLevel'],
-  ], dk.parsePhoneBin(fs.readFileSync(file), phoneModeFor(file))), args),
+  ], dk.parsePhoneBin(fs.readFileSync(file), phoneModeFor(file))), outOpt()));
 
-  cards: ([file], args) => output(toCsv([
+program.command('cards <file>')
+  .description('Export cards.bin as CSV')
+  .action((file: string) => output(toCsv([
     ['Card', 'cardNumber'], ['Directory Code', 'directoryCode'],
-  ], dk.parseCardsBin(fs.readFileSync(file))), args),
+  ], dk.parseCardsBin(fs.readFileSync(file))), outOpt()));
 
-  directory: ([file], args) => output(toCsv([
+program.command('directory <file>')
+  .description('Export names.bin directory as CSV')
+  .action((file: string) => output(toCsv([
     ['Directory Code', 'directoryCode'], ['Name', 'name'], ['Flag', 'flag'],
-  ], dk.parseNamesBin(fs.readFileSync(file)).directory), args),
+  ], dk.parseNamesBin(fs.readFileSync(file)).directory), outOpt()));
 
-  rcvout: ([file], args) => output(toCsv([
+program.command('rcvout <file>')
+  .description('Export raw RCV_OUT.BIN transactions as CSV')
+  .action((file: string) => output(toCsv([
     ['Month', 'month'], ['Day', 'day'], ['Hour', 'hour'], ['Minute', 'minute'], ['PM', 'pm'],
     ['Event Flags', 'eventFlags'], ['Code Type', 'codeType'], ['Code', 'code'], ['Raw', 'raw'],
-  ], dk.parseRcvOut(fs.readFileSync(file))), args),
+  ], dk.parseRcvOut(fs.readFileSync(file))), outOpt()));
 
-  board: ([dir = '.'], args) => {
+program.command('board [dir]')
+  .description('Summary of names/phone/cards .bin and RCV_OUT.BIN in a folder')
+  .action((dir = '.') => {
     const find = (name: string) => fs.readdirSync(dir).find((file) => file.toLowerCase() === name);
     const lines: string[] = [];
     const report = (name: string, fn: (b: Buffer) => string) => {
@@ -254,39 +244,81 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
     for (const mapName of ['names.map', 'phone.map', 'cards.map']) {
       report(mapName, (buffer) => { const map = dk.parseMap(buffer); return `${map.changedBlocks.length} of ${map.blocks} blocks flagged`; });
     }
-    output(`${lines.join('\r\n')}\r\n`, args);
-  },
+    output(`${lines.join('\r\n')}\r\n`, outOpt());
+  });
 
-  'cloud-login': async (_, args) => output(`${await cloudClient().checkLogin(...credentials())}\n`, args),
+// DKS Cloud commands (read-only)
+program.command('cloud-login')
+  .description('Check DKS_USER / DKS_PASSWORD login against DKS Cloud')
+  .action(async () => output(`${await cloudClient().checkLogin(...credentials())}\n`, outOpt()));
 
-  'cloud-status': async ([id], args) => output(`${await cloudClient().getSessionStatus(id)}\n`, args),
+program.command('cloud-status <sessionId>')
+  .description('Show a DKS Cloud session status')
+  .action(async (id: string) => output(`${await cloudClient().getSessionStatus(id)}\n`, outOpt()));
 
-  'cloud-pull': async ([what], args) => {
-    if (!['transactions', 'residents'].includes(what)) throw new Error(USAGE);
-    const opt = (name: string, def?: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
+program.command('cloud-download <sessionId> <fileType>')
+  .description('Download a session file (rcv_out.bin, names.bin, phone.bin, cards.bin)')
+  .action(async (id: string, fileType: string) => {
+    const data = await cloudClient().getDataFile(id, fileType);
+    const out = outOpt() || fileType;
+    fs.writeFileSync(out, data);
+    console.error(`Wrote ${out} (${data.length} bytes)`);
+  });
+
+interface CloudPullOptions {
+  dir?: string;
+  phone?: string;
+  siteName?: string;
+  tag?: string;
+  memory?: string;
+  areaCodes?: string;
+  model?: string;
+  dialDelay?: string;
+  antiPassback?: string;
+  interface1816?: string;
+  marker?: string;
+  dryRun?: boolean;
+}
+
+program.command('cloud-pull <what>')
+  .description('Start a DKS Cloud session (transactions or residents) and download the files')
+  .option('--dir <dir>', 'Output folder', 'pulls')
+  .option('--phone <phone>', 'System phone number (or DKS_PHONE)')
+  .option('--site-name <tag>', 'Site name tag')
+  .option('--tag <tag>', 'Alias for --site-name')
+  .option('--memory <size>', 'Memory size (1000|2000|3000)')
+  .option('--area-codes <mode>', 'Area codes (255|10)')
+  .option('--model <model>', 'Model number (e.g. 1834)')
+  .option('--dial-delay <sec>', 'Dial delay')
+  .option('--anti-passback <yn>', 'Anti-passback (Y|N)')
+  .option('--interface-1816 <yn>', 'Interface 1816 (Y|N)')
+  .option('--marker <hex>', '24-hex transaction marker', dk.ZERO_MARKER)
+  .option('--dry-run', 'Print the session request without calling DKS Cloud')
+  .action(async (what: string, opts: CloudPullOptions) => {
+    if (!['transactions', 'residents'].includes(what)) throw new Error('Expected "transactions" or "residents"');
     const [user, password] = credentials();
     const masterCode = process.env.DKS_MASTER_CODE;
     if (!masterCode) throw new Error('Set DKS_MASTER_CODE (the account/master code)');
-    const phoneNumber = opt('--phone', process.env.DKS_PHONE);
+    const phoneNumber = opts.phone || process.env.DKS_PHONE;
     if (!phoneNumber) throw new Error('Pass --phone <system phone> or set DKS_PHONE');
-    const dir = opt('--dir', 'pulls')!;
+    const dir = opts.dir || 'pulls';
     const request = dk.buildSessionRequest(what, {
       user,
       password,
       masterCode,
       phoneNumber,
-      siteName: opt('--site-name', opt('--tag')),
-      memorySize: opt('--memory'),
-      areaCodes: opt('--area-codes'),
-      dialDelay: opt('--dial-delay'),
-      interface1816: opt('--interface-1816'),
-      antiPassBack: opt('--anti-passback'),
-      modelNumber: opt('--model'),
+      siteName: opts.siteName || opts.tag,
+      memorySize: opts.memory,
+      areaCodes: opts.areaCodes,
+      dialDelay: opts.dialDelay,
+      interface1816: opts.interface1816,
+      antiPassBack: opts.antiPassback,
+      modelNumber: opts.model,
     });
-    const marker = opt('--marker', dk.ZERO_MARKER);
+    const marker = opts.marker || dk.ZERO_MARKER;
     console.error('StartSessionSeries30', JSON.stringify(dk.maskRequest(request, user), null, 2));
     if (what === 'transactions') console.error(`ReceiveTransactionData TransactionBytes=${marker}`);
-    if (args.includes('--dry-run')) return;
+    if (opts.dryRun) return;
 
     const { files } = await dk.pullFromGate(cloudClient(), what as dk.PullKind, request, {
       marker, onStatus: (message) => console.error(message),
@@ -296,29 +328,14 @@ const COMMANDS: Record<string, (positional: string[], args: string[]) => void | 
       fs.writeFileSync(path.join(dir, name), data);
       console.error(`Wrote ${path.join(dir, name)} (${data.length} bytes)`);
     }
-  },
+  });
 
-  'cloud-download': async ([id, fileType], args) => {
-    const data = await cloudClient().getDataFile(id, fileType);
-    const i = args.indexOf('--out');
-    const out = i >= 0 ? args[i + 1] : fileType;
-    fs.writeFileSync(out, data);
-    console.error(`Wrote ${out} (${data.length} bytes)`);
-  },
-};
-
-async function main() {
-  const args = process.argv.slice(2);
-  const [command, ...rest] = args;
-  const positional = rest.filter((arg, i) => !['--out', '--config'].includes(arg) && !['--out', '--config'].includes(rest[i - 1]));
-  if (!COMMANDS[command]) {
-    console.error(USAGE);
-    process.exit(command ? 1 : 0);
-  }
-  await COMMANDS[command](positional, args);
+if (process.argv.length <= 2) {
+  console.error(program.helpInformation());
+  process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(`Error: ${err.message}`);
+program.parseAsync(process.argv).catch((err) => {
+  console.error(`Error: ${(err as Error).message}`);
   process.exit(1);
 });

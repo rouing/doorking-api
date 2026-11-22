@@ -1,11 +1,21 @@
-// Password rules and the change-password form.
+/**
+ * @module web/ui/account/passwords
+ *
+ * Password rules and the change-password form.
+ */
 import { useState, type FormEvent } from 'react';
 import { Button, Flex, Text, TextField } from '@radix-ui/themes';
 import { api, errorText } from '../api.ts';
 import { Field } from '../panes/fields.tsx';
 import { PASSWORD_MIN } from '../../../src/shared.ts';
 
-// New password twice; returns an error message, or '' when they are fine.
+/**
+ * New password twice; returns an error message, or '' when they are fine.
+ *
+ * @param password - Plain-text password.
+ * @param again - `string` value.
+ * @returns Rendered React element.
+ */
 export const passwordProblem = (password: string, again: string) => (password.length < PASSWORD_MIN ? `The password must be at least ${PASSWORD_MIN} characters.`
   : password !== again ? 'The two passwords differ.' : '');
 
@@ -14,7 +24,14 @@ interface PasswordFormProps {
   submitLabel: string;
 }
 
-// Current password and a new one twice. onChanged runs after the server accepted it.
+/**
+ * Current password and a new one twice. onChanged runs after the server accepted it.
+ *
+ * @param props - Component props.
+ * @param props.onChanged - On changed.
+ * @param props.submitLabel - Submit label.
+ * @returns Rendered React element.
+ */
 export function PasswordForm({ onChanged, submitLabel }: PasswordFormProps) {
   const [current, setCurrent] = useState('');
   const [password, setPassword] = useState('');

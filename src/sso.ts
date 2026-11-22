@@ -1,19 +1,23 @@
-// Single sign-on with OpenID Connect providers (Entra ID, Google Workspace, Okta, …; config.json sso.providers). A
-// provider identity (provider id + the provider's permanent subject) is linked to a local account (user_identities);
-// the app keeps deciding what each account may do (gate roles). A sign-in attempt is kept in memory for 10 minutes and
-// tied to the browser that started it (a cookie holds its binding); it uses state, nonce and PKCE, and openid-client
-// checks the ID token (issuer, audience, expiry, nonce).
-//
-// Session age: with maxAgeHours, the authentication at the provider (the ID token's auth_time) must be at most that
-// old; linking from User Settings always needs a fresh one (made after the attempt started). Providers are asked with
-// max_age; Entra with prompt=login for a fresh one (its max_age handling isn't dependable; its own limit is a
-// Conditional Access sign-in frequency). auth_time is checked here either way, and a missing one is refused.
-//
-// Which account an identity signs in to: the one it is linked to; else, only for providers with allowedDomains and a
-// trusted email from one of them (see trustedEmail), the invited account waiting on that email (the invitation is
-// accepted), else the account with that confirmed email (linked), else a new account when autoCreate is on. Anyone
-// else is told to ask a gate admin for an invitation. Linking from User Settings and accepting an invitation link
-// with a provider work for any provider.
+/**
+ * @module src/sso
+ *
+ * Single sign-on with OpenID Connect providers (Entra ID, Google Workspace, Okta, …; config.json sso.providers). A
+ * provider identity (provider id + the provider's permanent subject) is linked to a local account (user_identities);
+ * the app keeps deciding what each account may do (gate roles). A sign-in attempt is kept in memory for 10 minutes and
+ * tied to the browser that started it (a cookie holds its binding); it uses state, nonce and PKCE, and openid-client
+ * checks the ID token (issuer, audience, expiry, nonce).
+ *
+ * Session age: with maxAgeHours, the authentication at the provider (the ID token's auth_time) must be at most that
+ * old; linking from User Settings always needs a fresh one (made after the attempt started). Providers are asked with
+ * max_age; Entra with prompt=login for a fresh one (its max_age handling isn't dependable; its own limit is a
+ * Conditional Access sign-in frequency). auth_time is checked here either way, and a missing one is refused.
+ *
+ * Which account an identity signs in to: the one it is linked to; else, only for providers with allowedDomains and a
+ * trusted email from one of them (see trustedEmail), the invited account waiting on that email (the invitation is
+ * accepted), else the account with that confirmed email (linked), else a new account when autoCreate is on. Anyone
+ * else is told to ask a gate admin for an invitation. Linking from User Settings and accepting an invitation link
+ * with a provider work for any provider.
+ */
 import crypto from 'node:crypto';
 import * as oidc from 'openid-client';
 import type { SsoProvider } from './config.ts';
@@ -23,7 +27,9 @@ import { acceptInviteWithSso, createSsoUser, getUser, recordSignIn, userKey } fr
 import { httpError } from './errors.ts';
 
 export type SsoMode = 'signin' | 'link' | 'invite';
-// email: '' when the provider gave none; emailVerified: null when it didn't say; hd: Google Workspace domain ('' none).
+/**
+ * email: '' when the provider gave none; emailVerified: null when it didn't say; hd: Google Workspace domain ('' none).
+ */
 export interface SsoClaims { subject: string; email: string; emailVerified: boolean | null; name: string; hd: string }
 export interface SsoResult { mode: SsoMode; username?: string; inviteToken?: string; identity: SsoClaims }
 export interface SsoIdentity { provider: string; providerName: string; subject: string; email: string; linkedAt: string; lastUsedAt: string | null }
@@ -37,7 +43,9 @@ const CONFIG_MS = 24 * 3600000; // a provider's discovered configuration is fetc
 
 interface Flow { provider: string; nonce: string; verifier: string; binding: string; redirectUri: string; mode: SsoMode; username?: string; inviteToken?: string; at: number }
 
-// The sign-ins in progress (by state) and the providers' discovered configurations; each server keeps its own.
+/**
+ * The sign-ins in progress (by state) and the providers' discovered configurations; each server keeps its own.
+ */
 export class SsoFlows {
   readonly flows = new Map<string, Flow>();
   readonly configs = new Map<string, { config: Promise<oidc.Configuration>; at: number }>();
@@ -45,16 +53,29 @@ export class SsoFlows {
 
 const isGoogle = (provider: SsoProvider): boolean => new URL(provider.issuer).hostname === 'accounts.google.com';
 const isEntra = (provider: SsoProvider): boolean => new URL(provider.issuer).hostname === 'login.microsoftonline.com';
-// Authorization parameters that make the provider ask for a fresh sign-in: always when linking (Entra ID has no
-// max_age=0, so prompt=login), else after the provider's maxAgeHours.
+/**
+ * Authorization parameters that make the provider ask for a fresh sign-in: always when linking (Entra ID has no
+ * max_age=0, so prompt=login), else after the provider's maxAgeHours.
+ *
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param mode - Operation or layout mode.
+ * @returns `Record<string, string>` result.
+ */
 function freshSignIn(provider: SsoProvider, mode: SsoMode): Record<string, string> {
   if (mode === 'link') return isEntra(provider) ? { prompt: 'login' } : { max_age: '0' };
   if (provider.maxAgeHours && !isEntra(provider)) return { max_age: String(provider.maxAgeHours * 3600) };
   return {};
 }
 
-// The provider's OpenID configuration, discovered once a day (a failed discovery is tried again next time). Plain
-// http is allowed for localhost issuers only (config.ts refuses others).
+/**
+ * The provider's OpenID configuration, discovered once a day (a failed discovery is tried again next time). Plain
+ * http is allowed for localhost issuers only (config.ts refuses others).
+ *
+ * @param sso - Per-server SSO flow and discovery cache.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param [now] - Reference timestamp in milliseconds (defaults to `Date.now()`).
+ * @returns Promise resolving to `oidc.Configuration`.
+ */
 function configOf(sso: SsoFlows, provider: SsoProvider, now = Date.now()): Promise<oidc.Configuration> {
   const key = `${provider.id}|${provider.issuer}|${provider.clientId}|${provider.clientSecret}`;
   const cached = sso.configs.get(key);
@@ -67,8 +88,14 @@ function configOf(sso: SsoFlows, provider: SsoProvider, now = Date.now()): Promi
   return config;
 }
 
-// Checks that the provider can be reached and returns its endpoints (for the CLI's sso-check).
-// authTime: whether the discovery document lists auth_time among its claims (null when it lists none).
+/**
+ * Checks that the provider can be reached and returns its endpoints (for the CLI's sso-check).
+ * authTime: whether the discovery document lists auth_time among its claims (null when it lists none).
+ *
+ * @param sso - Per-server SSO flow and discovery cache.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @returns Promise resolving to `{ issuer: string; authorization: string; token: string; authTime: boolean | null }`.
+ */
 export async function discoverProvider(sso: SsoFlows, provider: SsoProvider): Promise<{ issuer: string; authorization: string; token: string; authTime: boolean | null }> {
   const metadata = (await configOf(sso, provider)).serverMetadata();
   const claims = Array.isArray(metadata.claims_supported) ? metadata.claims_supported : null;
@@ -76,9 +103,22 @@ export async function discoverProvider(sso: SsoFlows, provider: SsoProvider): Pr
     authTime: claims ? claims.includes('auth_time') : null };
 }
 
-// Starts a sign-in: returns the provider's URL to send the browser to, and the binding the browser must keep (a
-// cookie) for the callback. redirectUri: <public address>/api/sso/<id>/callback, registered at the provider. mode:
-// signin, link (username: the signed-in account) or invite (inviteToken: the invitation link's token).
+/**
+ * Starts a sign-in: returns the provider's URL to send the browser to, and the binding the browser must keep (a
+ * cookie) for the callback. redirectUri: <public address>/api/sso/<id>/callback, registered at the provider. mode:
+ * signin, link (username: the signed-in account) or invite (inviteToken: the invitation link's token).
+ *
+ * @param sso - Per-server SSO flow and discovery cache.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param options - Options object.
+ * @param options.mode - Flow mode (`signin`, `link`, or `invite`).
+ * @param options.redirectUri - <public address>/api/sso/<id>/callback, registered at the provider.
+ * @param options.username - The signed-in account.
+ * @param options.inviteToken - The invitation link's token.
+ * @param [options.now] - Reference timestamp in milliseconds (defaults to `Date.now()`).
+ * @returns Promise resolving to `{ url: string; binding: string }`.
+ * @throws HTTP 429 error on invalid input or conflict.
+ */
 export async function startSso(sso: SsoFlows, provider: SsoProvider, { mode, redirectUri, username, inviteToken, now = Date.now() }:
   { mode: SsoMode; redirectUri: string; username?: string; inviteToken?: string; now?: number }): Promise<{ url: string; binding: string }> {
   const config = await configOf(sso, provider, now);
@@ -104,8 +144,13 @@ const sameText = (a: string, b: string): boolean => {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
 
-// The identity in checked ID token claims. The email is the email claim, else (Entra) preferred_username when it is
-// an address.
+/**
+ * The identity in checked ID token claims. The email is the email claim, else (Entra) preferred_username when it is
+ * an address.
+ *
+ * @param claims - Verified ID token claims.
+ * @returns `SsoClaims` result.
+ */
 export function claimsOf(claims: Record<string, unknown>): SsoClaims {
   const address = (value: unknown) => (typeof value === 'string' && value.includes('@') ? value : '');
   const email = address(claims.email) || address(claims.preferred_username);
@@ -117,8 +162,16 @@ export function claimsOf(claims: Record<string, unknown>): SsoClaims {
   };
 }
 
-// Checks the session age (see the top): link needs an authentication made after the attempt started; otherwise
-// maxAgeHours, when set, bounds it. A small clock skew is allowed.
+/**
+ * Checks the session age (see the top): link needs an authentication made after the attempt started; otherwise
+ * maxAgeHours, when set, bounds it. A small clock skew is allowed.
+ *
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param authTime - `unknown` value.
+ * @param flow - `Flow` value.
+ * @param now - Reference timestamp in milliseconds (defaults to `Date.now()`).
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 function checkAuthTime(provider: SsoProvider, authTime: unknown, flow: Flow, now: number): void {
   if (flow.mode !== 'link' && !provider.maxAgeHours) return;
   if (typeof authTime !== 'number') {
@@ -132,9 +185,19 @@ function checkAuthTime(provider: SsoProvider, authTime: unknown, flow: Flow, now
   }
 }
 
-// Finishes a sign-in from the provider's answer (query: the callback's query string; binding: from the browser's
-// cookie). The attempt must exist, be unexpired, belong to this provider and browser, and is used up either way; the
-// code is exchanged with the PKCE verifier and the ID token checked against the nonce.
+/**
+ * Finishes a sign-in from the provider's answer (query: the callback's query string; binding: from the browser's
+ * cookie). The attempt must exist, be unexpired, belong to this provider and browser, and is used up either way; the
+ * code is exchanged with the PKCE verifier and the ID token checked against the nonce.
+ *
+ * @param sso - Per-server SSO flow and discovery cache.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param query - The callback's query string.
+ * @param binding - From the browser's cookie.
+ * @param [now] - Reference timestamp in milliseconds (defaults to `Date.now()`).
+ * @returns Promise resolving to `SsoResult`.
+ * @throws HTTP 200/400 error on invalid input or conflict.
+ */
 export async function finishSso(sso: SsoFlows, provider: SsoProvider, query: URLSearchParams, binding: string, now = Date.now()): Promise<SsoResult> {
   const state = query.get('state') || '';
   const flow = sso.flows.get(state);
@@ -153,9 +216,15 @@ export async function finishSso(sso: SsoFlows, provider: SsoProvider, query: URL
   return { mode: flow.mode, username: flow.username, inviteToken: flow.inviteToken, identity: claimsOf(claims as Record<string, unknown>) };
 }
 
-// The identity's email when it can be matched to accounts for this provider: not marked unverified and, when the
-// provider has allowedDomains, from one of them (Google: also its Workspace domain, so a personal Google account made
-// with a work address doesn't count). '' when it can't.
+/**
+ * The identity's email when it can be matched to accounts for this provider: not marked unverified and, when the
+ * provider has allowedDomains, from one of them (Google: also its Workspace domain, so a personal Google account made
+ * with a work address doesn't count). '' when it can't.
+ *
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param id - Unique record identifier.
+ * @returns `string` result.
+ */
 export function trustedEmail(provider: SsoProvider, id: SsoClaims): string {
   if (!id.email || id.emailVerified === false) return '';
   if (!provider.allowedDomains.length) return id.email;
@@ -164,7 +233,13 @@ export function trustedEmail(provider: SsoProvider, id: SsoClaims): string {
   return id.email;
 }
 
-// Why an identity's email can't be matched to accounts (trustedEmail gave ''), for the person signing in.
+/**
+ * Why an identity's email can't be matched to accounts (trustedEmail gave ''), for the person signing in.
+ *
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param id - Unique record identifier.
+ * @returns `string` result.
+ */
 function untrustedReason(provider: SsoProvider, id: SsoClaims): string {
   const ask = `Ask a gate admin to invite you, then accept the invitation with ${provider.name}; or sign in another way and link it in User Settings.`;
   if (!id.email) return `${provider.name} didn't give an email address, and this ${provider.name} account isn't linked to an account here. ${ask}`;
@@ -173,13 +248,28 @@ function untrustedReason(provider: SsoProvider, id: SsoClaims): string {
   return `${id.email} isn't a ${provider.allowedDomains.join(' or ')} Google Workspace account. Sign in with your Workspace account.`;
 }
 
-// The account an identity is linked to, or null.
+/**
+ * The account an identity is linked to, or null.
+ *
+ * @param store - Database store handle.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param subject - Provider subject identifier (`sub` claim).
+ * @returns Promise resolving to `string | null`.
+ */
 async function linkedUser(store: Store, provider: string, subject: string): Promise<string | null> {
   const row = await one<{ username: string }>(store, 'SELECT username FROM user_identities WHERE provider = $1 AND subject = $2', [provider, subject]);
   return row ? row.username : null;
 }
 
-// Links an identity to an account (409 when it belongs to another one).
+/**
+ * Links an identity to an account (409 when it belongs to another one).
+ *
+ * @param store - Database store handle.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param username - Local account username.
+ * @param id - Unique record identifier.
+ * @throws HTTP 409 error on invalid input or conflict.
+ */
 async function link(store: Store, provider: SsoProvider, username: string, id: SsoClaims): Promise<void> {
   const owner = await linkedUser(store, provider.id, id.subject);
   if (owner && owner !== username) throw httpError(`This ${provider.name} account is already linked to another user`, 409);
@@ -193,7 +283,15 @@ const checkTrusted = (provider: SsoProvider, id: SsoClaims): void => {
   if (provider.allowedDomains.length && !trustedEmail(provider, id)) throw httpError(untrustedReason(provider, id), 403);
 };
 
-// Linking a provider account to the signed-in account (from User Settings).
+/**
+ * Linking a provider account to the signed-in account (from User Settings).
+ *
+ * @param store - Database store handle.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param result - Verified operation result.
+ * @returns Promise resolving to `{ username: string; outcome: SsoOutcome }`.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 async function completeLink(store: Store, provider: SsoProvider, result: SsoResult): Promise<{ username: string; outcome: SsoOutcome }> {
   const name = userKey(result.username);
   if (!name || !await getUser(store, name)) throw httpError('Sign in again, then link the account from User Settings', 401);
@@ -202,7 +300,16 @@ async function completeLink(store: Store, provider: SsoProvider, result: SsoResu
   return { username: name, outcome: 'linked' };
 }
 
-// Accepting an invitation link with the provider: the invited account gets the provider account linked.
+/**
+ * Accepting an invitation link with the provider: the invited account gets the provider account linked.
+ *
+ * @param store - Database store handle.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param result - Verified operation result.
+ * @param touch - `(username: string) => Promise<unknown>` value.
+ * @returns Promise resolving to `{ username: string; outcome: SsoOutcome }`.
+ * @throws HTTP 400/409 error on invalid input or conflict.
+ */
 async function completeInvite(store: Store, provider: SsoProvider, result: SsoResult, touch: (username: string) => Promise<unknown>):
   Promise<{ username: string; outcome: SsoOutcome }> {
   const id = result.identity;
@@ -223,8 +330,16 @@ async function completeInvite(store: Store, provider: SsoProvider, result: SsoRe
   return { username: user.username, outcome: 'invite-accepted' };
 }
 
-// What a finished sign-in means for the accounts (see the module comment). Sign-ins and accepted invitations are
-// recorded as sign-ins. Returns the account and what happened; throws (403/409) with a message for the user.
+/**
+ * What a finished sign-in means for the accounts (see the module comment). Sign-ins and accepted invitations are
+ * recorded as sign-ins. Returns the account and what happened; throws (403/409) with a message for the user.
+ *
+ * @param store - Database store handle.
+ * @param provider - Configured OpenID Connect SSO provider.
+ * @param result - Verified operation result.
+ * @returns Promise resolving to `{ username: string; outcome: SsoOutcome }`.
+ * @throws HTTP 400/403 error on invalid input or conflict.
+ */
 export async function completeSso(store: Store, provider: SsoProvider, result: SsoResult): Promise<{ username: string; outcome: SsoOutcome }> {
   const id = result.identity;
   const touch = (username: string) => run(store, 'UPDATE user_identities SET last_used_at = $3, email = $4 WHERE provider = $1 AND subject = $2',
@@ -267,7 +382,14 @@ export async function completeSso(store: Store, provider: SsoProvider, result: S
   throw httpError(`There is no account for ${email} here. Ask a gate admin to invite you.`, 403);
 }
 
-// The account's linked identities (providerName: the configured name, or the id when the provider was removed).
+/**
+ * The account's linked identities (providerName: the configured name, or the id when the provider was removed).
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param providers - List of configured OpenID Connect SSO providers.
+ * @returns Promise resolving to `SsoIdentity[]`.
+ */
 export async function listIdentities(store: Store, username: string, providers: SsoProvider[]): Promise<SsoIdentity[]> {
   return (await all<{ provider: string; subject: string; email: string; linked_at: string; last_used_at: string | null }>(store,
     'SELECT provider, subject, email, linked_at, last_used_at FROM user_identities WHERE username = $1 ORDER BY linked_at', [userKey(username)]))
@@ -275,9 +397,17 @@ export async function listIdentities(store: Store, username: string, providers: 
       email: row.email, linkedAt: row.linked_at, lastUsedAt: row.last_used_at }));
 }
 
-// False when the account is linked to a provider set to passwords: false (it must sign in with that provider).
-// Whether the account keeps a way to sign in once passkey `passkeyId` is removed: another passkey, a linked provider
-// that is configured, or a password (a provider that turns passwords off is linked, so that counts already).
+/**
+ * False when the account is linked to a provider set to passwords: false (it must sign in with that provider).
+ * Whether the account keeps a way to sign in once passkey `passkeyId` is removed: another passkey, a linked provider
+ * that is configured, or a password (a provider that turns passwords off is linked, so that counts already).
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param passkeyId - `string` value.
+ * @param providers - List of configured OpenID Connect SSO providers.
+ * @returns Promise resolving to `true` when the condition holds.
+ */
 export async function signInLeftWithoutPasskey(store: Store, username: string, passkeyId: string, providers: SsoProvider[]): Promise<boolean> {
   const name = userKey(username);
   if (await one(store, 'SELECT 1 AS x FROM passkeys WHERE username = $1 AND id <> $2', [name, String(passkeyId)])) return true;
@@ -286,14 +416,31 @@ export async function signInLeftWithoutPasskey(store: Store, username: string, p
   return Boolean((await getUser(store, name))?.hasPassword);
 }
 
-// The providers that keep the account from using a password (their names), [] when none.
+/**
+ * The providers that keep the account from using a password (their names), [] when none.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param providers - List of configured OpenID Connect SSO providers.
+ * @returns Promise resolving to `string[]`.
+ */
 export async function passwordBlockers(store: Store, username: string, providers: SsoProvider[]): Promise<string[]> {
   const ids = new Set((await all<{ provider: string }>(store, 'SELECT provider FROM user_identities WHERE username = $1', [userKey(username)])).map((row) => row.provider));
   return providers.filter((provider) => !provider.passwords && ids.has(provider.id)).map((provider) => provider.name);
 }
 
-// Unlinks one identity; refused (409) when the account would be left with no way to sign in: another identity of a
-// configured provider, a passkey, or a usable password (one it has and may still use).
+/**
+ * Unlinks one identity; refused (409) when the account would be left with no way to sign in: another identity of a
+ * configured provider, a passkey, or a usable password (one it has and may still use).
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @param options - Options object.
+ * @param options.provider - Configured OpenID Connect SSO provider.
+ * @param options.subject - Provider subject identifier (`sub` claim).
+ * @param providers - List of configured OpenID Connect SSO providers.
+ * @throws HTTP 400/404 error on invalid input or conflict.
+ */
 export async function unlinkIdentity(store: Store, username: string, { provider, subject }: { provider: unknown; subject: unknown }, providers: SsoProvider[]): Promise<void> {
   const name = userKey(username);
   const rest = (await all<{ provider: string; subject: string }>(store, 'SELECT provider, subject FROM user_identities WHERE username = $1', [name]));

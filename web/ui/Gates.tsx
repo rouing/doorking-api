@@ -9,7 +9,19 @@ import { ConfigFields } from './settings/GateConfig.tsx';
 import { GATE_CONFIG_KEYS } from '../../src/shared.ts';
 import type { SignedIn } from './App.tsx';
 
+/**
+ * Gate label.
+ *
+ * @param gate - Gate summary (`phoneNumber`, `siteName`, `role`).
+ * @returns Computed result.
+ */
 export const gateLabel = (gate: GateInfo) => gate.siteName || `Gate ${gate.phoneNumber}`;
+/**
+ * Role label.
+ *
+ * @param role - Gate access role (`admin` or `readonly`).
+ * @returns Rendered React element.
+ */
 export const roleLabel = (role: GateInfo['role']) => (role === 'admin' ? 'Admin' : 'Read only');
 
 interface AddGateProps {
@@ -17,8 +29,15 @@ interface AddGateProps {
   onAdded: () => void;
 }
 
-// Adds a gate: its phone, master code, DKS login and gate configuration. The server checks the DKS login, then pulls
-// residents with these values; the gate is added (with this user as its admin) only when that pull succeeds.
+/**
+ * Adds a gate: its phone, master code, DKS login and gate configuration. The server checks the DKS login, then pulls
+ * residents with these values; the gate is added (with this user as its admin) only when that pull succeeds.
+ *
+ * @param props - Component props.
+ * @param props.session - Authenticated user or API-key session.
+ * @param props.onAdded - Callback invoked after a gate is added.
+ * @returns Rendered React element.
+ */
 function AddGate({ session, onAdded }: AddGateProps) {
   const [form, setForm] = useState({ phoneNumber: '', masterCode: '', dksUser: '', dksPassword: '' });
   const [cfg, setCfg] = useState<Record<string, string>>(() => Object.fromEntries(GATE_CONFIG_KEYS.map((key) => [key, session.defaults[key] || ''])));
@@ -30,8 +49,10 @@ function AddGate({ session, onAdded }: AddGateProps) {
 
   const mounted = useRef(true);
   const checking = useRef(false); // a gate add was started or seen running: a failed check is tried again
-  // Polls the checking pull every 3 s while it runs. Stops when the form closes (a check still on its way then
-  // doesn't start polling again).
+  /**
+   * Polls the checking pull every 3 s while it runs. Stops when the form closes (a check still on its way then
+   * doesn't start polling again).
+   */
   const poll = async () => {
     clearTimeout(timer.current);
     const reply = await api<{ job: Job | null }>('GET', '/api/gate-add').catch(() => undefined);
@@ -114,7 +135,14 @@ interface GatesProps {
   onChange: () => void;
 }
 
-// The signed-in user's gates (open or leave one), User Settings, and adding a gate.
+/**
+ * The signed-in user's gates (open or leave one), User Settings, and adding a gate.
+ *
+ * @param props - Component props.
+ * @param props.session - Authenticated user or API-key session.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @returns Rendered React element.
+ */
 export function Gates({ session, onChange }: GatesProps) {
   const [gates, setGates] = useState<GateInfo[] | null>(null);
   const [error, setError] = useState('');

@@ -1,4 +1,8 @@
-// Gate settings, the working copy itself, preferences, History and deleting stored data.
+/**
+ * @module web/routes/working-copy
+ *
+ * Gate settings, the working copy itself, preferences, History and deleting stored data.
+ */
 import fs from 'node:fs';
 import * as dk from '../../index.ts';
 import type { GatePrefs } from '../../src/types.ts';
@@ -6,6 +10,12 @@ import type { Modules } from '../modules.ts';
 import { G, type Route, route, webOnly } from '../routing.ts';
 import { logger } from '../../src/logging.ts';
 
+/**
+ * Working copy routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function workingCopyRoutes(modules: Modules): Route[] {
   const { prefsOf, serial, store } = modules.context;
   const {
@@ -28,7 +38,7 @@ export function workingCopyRoutes(modules: Modules): Route[] {
     route('POST', `${G}/working-copy/conflicts`, 'gate-admin', ({ session, gate, body }) => withHistory(session, gate,
       { summary: `${body.choice === 'gate' ? 'Took the gate\'s value' : 'Kept my change'} for a conflict (${String(body.kind)} ${String(body.key)})` },
       async () => [200, await dk.resolveConflict(store, gate.phoneNumber, { kind: body.kind, key: body.key, choice: body.choice })])),
-    route('GET', `${G}/files/:name`, 'gate-admin', async ({ gate, params, res }) => { await sendFile(res, gate.phoneNumber, params.name); }),
+    route('GET', `${G}/files/:name`, 'gate-admin', ({ gate, params, reply }) => sendFile(reply, gate.phoneNumber, params.name)),
 
     // Gate-scoped local preferences (relay labels, Device Association, gate config), keyed by phone number.
     route('GET', `${G}/prefs`, 'gate', async ({ gate }) => [200, await prefsOf(gate.phoneNumber)]),

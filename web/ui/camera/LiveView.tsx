@@ -13,8 +13,15 @@ interface LiveViewProps {
   settings: CameraSettings;
 }
 
-// Live camera: the top-right camera button opens a window with the server's MJPEG stream in an <img>.
-// Closing or minimizing the window ends the stream, and it pauses after 10 minutes.
+/**
+ * Live camera: the top-right camera button opens a window with the server's MJPEG stream in an <img>.
+ * Closing or minimizing the window ends the stream, and it pauses after 10 minutes.
+ *
+ * @param props - Component props.
+ * @param props.phone - Gate system phone number (digits or formatted).
+ * @param props.settings - Settings map or configuration.
+ * @returns Rendered React element.
+ */
 export function LiveView({ phone, settings }: LiveViewProps) {
   const [dock, setDock] = useState<'closed' | 'min' | 'open'>('closed');
   useBackLayer(dock === 'open', () => setDock('closed'));

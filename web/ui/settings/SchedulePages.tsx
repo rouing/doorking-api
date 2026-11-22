@@ -10,7 +10,12 @@ import { HOL_FOR_SL } from './ListPages.tsx';
 
 const EDITS_NOTE = 'Edits go to the working copy (blue = unsaved, green = saved but not sent to the gate).';
 
-// The shown relays as ranges, e.g. "0–2" or "0–10".
+/**
+ * The shown relays as ranges, e.g. "0–2" or "0–10".
+ *
+ * @param relays - `number[]` value.
+ * @returns Computed result.
+ */
 const relayRanges = (relays: number[]) => relays.reduce<number[][]>((ranges, relay) => {
   const last = ranges[ranges.length - 1];
   if (last && relay === last[1] + 1) {
@@ -21,7 +26,12 @@ const relayRanges = (relays: number[]) => relays.reduce<number[][]>((ranges, rel
   return ranges;
 }, []).map(([a, b]) => (a === b ? String(a) : `${a}–${b}`)).join(', ');
 
-// Hold Open unset: no times, no days, and the shown relays off for every row (hidden relays stay as they are).
+/**
+ * Hold Open unset: no times, no days, and the shown relays off for every row (hidden relays stay as they are).
+ *
+ * @param shown - `number[]` value.
+ * @returns Rendered React element.
+ */
 const holdOpenClear = (shown: number[]) => (setting: GateSettingRow) => {
   if (setting.key.endsWith('Begin') || setting.key.endsWith('End')) return '';
   if (setting.key.endsWith('Days')) return '';
@@ -34,8 +44,15 @@ interface HoldOpenPageProps {
   relays: number[];
 }
 
-// Hold Open: begin/end times and days per row (7 rows + Holiday), and which relays each row holds open. The relay
-// columns are stored per relay as one flag per row. shown: relays 0-2 plus the Tracker relays.
+/**
+ * Hold Open: begin/end times and days per row (7 rows + Holiday), and which relays each row holds open. The relay
+ * columns are stored per relay as one flag per row. shown: relays 0-2 plus the Tracker relays.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.relays - Relays.
+ * @returns Rendered React element.
+ */
 export function HoldOpenPage({ gapi, relays: shown }: HoldOpenPageProps) {
   const settings = useGateSettings(gapi);
   const field = (label: string, part: string) => settings.field(`holdOpen${label}${part}`);
@@ -77,9 +94,15 @@ interface ElevatorPageProps {
   gapi: GateApi;
 }
 
-// Elevator Reference table (DoorKing manual 4.3): for each of the 8 references (ER1-ER8), which elevators (1-8) a
-// visitor may use and how long the resident's floor button stays active, in seconds. A resident's Elevator
-// reference picks the row.
+/**
+ * Elevator Reference table (DoorKing manual 4.3): for each of the 8 references (ER1-ER8), which elevators (1-8) a
+ * visitor may use and how long the resident's floor button stays active, in seconds. A resident's Elevator
+ * reference picks the row.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @returns Rendered React element.
+ */
 export function ElevatorPage({ gapi }: ElevatorPageProps) {
   const settings = useGateSettings(gapi);
   return (
@@ -113,8 +136,15 @@ interface RelayElevatorPageProps {
   prefs: GatePrefs;
 }
 
-// Relay / Elevator table: which elevators (1-8) each relay controls. Relays 0-2, plus 3-10 / 11-18 with the Tracker
-// boxes; hidden relays are left as they are.
+/**
+ * Relay / Elevator table: which elevators (1-8) each relay controls. Relays 0-2, plus 3-10 / 11-18 with the Tracker
+ * boxes; hidden relays are left as they are.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.prefs - Gate-scoped preferences object.
+ * @returns Rendered React element.
+ */
 export function RelayElevatorPage({ gapi, prefs }: RelayElevatorPageProps) {
   const settings = useGateSettings(gapi);
   const relays = trackerRelays(trackerOf(prefs));
@@ -150,9 +180,17 @@ interface SecurityPageProps {
   relays: number[];
 }
 
-// Security Levels: per level (02-30), each of its 4 time zones' begin/end times, days, relays and floors (the
-// Floors column only when the gate's Floors feature is on). With Holidays for Security Levels on (working copy),
-// TZ4 is the Holiday time zone and shows as HOL, as in DoorKing32. shown: relays 0-2 plus the Tracker relays.
+/**
+ * Security Levels: per level (02-30), each of its 4 time zones' begin/end times, days, relays and floors (the
+ * Floors column only when the gate's Floors feature is on). With Holidays for Security Levels on (working copy),
+ * TZ4 is the Holiday time zone and shows as HOL, as in DoorKing32. shown: relays 0-2 plus the Tracker relays.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.floors - Floors.
+ * @param props.relays - Relays.
+ * @returns Rendered React element.
+ */
 export function SecurityPage({ gapi, floors: showFloors, relays: shown }: SecurityPageProps) {
   const settings = useGateSettings(gapi);
   const hol = settings.field(HOL_FOR_SL)?.value === 'Yes';

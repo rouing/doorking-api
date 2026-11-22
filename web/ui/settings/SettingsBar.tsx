@@ -7,11 +7,24 @@ import { gsShow, type GateSettings } from './useGateSettings.ts';
 
 const HINTS: [string, string][] = [['holiday', 'MM/DD'], ['Tone', '1-9'], ['EntryCodeRange', '0000'], ['outsideLineDigit', '0-9']];
 
-// Background of a setting: blue = unsaved edit, green = saved in the working copy but not sent to the gate.
+/**
+ * Background of a setting: blue = unsaved edit, green = saved in the working copy but not sent to the gate.
+ *
+ * @param settings - Settings map or configuration.
+ * @param setting - `GateSettingRow` value.
+ * @returns Operation result.
+ */
 export function settingTone(settings: GateSettings, setting: GateSettingRow) {
   return setting.key in settings.edits ? 'var(--blue-a4)' : setting.value !== setting.gate ? 'var(--green-a4)' : undefined;
 }
 
+/**
+ * Setting title.
+ *
+ * @param settings - Settings map or configuration.
+ * @param setting - `GateSettingRow` value.
+ * @returns Operation result.
+ */
 export function settingTitle(settings: GateSettings, setting: GateSettingRow) {
   const edited = setting.key in settings.edits;
   const pending = setting.value !== setting.gate;
@@ -20,9 +33,11 @@ export function settingTitle(settings: GateSettings, setting: GateSettingRow) {
     + `\nnames.bin offset 0x${setting.offset.toString(16)}${setting.editable ? '' : ' (read-only)'}`;
 }
 
-// Width in px that fits `max` of the widest character in the input's font as the browser draws it (its fonts, zoom and
-// minimum font size included), plus the input's text indent and border and a little room for the caret; null until
-// the input is on screen.
+/**
+ * Width in px that fits `max` of the widest character in the input's font as the browser draws it (its fonts, zoom and
+ * minimum font size included), plus the input's text indent and border and a little room for the caret; null until
+ * the input is on screen.
+ */
 const SPARE_PX = 28; // room past a full-length message so it never touches the edge or scrolls
 
 function useFitWidth(input: RefObject<HTMLInputElement | null>, max: number | null) {
@@ -51,9 +66,17 @@ interface SettingInputProps {
   invalid?: string;
 }
 
-// One input for a gate setting, coloured and with hover text as above. Text settings (display messages) are wide
-// enough for the most characters the gate accepts (in a fixed-width font, like the gate's LCD) and stop at it.
-// invalid: a reason the value can't be saved (red, and shown first in the hover text).
+/**
+ * One input for a gate setting, coloured and with hover text as above. Text settings (display messages) are wide
+ * enough for the most characters the gate accepts (in a fixed-width font, like the gate's LCD) and stop at it.
+ * invalid: a reason the value can't be saved (red, and shown first in the hover text).
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.setting - Setting.
+ * @param props.invalid - Optional validation message blocking save (shown in red and tooltip).
+ * @returns Rendered React element.
+ */
 export function SettingInput({ settings, setting, invalid }: SettingInputProps) {
   const max = setting.maxLength;
   const ref = useRef<HTMLInputElement>(null);
@@ -71,7 +94,7 @@ export function SettingInput({ settings, setting, invalid }: SettingInputProps) 
   );
 }
 
-// The outcome of the bar's last action.
+/** The outcome of the bar's last action. */
 interface Result { title: string; lines: string[]; color: 'blue' | 'red' }
 
 interface SettingsBarProps {
@@ -81,8 +104,17 @@ interface SettingsBarProps {
   blocked?: string;
 }
 
-// Save / Discard for the gate settings, the working copy's state and the result of the last action (Reset to gate and
-// Send to gate are in the sidebar's gate connection). blocked: why the edits can't be saved yet (Save is disabled).
+/**
+ * Save / Discard for the gate settings, the working copy's state and the result of the last action (Reset to gate and
+ * Send to gate are in the sidebar's gate connection). blocked: why the edits can't be saved yet (Save is disabled).
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onReload - Callback to reload the gate data.
+ * @param props.blocked - Optional reason preventing Save (disables the Save button).
+ * @returns Rendered React element.
+ */
 export function SettingsBar({ settings, gapi, onReload, blocked }: SettingsBarProps) {
   const [result, setResult] = useState<Result | null>(null);
   const unsaved = Object.keys(settings.edits).length;

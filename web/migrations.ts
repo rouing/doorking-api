@@ -1,22 +1,33 @@
-// One-time data migrations run at startup, before the server listens; each does nothing once done.
+/**
+ * @module web/migrations
+ *
+ * One-time data migrations run at startup, before the server listens; each does nothing once done.
+ */
 import * as dk from '../index.ts';
 import type { Modules } from './modules.ts';
 import { logger } from '../src/logging.ts';
 
+/**
+ * Run startup migrations.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ */
 export async function runStartupMigrations(modules: Modules): Promise<void> {
   const { ROOT, store } = modules.context;
   const { recordGateState } = modules.jobs;
-  // Once: emails saved before confirmation links existed must be confirmed.
+  /** Once: emails saved before confirmation links existed must be confirmed. */
   const unconfirmed = await dk.unconfirmOldEmails(store);
   if (unconfirmed) logger('server').info`${unconfirmed} account email(s) now need confirming (User Settings)`;
-  // Once: gates from the DKS sign-in era become managed gates; the first local account becomes their admin.
+  /** Once: gates from the DKS sign-in era become managed gates; the first local account becomes their admin. */
   const migrated = await dk.migrateToLocalAccounts(store);
   if (migrated && migrated.gates.length) {
     const note = `Moved ${migrated.gates.length} gate(s) to local accounts${migrated.noLogin.length
       ? `; set the DKS login in System Settings for ${migrated.noLogin.join(', ')}` : ''}`;
     logger('server').info`${note}`;
   }
-  // Once: the board files kept on disk before gate_files move into the database (then their tables are filled).
+  /**
+   * Once: the board files kept on disk before gate_files move into the database (then their tables are filled).
+   */
   const movedFiles = await dk.importGateFiles(store, ROOT);
   if (movedFiles && Object.keys(movedFiles).length) {
     logger('server').info`Moved the gate files on disk into the database: ${JSON.stringify(movedFiles)}`;

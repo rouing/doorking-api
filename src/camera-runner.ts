@@ -1,4 +1,8 @@
-// Runs the dahua-p2p bridges (relay tunnels) and ffmpeg: single frames, videos and live views.
+/**
+ * @module src/camera-runner
+ *
+ * Runs the dahua-p2p bridges (relay tunnels) and ffmpeg: single frames, videos and live views.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -12,7 +16,13 @@ const LIVE_FPS = 8;
 const LIVE_WIDTH = 960;
 const LIVE_MAX_MS = 15 * 60000; // longest live view stream
 const BIN_DIR = path.join(import.meta.dirname, '..', 'tools', 'bin');
-// Hides secrets (and any user:pass@ in URLs) in tool output.
+/**
+ * Hides secrets (and any user:pass@ in URLs) in tool output.
+ *
+ * @param text - Input text string.
+ * @param [secrets] - `string[]` value.
+ * @returns `string` result.
+ */
 export function maskSecrets(text: unknown, secrets: string[] = []): string {
   let out = String(text || '').replace(/(rtsp:\/\/)[^@\s/]+@/gi, '$1***@');
   for (const secret of secrets.filter(Boolean)) {
@@ -21,14 +31,37 @@ export function maskSecrets(text: unknown, secrets: string[] = []): string {
   return out;
 }
 
-// ffmpeg's path by platform: Windows ffmpeg.exe (x64; runs emulated on arm64), Linux ffmpeg-linux-<x64|arm64>.
+/**
+ * ffmpeg's path by platform: Windows ffmpeg.exe (x64; runs emulated on arm64), Linux ffmpeg-linux-<x64|arm64>.
+ *
+ * @param arch - `string` value.
+ * @returns `string` result.
+ */
 const archName = (arch: string): string => (arch === 'arm64' ? 'arm64' : 'x64');
+/**
+ * Ffmpeg exe.
+ *
+ * @param [binDir] - Bin dir.
+ * @param [arch] - `string` value.
+ * @param [platform] - `string` value.
+ * @returns `string` result.
+ */
 export const ffmpegExe = (binDir = BIN_DIR, arch: string = process.arch, platform: string = process.platform): string => path.join(binDir,
   platform === 'win32' ? 'ffmpeg.exe' : `ffmpeg-linux-${archName(arch)}`);
-// The bundled ffmpeg when tools/bin has it (it is not in the git repository: too large), else ffmpeg on the PATH.
+/**
+ * The bundled ffmpeg when tools/bin has it (it is not in the git repository: too large), else ffmpeg on the PATH.
+ *
+ * @param [binDir] - Bin dir.
+ * @returns `string` result.
+ */
 export const ffmpegCommand = (binDir = BIN_DIR): string => (fs.existsSync(ffmpegExe(binDir)) ? ffmpegExe(binDir) : 'ffmpeg');
 
-// Outside Windows, adds the execute bit when it is missing (lost when the files are copied from Windows).
+/**
+ * Outside Windows, adds the execute bit when it is missing (lost when the files are copied from Windows).
+ *
+ * @param file - File path or filename.
+ * @returns `string` result.
+ */
 function executable(file: string): string {
   if (process.platform === 'win32') return file;
   try {
@@ -38,25 +71,32 @@ function executable(file: string): string {
   return file;
 }
 
-// Runs the bridges and ffmpeg. One bridge (relay tunnel) per recorder (serial + username), started on first use and
-// stopped after idleMs unused; it is replaced when its tunnel closes. A frame that fails is tried once more after
-// retryWaitMs (a recorder 404 is not always final): on a new bridge when the tunnel closed or the stream never
-// opened. A frame cut off in transfer (decoder errors; saved as
-// a part-green picture) is deleted and tried once more straight away.
-// A bridge that cannot connect (fails or times out before listening) is started again after connectWaitMs,
-// then twice that, up to connectTries times; after that the error has code NO_CONNECTION.
-// log(message) gets bridge starts, connections, unexpected closes and idle stops, each bridge connection
-// failure, and live views retried on a new bridge.
-// Videos (grabFrame's video option) are copied without re-encoding to a fragmented MP4 file of up to VIDEO_SECS,
-// within clipMs (ffmpeg's MPEG-TS writer refuses the recorder's H.265 stream, verified 2026-10-19); finishClip
-// turns that into the .mp4 and its first-frame picture. A bridge is not stopped as idle while a grab is using it.
+/**
+ * Runs the bridges and ffmpeg. One bridge (relay tunnel) per recorder (serial + username), started on first use and
+ * stopped after idleMs unused; it is replaced when its tunnel closes. A frame that fails is tried once more after
+ * retryWaitMs (a recorder 404 is not always final): on a new bridge when the tunnel closed or the stream never
+ * opened. A frame cut off in transfer (decoder errors; saved as
+ * a part-green picture) is deleted and tried once more straight away.
+ * A bridge that cannot connect (fails or times out before listening) is started again after connectWaitMs,
+ * then twice that, up to connectTries times; after that the error has code NO_CONNECTION.
+ * log(message) gets bridge starts, connections, unexpected closes and idle stops, each bridge connection
+ * failure, and live views retried on a new bridge.
+ * Videos (grabFrame's video option) are copied without re-encoding to a fragmented MP4 file of up to VIDEO_SECS,
+ * within clipMs (ffmpeg's MPEG-TS writer refuses the recorder's H.265 stream, verified 2026-10-19); finishClip
+ * turns that into the .mp4 and its first-frame picture. A bridge is not stopped as idle while a grab is using it.
+ */
 const STREAM_NOT_OPENED = /Invalid data found|End of file|Connection refused/i;
 const DAMAGED = /error while decoding|concealing|corrupt|Invalid NAL|Could not find ref|missing picture|PPS id|SPS id/i;
 const DAMAGED_MSG = 'Picture damaged in transfer';
 export const STOPPED_MSG = 'Stopped';
 export const NO_CONNECTION = 'NO_CONNECTION';
 
-// Waits ms; rejects with "Stopped" when signal aborts.
+/**
+ * Waits ms; rejects with "Stopped" when signal aborts.
+ *
+ * @param ms - `number` value.
+ * @param [signal] - AbortSignal to cancel the operation.
+ */
 function pause(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) return reject(new Error(STOPPED_MSG));
@@ -66,7 +106,7 @@ function pause(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-// kill: stops the bridge (its tunnel and local port).
+/** kill: stops the bridge (its tunnel and local port). */
 interface Bridge {
   kill: () => void; port: Promise<number>; password: string; lines: string[];
   timer?: ReturnType<typeof setTimeout>; busy?: number; dead?: boolean; connected?: boolean;
@@ -79,9 +119,17 @@ interface CameraRunnerOptions {
 interface GrabOptions { signal?: AbortSignal; onRetry?: (error: Error) => void; once?: boolean; video?: number }
 interface LiveOptions { sub?: boolean; signal?: AbortSignal; onStart?: () => void; maxMs?: number }
 
-// ffmpegPath: the ffmpeg program to run; empty = ffmpegCommand(binDir).
-// The recorders' bridges (one per recorder and username), each started when first needed and stopped after idleMs
-// unused or when its settings change.
+/**
+ * ffmpegPath: the ffmpeg program to run; empty = ffmpegCommand(binDir).
+ * The recorders' bridges (one per recorder and username), each started when first needed and stopped after idleMs
+ * unused or when its settings change.
+ *
+ * @param options - Options object.
+ * @param options.readyMs - Ready ms.
+ * @param options.idleMs - Idle timeout in milliseconds.
+ * @param options.log - Callback receiving progress or diagnostic messages.
+ * @returns Operation result.
+ */
 function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: number; log: Log }) {
   const bridges = new Map<string, Bridge>();
 
@@ -93,13 +141,19 @@ function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: n
     bridge.kill();
   }
 
-  // The dahua-p2p package's relay tunnel (reliable PTCP layer), exposing the recorder's RTSP port on a local port. It
-  // carries one stream at a time (later ones wait) and retries while the recorder still holds an earlier session.
+  /**
+   * The dahua-p2p package's relay tunnel (reliable PTCP layer), exposing the recorder's RTSP port on a local port. It
+   * carries one stream at a time (later ones wait) and retries while the recorder still holds an earlier session.
+   *
+   * @param key - Lookup key, API key, or setting key.
+   * @param cfg - Configuration or settings object.
+   * @returns `Bridge` result.
+   */
   function start(key: string, cfg: Recorder): Bridge {
     let closeTunnel = () => {};
     let server: { close: () => void } | null = null;
     let killed = false;
-    // port is set just below, once the bridge's other fields exist (its startup reports through them).
+    /** port is set just below, once the bridge's other fields exist (its startup reports through them). */
     const bridge: Bridge = { password: cfg.password, lines: [], port: Promise.resolve(0), kill: () => { killed = true; server?.close(); closeTunnel(); } };
     const note = (line: string) => { bridge.lines.push(line); if (bridge.lines.length > 20) bridge.lines.shift(); };
     const tail = () => (bridge.lines.length ? `: ${maskSecrets(bridge.lines.slice(-3).join(' | '), [cfg.password])}` : '');
@@ -143,7 +197,12 @@ function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: n
     return bridge;
   }
 
-  // The bridge's local port, starting the bridge when needed.
+  /**
+   * The bridge's local port, starting the bridge when needed.
+   *
+   * @param cfg - Configuration or settings object.
+   * @returns `{ key: string; port: Promise<number>; b: Bridge }` result.
+   */
   function bridge(cfg: Recorder): { key: string; port: Promise<number>; b: Bridge } {
     const key = `${cfg.serial}|${cfg.username}`;
     let running = bridges.get(key);
@@ -160,10 +219,25 @@ function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: n
     }
   }
 
-  // The recorder's RTSP address through the bridge on localPort.
+  /**
+   * The recorder's RTSP address through the bridge on localPort.
+   *
+   * @param cfg - Configuration or settings object.
+   * @param localPort - Local loopback TCP port exposed by the bridge.
+   * @param pathQuery - RTSP path and query string.
+   * @returns Computed result.
+   */
   const streamUrl = (cfg: Recorder, localPort: number, pathQuery: string) =>
     `rtsp://${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password)}@127.0.0.1:${localPort}${pathQuery}`;
-  // Runs use(url) with the bridge counted busy (so it isn't closed as idle meanwhile).
+  /**
+   * Runs use(url) with the bridge counted busy (so it isn't closed as idle meanwhile).
+   *
+   * @param key - Lookup key, API key, or setting key.
+   * @param b - Active dahua-p2p bridge handle.
+   * @param use - Callback that uses the RTSP stream URL.
+   * @param url - Target URL.
+   * @returns Promise resolving to `T`.
+   */
   async function onBridge<T>(key: string, b: Bridge, use: (url: string) => Promise<T>, url: string): Promise<T> {
     b.busy = (b.busy || 0) + 1;
     clearTimeout(b.timer);
@@ -176,14 +250,36 @@ function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: n
   }
 
   const stopAll = () => { for (const key of [...bridges.keys()]) stop(key); };
-  // Stops the bridge unless another has taken its place meanwhile, or another stream still uses it (and it isn't dead).
+  /**
+   * Stops the bridge unless another has taken its place meanwhile, or another stream still uses it (and it isn't dead).
+   *
+   * @param key - Lookup key, API key, or setting key.
+   * @param b - Active dahua-p2p bridge handle.
+   */
   const drop = (key: string, b: Bridge): void => { if (bridges.get(key) === b && (!b.busy || b.dead)) stop(key); };
   return { bridge, onBridge, streamUrl, drop, stopAll, running: () => bridges.size };
 }
 
-// ffmpeg: saving a frame or a video from a stream, joining video parts, and the live view as MJPEG.
+/**
+ * ffmpeg: saving a frame or a video from a stream, joining video parts, and the live view as MJPEG.
+ *
+ * @param options - Options object.
+ * @param options.binDir - Bin dir.
+ * @param options.ffmpegPath - Ffmpeg path.
+ * @param options.grabMs - Grab ms.
+ * @param options.clipExtraMs - Clip extra ms.
+ * @returns Operation result.
+ */
 function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: string; ffmpegPath: string; grabMs: number; clipExtraMs: number }) {
-  // video: seconds of video to save instead of one frame.
+  /**
+   * video: seconds of video to save instead of one frame.
+   *
+   * @param url - Target URL.
+   * @param outFile - Destination file path on disk.
+   * @param secrets - `string[]` value.
+   * @param [signal] - AbortSignal to cancel the operation.
+   * @param [video] - Seconds of video to save instead of one frame.
+   */
   function ffmpeg(url: string, outFile: string, secrets: string[], signal?: AbortSignal, video = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal && signal.aborted) return reject(new Error(STOPPED_MSG));
@@ -218,7 +314,13 @@ function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: str
     });
   }
 
-  // Runs ffmpeg on local files: { code, err } (err: the last 4000 characters of its output).
+  /**
+   * Runs ffmpeg on local files: { code, err } (err: the last 4000 characters of its output).
+   *
+   * @param args - Command-line arguments.
+   * @param [ms] - Ms.
+   * @returns Promise resolving to `{ code: number | null; err: string }`.
+   */
   function localFfmpeg(args: string[], ms = 60000): Promise<{ code: number | null; err: string }> {
     return new Promise((resolve) => {
       const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), ['-hide_banner', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
@@ -230,15 +332,28 @@ function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: str
     });
   }
 
-  // A local video file's duration in seconds (0 when unreadable).
+  /**
+   * A local video file's duration in seconds (0 when unreadable).
+   *
+   * @param file - File path or filename.
+   * @returns Promise resolving to `number`.
+   */
   async function clipSeconds(file: string): Promise<number> {
     const match = /Duration: (\d+):(\d+):(\d+(?:\.\d+)?)/.exec((await localFfmpeg(['-i', file], 30000)).err);
     return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : 0;
   }
 
-  // Joins the recorded parts (in order) into outFile (.mp4, playable while loading; H.265 tagged hvc1 so Safari
-  // plays it) and saves the first keyframe to poster. Returns the video's duration in seconds; throws when it has
-  // less than a second of video.
+  /**
+   * Joins the recorded parts (in order) into outFile (.mp4, playable while loading; H.265 tagged hvc1 so Safari
+   * plays it) and saves the first keyframe to poster. Returns the video's duration in seconds; throws when it has
+   * less than a second of video.
+   *
+   * @param parts - `string[]` value.
+   * @param outFile - Destination file path on disk.
+   * @param poster - `string` value.
+   * @returns Promise resolving to `number`.
+   * @throws Error when validation or the underlying operation fails.
+   */
   async function finishClip(parts: string[], outFile: string, poster: string): Promise<number> {
     const list = `${outFile}.parts.txt`;
     const input = parts.length > 1 ? ['-f', 'concat', '-safe', '0', '-i', list] : ['-i', parts[0]];
@@ -301,16 +416,44 @@ function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: str
   return { ffmpeg, clipSeconds, finishClip, mjpeg };
 }
 
+/**
+ * Create camera runner.
+ *
+ * @param [options] - Options object.
+ * @param [options.binDir] - Bin dir.
+ * @param [options.ffmpegPath] - Ffmpeg path.
+ * @param [options.idleMs] - Idle timeout in milliseconds.
+ * @param [options.readyMs] - Ready ms.
+ * @param [options.grabMs] - Grab ms.
+ * @param [options.clipExtraMs] - Clip extra ms.
+ * @param [options.connectTries] - Connect tries.
+ * @param [options.connectWaitMs] - Connect wait ms.
+ * @param [options.retryWaitMs] - Retry wait ms.
+ * @param [options.log] - Callback receiving progress or diagnostic messages.
+ * @returns Operation result.
+ */
 export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs = 120000, readyMs = 45000, grabMs = 45000,
   clipExtraMs = 60000, connectTries = 3, connectWaitMs = 10000, retryWaitMs = 2000, log = () => {} }: CameraRunnerOptions = {}) {
   const pool = createBridgePool({ readyMs, idleMs, log });
   const { bridge, onBridge, streamUrl, drop, stopAll } = pool;
   const { ffmpeg, clipSeconds, finishClip, mjpeg } = createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs });
 
-  // Saves one frame from rtsp://<bridge><pathQuery> (e.g. /cam/playback?channel=1&starttime=...) to outFile.
-  // signal (AbortSignal) stops the grab: it rejects with "Stopped". onRetry(error) runs before the second try.
-  // once: no second try (bridge connection tries still apply). video: seconds of the stream to save instead (see
-  // above).
+  /**
+   * Saves one frame from rtsp://<bridge><pathQuery> (e.g. /cam/playback?channel=1&starttime=...) to outFile.
+   * signal (AbortSignal) stops the grab: it rejects with "Stopped". onRetry(error) runs before the second try.
+   * once: no second try (bridge connection tries still apply). video: seconds of the stream to save instead (see
+   * above).
+   *
+   * @param cfg - Configuration or settings object.
+   * @param pathQuery - RTSP path and query string.
+   * @param outFile - Destination file path on disk.
+   * @param [options] - Options object.
+   * @param [options.signal] - AbortSignal to cancel the operation.
+   * @param [options.onRetry] - On retry.
+   * @param [options.once] - When `true`, skip the second frame retry (bridge connection retries still apply).
+   * @param [options.video] - Seconds of video stream to save (`0` for a single still frame).
+   * @throws Error when validation or the underlying operation fails.
+   */
   async function grabFrame(cfg: Recorder, pathQuery: string, outFile: string,
     { signal, onRetry = () => {}, once = false, video = 0 }: GrabOptions = {}): Promise<void> {
     let retried = once;
@@ -343,10 +486,22 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     }
   }
 
-  // Writes the live picture of one channel to out as MJPEG (multipart/x-mixed-replace; boundary=frame; up to
-  // LIVE_WIDTH wide, LIVE_FPS a second). sub: the recorder's lower-resolution sub stream. onStart() runs before
-  // the first write. Ends (resolves) when signal aborts, the stream stops, or after maxMs. Rejects when no
-  // picture came; the stream is tried once more on a new bridge when the first try got none.
+  /**
+   * Writes the live picture of one channel to out as MJPEG (multipart/x-mixed-replace; boundary=frame; up to
+   * LIVE_WIDTH wide, LIVE_FPS a second). sub: the recorder's lower-resolution sub stream. onStart() runs before
+   * the first write. Ends (resolves) when signal aborts, the stream stops, or after maxMs. Rejects when no
+   * picture came; the stream is tried once more on a new bridge when the first try got none.
+   *
+   * @param cfg - Configuration or settings object.
+   * @param channel - Recorder camera channel number (1–64).
+   * @param out - Writable output stream.
+   * @param [options] - Options object.
+   * @param [options.sub] - The recorder's lower-resolution sub stream.
+   * @param [options.signal] - AbortSignal to cancel the operation.
+   * @param [options.onStart] - On start.
+   * @param [options.maxMs] - Maximum duration in milliseconds.
+   * @throws Error when validation or the underlying operation fails.
+   */
   async function liveStream(cfg: Recorder, channel: number | string, out: Writable,
     { sub = true, signal, onStart = () => {}, maxMs = LIVE_MAX_MS }: LiveOptions = {}): Promise<void> {
     const pathQuery = `/cam/realmonitor?channel=${channel}&subtype=${sub ? 1 : 0}`;

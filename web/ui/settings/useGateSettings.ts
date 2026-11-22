@@ -1,13 +1,29 @@
-// Gate settings from the working copy of names.bin, with unsaved edits kept on the page (keyed by setting).
-// Save writes them into the working copy; settings saved but not yet on the gate are "pending".
+/**
+ * @module web/ui/settings/useGateSettings
+ *
+ * Gate settings from the working copy of names.bin, with unsaved edits kept on the page (keyed by setting).
+ * Save writes them into the working copy; settings saved but not yet on the gate are "pending".
+ */
 import { useCallback, useContext, useEffect, useState } from 'react';
 import type { GateSettingRow, SettingsReply } from '../../../src/types.ts';
 import { errorText, WorkingCopySavedContext, type GateApi } from '../api.ts';
 
+/**
+ * Gs show.
+ *
+ * @param value - Input value.
+ * @returns Computed result.
+ */
 export const gsShow = (value: string) => (value === '' ? '(empty)' : `"${value}"`);
 
 export type GateSettings = ReturnType<typeof useGateSettings>;
 
+/**
+ * Use gate settings.
+ *
+ * @param gapi - Gate-scoped API fetch helper.
+ * @returns Operation result.
+ */
 export function useGateSettings(gapi: GateApi) {
   const saved = useContext(WorkingCopySavedContext);
   const [reply, setReply] = useState<SettingsReply | null>(null);
@@ -26,7 +42,12 @@ export function useGateSettings(gapi: GateApi) {
   const pending = fields.filter((setting) => setting.value !== setting.gate);
   const names = reply ? reply.cache.files.find((file) => file.name === 'names.bin') : undefined;
 
-  // Saves the edits for `keys` (all edits when omitted). Returns the server's { changed, changedBlocks }.
+  /**
+   * Saves the edits for `keys` (all edits when omitted). Returns the server's { changed, changedBlocks }.
+   *
+   * @param [keys] - Optional list of setting keys to save (defaults to all edited keys).
+   * @returns Promise resolving to the operation result.
+   */
   const save = async (keys?: string[]) => {
     const body = keys ? Object.fromEntries(Object.entries(edits).filter(([k]) => keys.includes(k))) : edits;
     const result = await gapi<{ changed: { name: string; from: string; to: string }[]; changedBlocks: number[] }>('PUT', '/settings', body);

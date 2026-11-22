@@ -60,8 +60,14 @@ interface HolidaysForSecurityProps {
   settings: GateSettings;
 }
 
-// The "Holidays for Security Levels" box. Turning it on asks first, as DoorKing32 does: TZ4 of every security
-// level becomes the Holiday time zone.
+/**
+ * The "Holidays for Security Levels" box. Turning it on asks first, as DoorKing32 does: TZ4 of every security
+ * level becomes the Holiday time zone.
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @returns Rendered React element.
+ */
 function HolidaysForSecurity({ settings }: HolidaysForSecurityProps) {
   const [dialog, confirm] = useConfirm();
   const field = settings.field(HOL_FOR_SL);
@@ -86,7 +92,14 @@ interface HolidaysPageProps {
   holidays: Holiday[];
 }
 
-// Holidays: pick from the fixed-date list or enter a date. The gate stores only month/day.
+/**
+ * Holidays: pick from the fixed-date list or enter a date. The gate stores only month/day.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.holidays - Holidays.
+ * @returns Rendered React element.
+ */
 export function HolidaysPage({ gapi, holidays }: HolidaysPageProps) {
   const settings = useGateSettings(gapi);
   return (
@@ -106,7 +119,13 @@ interface FacilityPageProps {
   gapi: GateApi;
 }
 
-// Facility Codes: the enable flag and up to 10 values (0-255; blank = unused).
+/**
+ * Facility Codes: the enable flag and up to 10 values (0-255; blank = unused).
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @returns Rendered React element.
+ */
 export function FacilityPage({ gapi }: FacilityPageProps) {
   const settings = useGateSettings(gapi);
   return (

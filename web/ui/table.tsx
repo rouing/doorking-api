@@ -6,8 +6,15 @@ import { cmpCells } from './format.ts';
 export type Column = [label: string, key: string];
 export interface Sort { col: string; dir: 1 | -1; then?: { col: string; dir: 1 | -1 } }
 
-// Next sort for a header click. With dateTime (Transactions): Time clicked while sorted by Date sorts the times
-// within each date (Date stays first); clicking Date again flips the dates and keeps that.
+/**
+ * Next sort for a header click. With dateTime (Transactions): Time clicked while sorted by Date sorts the times
+ * within each date (Date stays first); clicking Date again flips the dates and keeps that.
+ *
+ * @param cur - Current value or state.
+ * @param key - Lookup key, API key, or setting key.
+ * @param [dateTime] - Enable secondary time-within-date sorting.
+ * @returns `Sort` result.
+ */
 export function nextSort(cur: Sort | null, key: string, dateTime = false): Sort {
   if (dateTime && cur && cur.col === 'date') {
     if (key === 'time') return { col: 'date', dir: cur.dir, then: { col: 'time', dir: cur.then ? (-cur.then.dir as 1 | -1) : 1 } };
@@ -16,7 +23,14 @@ export function nextSort(cur: Sort | null, key: string, dateTime = false): Sort 
   return { col: key, dir: cur && cur.col === key && !cur.then ? (-cur.dir as 1 | -1) : 1 };
 }
 
-// Rows sorted by `sort`; value(col) gives the value a column sorts on.
+/**
+ * Rows sorted by `sort`; value(col) gives the value a column sorts on.
+ *
+ * @param rows - List of data rows.
+ * @param sort - Active table sort specification.
+ * @param value - Input value.
+ * @returns `R[]` result.
+ */
 export function sortRows<R>(rows: R[], sort: Sort | null, value: (col: string) => (row: R) => unknown): R[] {
   if (!sort) return rows;
   const first = value(sort.col);
@@ -32,7 +46,16 @@ interface SortHeadProps {
   title?: (key: string) => string;
 }
 
-// Header row whose cells sort the table on click (▲/▼, with 1/2 for a two-level sort).
+/**
+ * Header row whose cells sort the table on click (▲/▼, with 1/2 for a two-level sort).
+ *
+ * @param props - Component props.
+ * @param props.cols - Table column definitions.
+ * @param props.sort - Active table sort specification.
+ * @param props.onSort - Callback invoked when a sortable column header is clicked.
+ * @param props.title - Title.
+ * @returns Rendered React element.
+ */
 export function SortHead({ cols, sort, onSort, title }: SortHeadProps) {
   const arrow = (dir: number) => (dir > 0 ? ' ▲' : ' ▼');
   return (
@@ -60,9 +83,15 @@ interface ShownRows {
   showMore: () => void; // draws one step more (after loading more rows), as Show more does
 }
 
-// How many rows a long table draws: PAGE_ROWS (phones: PHONE_ROWS), and that many more each time Show more is
-// clicked, so every row can be reached (rows added later, such as older transactions, too). Back to one page when
-// `reset` changes, such as the filter.
+/**
+ * How many rows a long table draws: PAGE_ROWS (phones: PHONE_ROWS), and that many more each time Show more is
+ * clicked, so every row can be reached (rows added later, such as older transactions, too). Back to one page when
+ * `reset` changes, such as the filter.
+ *
+ * @param total - Total number of rows.
+ * @param reset - Dependency key that resets paging when changed.
+ * @returns `ShownRows` result.
+ */
 export function useShownRows(total: number, reset: unknown): ShownRows {
   const step = usePhone() ? PHONE_ROWS : PAGE_ROWS;
   const [pages, setPages] = useState(1);

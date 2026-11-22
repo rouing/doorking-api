@@ -1,8 +1,12 @@
-// Gates managed by this server (table managed_gates) and who may use them (table gate_access), see db.ts. A gate
-// is added once, after a successful connection with its DKS login and master code (the server checks that before
-// calling registerGate), by a user who becomes its first admin. Its DKS login and master code are encrypted.
-// Roles: 'admin' (everything, including the gate's users and login) and 'readonly' (view, pull, cameras). A gate
-// always keeps at least one admin.
+/**
+ * @module src/gate-list
+ *
+ * Gates managed by this server (table managed_gates) and who may use them (table gate_access), see db.ts. A gate
+ * is added once, after a successful connection with its DKS login and master code (the server checks that before
+ * calling registerGate), by a user who becomes its first admin. Its DKS login and master code are encrypted.
+ * Roles: 'admin' (everything, including the gate's users and login) and 'readonly' (view, pull, cameras). A gate
+ * always keeps at least one admin.
+ */
 import { all, encrypt, decrypt, getMeta, one, run, setMeta, transaction, phoneDigits } from './db.ts';
 import type { Store } from './db.ts';
 import { userKey } from './users.ts';
@@ -20,23 +24,44 @@ interface GateUserRow {
   username: string; email: string | null; pending_email: string | null; phone: string | null; invited: boolean; role: GateRole;
   granted_by: string; granted_at: string; last_sign_in: string | null;
 }
-// A gate from before local accounts, with the DKS login saved for its schedules (migrateToLocalAccounts).
+/** A gate from before local accounts, with the DKS login saved for its schedules (migrateToLocalAccounts). */
 interface LegacyGateRow { username: string; phone: string; master_code: string; added_at: string; login: string | null; password: string | null }
 interface GateRow { phone: string; master_code: string; dks_user: string; dks_password: string; added_by: string; added_at: string }
 
 export const ALREADY_ADDED = 'This gate is already managed here. Ask one of its gate admins to add you to it.';
 const LAST_ADMIN = 'A gate must keep at least one admin. Make someone else an admin first.';
 
+/**
+ * Check phone.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns `string` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function checkPhone(phone: unknown): string {
   const phoneKey = phoneDigits(phone);
   if (!/^\d{4,15}$/.test(phoneKey)) throw httpError('Gate phone number must be 4-15 digits');
   return phoneKey;
 }
+/**
+ * Check master code.
+ *
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @returns `string` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function checkMasterCode(code: unknown): string {
   const trimmed = String(code ?? '').trim();
   if (!/^\d{4}$/.test(trimmed)) throw httpError('Master code must be 4 digits');
   return trimmed;
 }
+/**
+ * Check role.
+ *
+ * @param role - Gate access role (`admin` or `readonly`).
+ * @returns `GateRole` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function checkRole(role: unknown): GateRole {
   if (!GATE_ROLES.includes(role as GateRole)) throw httpError('Role must be admin or readonly');
   return role as GateRole;
@@ -53,16 +78,37 @@ const fromRow = (store: Store, row: GateRow): GateRecord => ({
   dksPassword: row.dks_password ? decrypt(store, row.dks_password) : '', addedBy: row.added_by, addedAt: row.added_at,
 });
 
+/**
+ * Get gate.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `GateRecord | null`.
+ */
 export async function getGate(store: Store, phone: string): Promise<GateRecord | null> {
   const row = await one<GateRow>(store, 'SELECT * FROM managed_gates WHERE phone = $1', [phoneDigits(phone)]);
   return row ? fromRow(store, row) : null;
 }
 
+/**
+ * Gate exists.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `true` when the condition holds.
+ */
 export async function gateExists(store: Store, phone: string): Promise<boolean> {
   return Boolean(await one(store, 'SELECT 1 AS x FROM managed_gates WHERE phone = $1', [phoneDigits(phone)]));
 }
 
-// Adds a gate with `admin` as its first admin. Throws 409 ALREADY_ADDED when it is managed here already.
+/**
+ * Adds a gate with `admin` as its first admin. Throws 409 ALREADY_ADDED when it is managed here already.
+ *
+ * @param store - Database store handle.
+ * @param gate - Resolved managed gate record with role and DKS credentials.
+ * @param admin - PostgreSQL admin connection config.
+ * @returns Promise resolving to `GateRecord`.
+ */
 export async function registerGate(store: Store, gate: { phoneNumber: unknown; masterCode: unknown; dksUser: unknown; dksPassword: unknown },
   admin: string): Promise<GateRecord> {
   const phone = checkPhone(gate.phoneNumber);
@@ -79,7 +125,18 @@ export async function registerGate(store: Store, gate: { phoneNumber: unknown; m
   return (await getGate(store, phone))!;
 }
 
-// Changes the gate's master code and/or DKS login (only the values given; a blank password keeps the saved one).
+/**
+ * Changes the gate's master code and/or DKS login (only the values given; a blank password keeps the saved one).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param options - Options object.
+ * @param options.masterCode - 4-digit gate master code.
+ * @param options.dksUser - DKS Cloud account username.
+ * @param options.dksPassword - DKS Cloud account password.
+ * @returns Promise resolving to `GateRecord`.
+ * @throws HTTP 404 error on invalid input or conflict.
+ */
 export async function updateGateLogin(store: Store, phone: string, { masterCode, dksUser, dksPassword }:
   { masterCode?: unknown; dksUser?: unknown; dksPassword?: unknown }): Promise<GateRecord> {
   const gate = await getGate(store, phone);
@@ -93,21 +150,40 @@ export async function updateGateLogin(store: Store, phone: string, { masterCode,
   return (await getGate(store, gate.phoneNumber))!;
 }
 
-// The user's role on the gate, or null.
+/**
+ * The user's role on the gate, or null.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param username - Local account username.
+ * @returns Promise resolving to `GateRole | null`.
+ */
 export async function accessOf(store: Store, phone: string, username: string): Promise<GateRole | null> {
   const row = await one<{ role: GateRole }>(store, 'SELECT role FROM gate_access WHERE phone = $1 AND username = $2',
     [phoneDigits(phone), userKey(username)]);
   return row ? row.role : null;
 }
 
-// The gates the user may open, oldest first: [{ phoneNumber, role, addedAt }].
+/**
+ * The gates the user may open, oldest first: [{ phoneNumber, role, addedAt }].
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @returns Promise resolving to `{ phoneNumber: string; role: GateRole; addedAt: string }[]`.
+ */
 export async function userGates(store: Store, username: string): Promise<{ phoneNumber: string; role: GateRole; addedAt: string }[]> {
   return (await all<{ phone: string; role: GateRole; added_at: string }>(store, `SELECT a.phone, a.role, g.added_at FROM gate_access a
     JOIN managed_gates g ON g.phone = a.phone WHERE a.username = $1 ORDER BY g.added_at, a.phone`, [userKey(username)]))
     .map((row) => ({ phoneNumber: row.phone, role: row.role, addedAt: row.added_at }));
 }
 
-// Everyone with access to the gate, admins first.
+/**
+ * Everyone with access to the gate, admins first.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `GateUser[]`.
+ */
 export async function gateUsers(store: Store, phone: string): Promise<GateUser[]> {
   return (await all<GateUserRow>(store,
     `SELECT a.username, u.email, u.pending_email, u.phone, u.password_hash = '!' AS invited, a.role, a.granted_by, a.granted_at, u.last_sign_in
@@ -116,7 +192,16 @@ export async function gateUsers(store: Store, phone: string): Promise<GateUser[]
       grantedBy: row.granted_by, grantedAt: row.granted_at, lastSignIn: row.last_sign_in }));
 }
 
-// Shares the gate with an existing user. 404 when there is no such user, 409 when they already have access.
+/**
+ * Shares the gate with an existing user. 404 when there is no such user, 409 when they already have access.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param username - Local account username.
+ * @param role - Gate access role (`admin` or `readonly`).
+ * @param by - Username of the user performing the action.
+ * @throws HTTP 400/404 error on invalid input or conflict.
+ */
 export async function grantAccess(store: Store, phone: string, username: string, role: unknown, by: string): Promise<void> {
   const phoneKey = phoneDigits(phone);
   const name = userKey(username);
@@ -127,12 +212,26 @@ export async function grantAccess(store: Store, phone: string, username: string,
   if (!added) throw httpError(`"${name}" already has access to this gate (${(await accessOf(store, phoneKey, name)) === 'admin' ? 'admin' : 'read only'})`, 409);
 }
 
-// Admins of the gate, locked until the transaction ends so two changes can't remove the last two admins at once.
+/**
+ * Admins of the gate, locked until the transaction ends so two changes can't remove the last two admins at once.
+ *
+ * @param tx - Active database transaction store.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to the operation result.
+ */
 const lockedAdmins = async (tx: Store, phone: string) => {
   await one(tx, 'SELECT 1 AS x FROM managed_gates WHERE phone = $1 FOR UPDATE', [phone]);
   return (await all<{ username: string }>(tx, "SELECT username FROM gate_access WHERE phone = $1 AND role = 'admin'", [phone])).map((row) => row.username);
 };
 
+/**
+ * Set role.
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param username - Local account username.
+ * @param role - Gate access role (`admin` or `readonly`).
+ */
 export async function setRole(store: Store, phone: string, username: string, role: unknown): Promise<void> {
   const phoneKey = phoneDigits(phone);
   const name = userKey(username);
@@ -146,7 +245,13 @@ export async function setRole(store: Store, phone: string, username: string, rol
   });
 }
 
-// Takes the user off the gate (also how a user leaves a gate).
+/**
+ * Takes the user off the gate (also how a user leaves a gate).
+ *
+ * @param store - Database store handle.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param username - Local account username.
+ */
 export async function revokeAccess(store: Store, phone: string, username: string): Promise<void> {
   const phoneKey = phoneDigits(phone);
   const name = userKey(username);
@@ -159,8 +264,14 @@ export async function revokeAccess(store: Store, phone: string, username: string
   });
 }
 
-// Makes the user admin of every gate that has no admin (the first account, and the CLI's create-admin). Returns
-// the phone numbers.
+/**
+ * Makes the user admin of every gate that has no admin (the first account, and the CLI's create-admin). Returns
+ * the phone numbers.
+ *
+ * @param store - Database store handle.
+ * @param username - Local account username.
+ * @returns Promise resolving to `string[]`.
+ */
 export async function adoptAdminlessGates(store: Store, username: string): Promise<string[]> {
   const name = userKey(username);
   const phones = (await all<{ phone: string }>(store, `SELECT phone FROM managed_gates g WHERE NOT EXISTS
@@ -173,11 +284,16 @@ export async function adoptAdminlessGates(store: Store, username: string): Promi
   return phones;
 }
 
-// One-time move from DKS sign-in (2026-11-13): each gate some DKS user had connected to (table gates) becomes a
-// managed gate, with that user's master code and, when they saved a password for schedules (table credentials),
-// that DKS login. Gates without a saved password get an empty DKS login, to be set in System Settings. Nobody has
-// access yet: the first local account adopts them (adoptAdminlessGates). Returns the phones added (and those
-// without a login), or null when it already ran.
+/**
+ * One-time move from DKS sign-in (2026-11-13): each gate some DKS user had connected to (table gates) becomes a
+ * managed gate, with that user's master code and, when they saved a password for schedules (table credentials),
+ * that DKS login. Gates without a saved password get an empty DKS login, to be set in System Settings. Nobody has
+ * access yet: the first local account adopts them (adoptAdminlessGates). Returns the phones added (and those
+ * without a login), or null when it already ran.
+ *
+ * @param store - Database store handle.
+ * @returns Promise resolving to `{ gates: string[]; noLogin: string[] } | null`.
+ */
 export async function migrateToLocalAccounts(store: Store): Promise<{ gates: string[]; noLogin: string[] } | null> {
   if (await getMeta(store, 'localAccountsMigrated')) return null;
   const out = { gates: [] as string[], noLogin: [] as string[] };
@@ -199,13 +315,22 @@ export async function migrateToLocalAccounts(store: Store): Promise<{ gates: str
   return out;
 }
 
-// Tables with rows about one gate, keyed by its phone number (see db.ts). gates is the pre-2026-11-13 per-user list.
+/**
+ * Tables with rows about one gate, keyed by its phone number (see db.ts). gates is the pre-2026-11-13 per-user list.
+ */
 const GATE_TABLES = ['gate_access', 'api_keys', 'managed_gates', 'gates', 'prefs', 'history', 'schedules', 'cameras', 'snapshots', 'notes',
   'tx_history', 'tx_pulls', 'gate_files', 'gate_residents', 'gate_cards', 'gate_settings', 'gate_state', 'gate_working'];
 
-// Deletes every row about the gate, in one transaction: the gate itself, everyone's access to it and its API keys, prefs,
-// history, schedules, camera settings, snapshot log, notes, transaction history, board files and the tables decoded
-// from them; sessions that had it open close it. Returns the rows removed per table.
+/**
+ * Deletes every row about the gate, in one transaction: the gate itself, everyone's access to it and its API keys, prefs,
+ * history, schedules, camera settings, snapshot log, notes, transaction history, board files and the tables decoded
+ * from them; sessions that had it open close it. Returns the rows removed per table.
+ *
+ * @param store - Database store handle.
+ * @param phoneNumber - Gate system phone number (digits or formatted).
+ * @returns Promise resolving to `Record<string, number>`.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export async function deleteGateData(store: Store, phoneNumber: string): Promise<Record<string, number>> {
   const phoneKey = phoneDigits(phoneNumber);
   if (!phoneKey) throw httpError('Gate phone number required');

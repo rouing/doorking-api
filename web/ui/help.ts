@@ -1,18 +1,20 @@
-// Texts of the "?" hover tips (HelpTip), in plain language for everyday users. Keys are gate setting keys where a
-// setting has one (so the System Settings fields find theirs), else a short name.
+/**
+ * Texts of the "?" hover tips (HelpTip), in plain language for everyday users. Keys are gate setting keys where a
+ * setting has one (so the System Settings fields find theirs), else a short name.
+ */
 export const HELP: Record<string, string> = {
-  // Gate list
+  /** Gate list */
   systemPhone: "The gate's own phone number (the line the entry panel is connected to), digits only. It identifies the gate in DKS Cloud.",
   gateMasterCode: "The gate's 4-digit master code, set at the entry panel. It's checked when the gate is added (the app pulls from the gate with it), then kept secret on this computer.",
   dksLogin: 'The DKS Cloud user and password that manage this gate. The app uses them for every pull, send, relay change and scheduled transfer of this gate, for all its users. Kept encrypted on this computer and never shown again.',
   apiKeys: 'Keys for scripts and other systems (for example home automation) to use this gate without signing in. Each key works only on this gate, has its own role, and can be revoked at any time. Treat a key like a password.',
   gateRole: 'Admin: can change everything, including the gate\'s users and DKS login. Read only: can look at everything, pull from the gate and watch the cameras, but can\'t change anything.',
 
-  // Working copy
+  /** Working copy */
   approvalCode: 'Adding a passkey here when your passkey is on another device: on that device, open User Settings → Passkeys, click Approve another device and type its code here (or scan its QR code with this device\'s camera). The code works once, for 10 minutes.',
   workingCopy: 'Your changes are kept on this computer (the working copy) until you click Send to gate. Each pull from the gate updates it, with your unsent changes kept on top; something changed both at the gate and here is listed to decide (Keep mine or Take the gate\'s). Reset to gate throws away every change you have not sent.',
 
-  // Gate configuration
+  /** Gate configuration */
   siteName: 'A name for this gate, shown in the gate list. DKS Cloud also receives it with each connection.',
   memorySize: "The gate's memory size: how many residents it can hold (1000, 2000 or 3000). Must match the gate, or pulls fail.",
   areaCodes: 'How many area codes the gate can store: 255 (the usual setting) or 10. Must match the gate. Changing it rearranges the stored phone numbers.',
@@ -23,7 +25,7 @@ export const HELP: Record<string, string> = {
   showOnPage: 'Hides floor and elevator columns and pages when your building has none. Nothing on the gate changes, and the stored values are kept.',
   dirDigits: 'How many digits each directory code has (1–4). Making it larger adds leading zeros; making it smaller DELETES ALL RESIDENTS from the working copy.',
 
-  // Gate settings (System Settings)
+  /** Gate settings (System Settings) */
   masterCode: "The gate's master code, used to connect. Shown hidden; it can't be changed here.",
   talkTime: 'The longest a call from the entry panel to a resident can last, as minutes:seconds (up to 4:14).',
   outsideLineDigit: 'A digit the gate dials before every phone number to reach an outside line (often 9). Leave blank if your phone line needs none.',
@@ -34,7 +36,7 @@ export const HELP: Record<string, string> = {
   downloadStamp1: 'When data was last sent to the gate by another program (for example DoorKing\'s own software), as that program recorded it. This app keeps it as it is.',
   downloadStamp2: 'A second time written with the stamp above (a few seconds later). This app keeps it as it is.',
 
-  // Relays
+  /** Relays */
   liveRelays: 'These buttons switch the real relays right now, through DKS Cloud. Green = held open, red = released. A held-open gate stays open until you release it.',
   trackerExpansion: 'Tick the boards that are fitted. Tracker 2 adds relays 3–10 and is controlled by relay 2; Tracker 1 adds relays 11–18 and is controlled by relay 1. The controlling relay is then locked.',
   relayName: 'A name for this relay, such as "Front gate". Used on the buttons and other pages. Saved when you click away. Kept on this computer, not sent to the gate.',
@@ -44,7 +46,7 @@ export const HELP: Record<string, string> = {
   postalSwitch: 'Tick the relays the postal (mail carrier) key switch on the entry panel opens.',
   rotaryDial9: 'Tick the relays that open when a resident with an old rotary (pulse) phone dials 9 during a call.',
 
-  // Residents and vendors
+  /** Residents and vendors */
   directoryCode: 'The number a visitor enters on the entry panel to call this person. Each entry needs its own.',
   entryCode: 'A private code this person types at the keypad to open the gate themselves. Two entries can\'t share one.',
   securityLevel: 'When this person\'s entry code and cards work: Enabled = always, Disabled = never, 2–30 = only at the times set for that level on the Security Levels page.',
@@ -54,7 +56,7 @@ export const HELP: Record<string, string> = {
   cards: 'Card or remote numbers (00001–65407) that open the gate for this person, up to 25. Two entries can\'t share one.',
   notes: 'Your own notes about this person. Kept on this computer for everyone who manages this gate here. Never sent to the gate.',
 
-  // Gate settings pages
+  /** Gate settings pages */
   holdOpen: 'Times when the gate stays open by itself, for example during business hours. Each row has a start and end time, days, and the relays it holds open. The Hol row is used on holidays.',
   holidays: 'Dates the gate treats as holidays (month and day only). On these dates the Hol row of Hold Open applies, and time zone 4 of each security level if Holidays for Security Levels is on.',
   holidaysForSecurity: 'Makes time zone 4 of every security level the holiday time zone: on holiday dates it applies instead of the level\'s other time zones.',
@@ -68,11 +70,11 @@ export const HELP: Record<string, string> = {
   apbCounter: 'The gate can count how many cards are inside the facility. "Record Facility Counter Every" saves that count to the transactions at the chosen interval; "Reset" sets it to a number.',
   apbResync: 'Re-sync clears the in/out state of cards so they work again on any relay: all cards, a list of up to 5 card numbers, or all cards on a schedule.',
 
-  // System Settings
+  /** System Settings */
   deviceAssociation: 'Names for ranges of card numbers, for example "Residents 00001–00500". The name is shown as the Event Type of card visits on the Transactions page.',
   deleteGateData: 'Removes everything this app has stored about this gate, for everyone on this computer. The gate itself is not changed.',
 
-  // Cameras
+  /** Cameras */
   cameraSerial: 'The video recorder\'s serial number, as shown in the DMSS or SmartPSS app.',
   clockOffset: 'Seconds to add to the gate\'s time so it matches the recorder\'s clock. Change it if pictures show the wrong moment (for example -30 if they are 30 seconds late).',
   cameraMode: 'Save pictures (quick and small) or a 2-minute video of each visit (slow to fetch and large).',

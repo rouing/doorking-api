@@ -17,8 +17,16 @@ interface DeleteGateDataProps {
   onDeleted: () => void;
 }
 
-// Deletes everything this app stores about the gate (database rows for every user and the gate's folder), after a
-// warning. Nothing on the gate changes. Afterwards the gate is gone from every list, so the page returns to the list.
+/**
+ * Deletes everything this app stores about the gate (database rows for every user and the gate's folder), after a
+ * warning. Nothing on the gate changes. Afterwards the gate is gone from every list, so the page returns to the list.
+ *
+ * @param props - Component props.
+ * @param props.phone - Gate system phone number (digits or formatted).
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onDeleted - On deleted.
+ * @returns Rendered React element.
+ */
 function DeleteGateData({ phone, gapi, onDeleted }: DeleteGateDataProps) {
   const [dialog, confirm] = useConfirm();
   const [info, setInfo] = useState('');
@@ -56,7 +64,14 @@ interface WorkingCopyFilesProps {
   available: boolean;
 }
 
-// Downloads of the working copy's board files (names.map flags the 128-byte blocks of names.bin that changed).
+/**
+ * Downloads of the working copy's board files (names.map flags the 128-byte blocks of names.bin that changed).
+ *
+ * @param props - Component props.
+ * @param props.phone - Gate system phone number (digits or formatted).
+ * @param props.available - Available.
+ * @returns Rendered React element.
+ */
 function WorkingCopyFiles({ phone, available }: WorkingCopyFilesProps) {
   return (
     <Card>
@@ -91,9 +106,25 @@ interface SystemSettingsProps {
   onJobStarted: () => void;
 }
 
-// System Settings: gate login and users (admins), gate configuration, gate settings (working copy), working copy
-// files, device association, cameras and deleting the gate's stored data. Relay names are on the
-// Relays page; dark mode is in User Settings. Read-only users see the gate's configuration and settings, disabled.
+/**
+ * System Settings: gate login and users (admins), gate configuration, gate settings (working copy), working copy
+ * files, device association, cameras and deleting the gate's stored data. Relay names are on the
+ * Relays page; dark mode is in User Settings. Read-only users see the gate's configuration and settings, disabled.
+ *
+ * @param props - Component props.
+ * @param props.phone - Gate system phone number (digits or formatted).
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.prefs - Gate-scoped preferences object.
+ * @param props.defaults - Defaults.
+ * @param props.list - List of input items.
+ * @param props.cameras - Camera runner instance.
+ * @param props.user - Local account username (or actor name for audit logs).
+ * @param props.emailEnabled - Email enabled.
+ * @param props.onReload - Callback to reload the gate data.
+ * @param props.onSessionChange - On session change.
+ * @param props.onJobStarted - On job started.
+ * @returns Rendered React element.
+ */
 export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, user, emailEnabled, onReload, onSessionChange, onJobStarted }: SystemSettingsProps) {
   const settings = useGateSettings(gapi);
   const readOnly = useReadOnly();

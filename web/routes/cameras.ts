@@ -1,13 +1,23 @@
-// Camera settings, live views and snapshots.
+/**
+ * @module web/routes/cameras
+ *
+ * Camera settings, live views and snapshots.
+ */
 import * as dk from '../../index.ts';
 import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
 import { logger } from '../../src/logging.ts';
 
+/**
+ * Cameras routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function camerasRoutes(modules: Modules): Route[] {
   const { cameras, store } = modules.context;
   const { cameraTransactions } = modules.editing;
-  const { forgetSnapRun, queueSnapshots, refreshSnapshot, saveCameras, sendImage, sendVideo, snapRunOf, stopSnapshots } = modules.snapshots;
+  const { forgetSnapRun, queueSnapshots, refreshSnapshot, saveCameras, sendMedia, snapRunOf, stopSnapshots } = modules.snapshots;
   return [
     // Camera settings for this gate (shared by every account that manages it). The password is never returned;
     // PUT with a blank password keeps the saved one. Body: { enabled, serial, username, password,
@@ -34,30 +44,35 @@ export function camerasRoutes(modules: Modules): Route[] {
     }),
     // Live view of a saved channel as MJPEG for an <img> (?quality=high: the main stream, else the sub stream).
     // The stream ends when the browser drops the request; 502 { error } when no picture came.
-    route('GET', `${G}/cameras/live/:channel`, 'gate', async ({ session, gate, params, req, res }) => {
+    route('GET', `${G}/cameras/live/:channel`, 'gate', async ({ session, gate, params, req, reply }) => {
       const cfg = await dk.recorderSettings(store, gate.phoneNumber);
       if (!cfg) return [404, { error: 'Save the camera settings first' }];
       const channel = Number(params.channel);
       if (!cfg.channels.some((saved) => saved.channel === channel)) return [404, { error: 'Not a saved channel' }];
-      const sub = new URL(req.url!, 'http://localhost').searchParams.get('quality') !== 'high';
+      const sub = (req.query as Record<string, string | undefined>).quality !== 'high';
       const abort = new AbortController();
-      res.on('close', () => abort.abort());
+      const raw = reply.raw;
+      raw.on('close', () => abort.abort());
       const name = `Gate ${gate.phoneNumber}: live view of channel ${channel} (${sub ? 'low' : 'high'})`;
       const started = Date.now();
       logger('camera').info`${name} opened by ${session.user}`;
+      let hijacked = false;
       try {
-        await cameras.liveStream(cfg, channel, res, { sub, signal: abort.signal, onStart: () => {
+        await cameras.liveStream(cfg, channel, raw, { sub, signal: abort.signal, onStart: () => {
           logger('camera').info`${name}: first picture after ${Math.round((Date.now() - started) / 1000)} s`;
-          res.writeHead(200, {
+          hijacked = true;
+          reply.hijack();
+          raw.writeHead(200, {
             'Content-Type': 'multipart/x-mixed-replace; boundary=frame', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
           });
         } });
       } catch (err) {
-        if (!res.headersSent && !abort.signal.aborted) return [502, { error: (err as Error).message }];
+        if (!hijacked && !abort.signal.aborted) return [502, { error: (err as Error).message }];
         logger('camera').error`${name} failed: ${(err as Error).message}`;
       }
       logger('camera').info`${name} ended after ${Math.round((Date.now() - started) / 1000)} s${abort.signal.aborted ? ' (closed in the browser)' : ''}`;
-      if (!res.writableEnded) res.end();
+      if (!hijacked) reply.hijack();
+      if (!raw.writableEnded) raw.end();
       return undefined;
     }),
 
@@ -104,15 +119,10 @@ export function camerasRoutes(modules: Modules): Route[] {
       if (running && running.state === 'running') return [409, { error: 'Wait for the snapshot run to finish, or stop it' }];
       return [200, { snapshot: await refreshSnapshot(gate.phoneNumber, gate.dir, params.minute, params.file) }];
     }),
-    route('GET', `${G}/snapshots/:minute/:file`, 'gate', ({ gate, params, req, res }) => {
+    route('GET', `${G}/snapshots/:minute/:file`, 'gate', ({ gate, params, reply }) => {
       const file = dk.snapshotFile(gate.dir, params.minute, params.file);
       if (!file) return [404, { error: 'Snapshot not found' }];
-      if (file.endsWith('.mp4')) {
-        sendVideo(req, res, file);
-        return undefined;
-      }
-      sendImage(res, file);
-      return undefined;
+      return sendMedia(reply, file);
     }),
   ];
 }

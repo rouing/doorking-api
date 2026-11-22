@@ -10,8 +10,16 @@ interface ConflictListProps {
   onDecided: () => Promise<void> | void;
 }
 
-// Items changed differently at the gate and in the working copy, each with Keep mine / Take the gate's (admins).
-// Sending waits until every one is decided.
+/**
+ * Items changed differently at the gate and in the working copy, each with Keep mine / Take the gate's (admins).
+ * Sending waits until every one is decided.
+ *
+ * @param props - Component props.
+ * @param props.conflicts - Conflicts.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onDecided - On decided.
+ * @returns Rendered React element.
+ */
 export function ConflictList({ conflicts, gapi, onDecided }: ConflictListProps) {
   const readOnly = useReadOnly();
   const [error, setError] = useState('');
@@ -41,7 +49,7 @@ export function ConflictList({ conflicts, gapi, onDecided }: ConflictListProps) 
   );
 }
 
-// The working copy's state: a label and colour for it, whether it has unsent changes, and its conflicts.
+/** The working copy's state: a label and colour for it, whether it has unsent changes, and its conflicts. */
 export interface WorkingCopyState {
   edited: boolean;
   conflicts: ConflictView[];
@@ -49,6 +57,12 @@ export interface WorkingCopyState {
   color: 'gray' | 'red' | 'amber' | 'green';
 }
 
+/**
+ * Working copy state.
+ *
+ * @param cache - `ResidentsReply['cache'] | null` value.
+ * @returns `WorkingCopyState` result.
+ */
 export function workingCopyState(cache: ResidentsReply['cache'] | null): WorkingCopyState {
   const edited = Boolean(cache && cache.edited);
   const conflicts = cache ? cache.conflicts : [];
@@ -67,8 +81,19 @@ export interface WorkingCopyActionsOptions {
   sendLines?: string[]; // more lines for the send confirmation
 }
 
-// Reset to gate (drops the unsent changes) and Send to gate (then a residents pull checks the gate holds it), each
-// after a confirmation. Render `dialog` once.
+/**
+ * Reset to gate (drops the unsent changes) and Send to gate (then a residents pull checks the gate holds it), each
+ * after a confirmation. Render `dialog` once.
+ *
+ * @param options - Options object.
+ * @param options.gapi - Gate-scoped API fetch helper.
+ * @param options.onReload - Callback to reload the gate data.
+ * @param options.onJobStarted - On job started.
+ * @param options.notify - Notify.
+ * @param options.onError - On error.
+ * @param [options.sendLines] - Send lines.
+ * @returns Operation result.
+ */
 export function useWorkingCopyActions({ gapi, onReload, onJobStarted, notify, onError, sendLines = [] }: WorkingCopyActionsOptions) {
   const [dialog, confirm] = useConfirm();
   async function reset() {
@@ -106,8 +131,20 @@ export interface GateActionsOptions {
 
 const SEND_NOTE = 'Only changes saved to the working copy are sent; unsaved edits on a page stay there.';
 
-// Send to gate and Reset to gate for the sidebar's gate connection and the phone's Gate sheet: the actions, and when
-// each is unavailable (canSend, canReset; sendHint says why Send can't run).
+/**
+ * Send to gate and Reset to gate for the sidebar's gate connection and the phone's Gate sheet: the actions, and when
+ * each is unavailable (canSend, canReset; sendHint says why Send can't run).
+ *
+ * @param options - Options object.
+ * @param options.gapi - Gate-scoped API fetch helper.
+ * @param options.workingCopy - Working copy.
+ * @param options.hasWorkingCopy - Has working copy.
+ * @param options.running - Running.
+ * @param options.onReset - On reset.
+ * @param options.onJobStarted - On job started.
+ * @param options.onNotify - On notify.
+ * @returns Operation result.
+ */
 export function useGateActions({ gapi, workingCopy, hasWorkingCopy, running, onReset, onJobStarted, onNotify }: GateActionsOptions) {
   const actions = useWorkingCopyActions({ gapi, onReload: onReset, onJobStarted, notify: onNotify, onError: onNotify, sendLines: [SEND_NOTE] });
   const conflicts = workingCopy.conflicts.length > 0;
@@ -121,7 +158,14 @@ export function useGateActions({ gapi, workingCopy, hasWorkingCopy, running, onR
 
 interface SendSummaryProps { preview: SendPreview; lines: string[] }
 
-// What a send changes, for its confirmation.
+/**
+ * What a send changes, for its confirmation.
+ *
+ * @param props - Component props.
+ * @param props.preview - Preview.
+ * @param props.lines - Lines.
+ * @returns Rendered React element.
+ */
 function SendSummary({ preview, lines }: SendSummaryProps) {
   const blocks = Object.entries(preview.changedBlocks).filter(([, changed]) => changed.length);
   return (
@@ -141,8 +185,16 @@ interface WorkingCopyBarProps {
   onReload: () => Promise<void>;
 }
 
-// The working copy's conflicts, on the Residents and Vendors pages. Its state, Reset to gate and Send to gate are in
-// the sidebar (phones: the top bar and the Gate tab, GateApp).
+/**
+ * The working copy's conflicts, on the Residents and Vendors pages. Its state, Reset to gate and Send to gate are in
+ * the sidebar (phones: the top bar and the Gate tab, GateApp).
+ *
+ * @param props - Component props.
+ * @param props.cache - Cache.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onReload - Callback to reload the gate data.
+ * @returns Rendered React element.
+ */
 export function WorkingCopyBar({ cache, gapi, onReload }: WorkingCopyBarProps) {
   return <ConflictList conflicts={workingCopyState(cache).conflicts} gapi={gapi} onDecided={onReload} />;
 }

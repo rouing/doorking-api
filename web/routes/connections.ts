@@ -1,8 +1,18 @@
-// Gate connections (pull, send, login check) and the pulled data views.
+/**
+ * @module web/routes/connections
+ *
+ * Gate connections (pull, send, login check) and the pulled data views.
+ */
 import * as dk from '../../index.ts';
 import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
 
+/**
+ * Connections routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function connectionsRoutes(modules: Modules): Route[] {
   const { gateData, TX_PAGE, TX_PAGE_MAX } = modules.editing;
   const { accountBusy, busy, currentJob, prepareGateSend, startPull, startSend } = modules.jobs;
@@ -34,9 +44,9 @@ export function connectionsRoutes(modules: Modules): Route[] {
     // Transactions and settings views from the pulled files.
     // ?limit= (default TX_PAGE, at most TX_PAGE_MAX) newest transactions, ?before= the previous reply's transactions.next.
     route('GET', `${G}/data`, 'gate', async ({ gate, req }) => {
-      const query = new URL(req.url!, 'http://localhost').searchParams;
-      const limit = query.has('limit') ? Number(query.get('limit')) : TX_PAGE;
-      const before = query.has('before') ? Number(query.get('before')) : undefined;
+      const query = req.query as Record<string, string | undefined>;
+      const limit = query.limit !== undefined ? Number(query.limit) : TX_PAGE;
+      const before = query.before !== undefined ? Number(query.before) : undefined;
       if (!Number.isInteger(limit) || limit < 1 || limit > TX_PAGE_MAX || (before !== undefined && !(Number.isInteger(before) && before >= 1 && before <= 2147483647))) {
         return [400, { error: `limit must be 1-${TX_PAGE_MAX} and before a positive whole number` }];
       }

@@ -1,25 +1,60 @@
-// Camera snapshots. Each transaction's `minute` (YYYYMMDD-HHMM) names its snapshot folder; every transaction in
-// the same minute shows the same frames. Frame files are ch<N>-<SS>.jpg (SS = seconds into the minute) and
-// ch<N>-a<SS>.jpg (seconds into the minute after it). In video mode each channel has ch<N>.mp4 (2 minutes from the
-// minute's start) with its first frame in ch<N>.jpg.
+/**
+ * @module web/ui/camera/snapshots
+ *
+ * Camera snapshots. Each transaction's `minute` (YYYYMMDD-HHMM) names its snapshot folder; every transaction in
+ * the same minute shows the same frames. Frame files are ch<N>-<SS>.jpg (SS = seconds into the minute) and
+ * ch<N>-a<SS>.jpg (seconds into the minute after it). In video mode each channel has ch<N>.mp4 (2 minutes from the
+ * minute's start) with its first frame in ch<N>.jpg.
+ */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CameraSettings, SnapshotMinute, SnapshotRun, SnapshotsReply } from '../../../src/types.ts';
 import { errorText, gateUrl, type GateApi } from '../api.ts';
 import { fmtTime } from '../format.ts';
 import { frameJobs, posterFile } from '../../../src/snapshot-files.ts';
 
+/**
+ * Is video.
+ *
+ * @param file - File path or filename.
+ * @returns Computed result.
+ */
 export const isVideo = (file: string) => file.endsWith('.mp4');
 export const posterOf = posterFile;
+/**
+ * File channel.
+ *
+ * @param file - File path or filename.
+ * @returns Computed result.
+ */
 export const fileChannel = (file: string) => Number(/^ch(\d+)/.exec(file)![1]);
+/**
+ * Fmt minute.
+ *
+ * @param minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @returns Computed result.
+ */
 export const fmtMinute = (minute: string) => `${minute.slice(0, 4)}-${minute.slice(4, 6)}-${minute.slice(6, 8)} ${minute.slice(9, 11)}:${minute.slice(11)}`;
 
+/**
+ * Frame caption.
+ *
+ * @param file - File path or filename.
+ * @returns Operation result.
+ */
 export function frameCaption(file: string) {
   if (isVideo(file)) return '2-minute video';
   const [, after, seconds] = /-(a?)(\d+)\.jpg$/.exec(file)!;
   return `+${Number(seconds)} s${after ? ' after the minute' : ''}`;
 }
 
-// Gate time (H:MM:SS) of frame f of minute, taken `shift` seconds off its planned time.
+/**
+ * Gate time (H:MM:SS) of frame f of minute, taken `shift` seconds off its planned time.
+ *
+ * @param minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @param file - File path or filename.
+ * @param shift - `number` value.
+ * @returns Operation result.
+ */
 export function shiftedTime(minute: string, file: string, shift: number) {
   const [, year, month, day, hour, minuteOfHour] = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(minute)!.map(Number);
   const [, after, seconds] = /-(a?)(\d+)\.jpg$/.exec(file)!;
@@ -27,8 +62,14 @@ export function shiftedTime(minute: string, file: string, shift: number) {
     .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 }
 
-// Every frame of a minute: the camera settings' frames (or videos) plus any other saved file. A minute saved only
-// in the other mode shows just its saved files; in video mode a minute with a saved video shows only its videos.
+/**
+ * Every frame of a minute: the camera settings' frames (or videos) plus any other saved file. A minute saved only
+ * in the other mode shows just its saved files; in video mode a minute with a saved video shows only its videos.
+ *
+ * @param settings - Settings map or configuration.
+ * @param snapshot - `SnapshotMinute` value.
+ * @returns `string[]` result.
+ */
 export function snapFiles(settings: CameraSettings | null, snapshot: SnapshotMinute): string[] {
   const video = Boolean(settings && settings.mode === 'video');
   let saved = snapshot.files;
@@ -38,7 +79,13 @@ export function snapFiles(settings: CameraSettings | null, snapshot: SnapshotMin
   return [...new Set([...want, ...saved])].sort();
 }
 
-// One line about the current or last snapshot run.
+/**
+ * One line about the current or last snapshot run.
+ *
+ * @param run - `SnapshotRun | null` value.
+ * @param noun - `string` value.
+ * @returns `string` result.
+ */
 function runText(run: SnapshotRun | null, noun: string): string {
   if (!run) return '';
   const progress = run.progress;
@@ -62,7 +109,14 @@ function runText(run: SnapshotRun | null, noun: string): string {
 
 export type Snaps = ReturnType<typeof useSnapshots>;
 
-// The snapshot log and the current run (polled every 2 s while it runs), and single-picture refreshes.
+/**
+ * The snapshot log and the current run (polled every 2 s while it runs), and single-picture refreshes.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param gapi - Gate-scoped API fetch helper.
+ * @param settings - Settings map or configuration.
+ * @returns Operation result.
+ */
 export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSettings | null) {
   const [snapshots, setSnapshots] = useState<Record<string, SnapshotMinute>>({});
   const [run, setRun] = useState<SnapshotRun | null>(null);
@@ -76,8 +130,10 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
   const video = Boolean(settings && settings.mode === 'video');
   const noun = video ? 'videos' : 'pictures';
 
-  // Polls every 2 s while a run is going (a failed check is tried again). pollGen: bumped on cleanup, so a check still
-  // on its way doesn't start polling again for a closed gate.
+  /**
+   * Polls every 2 s while a run is going (a failed check is tried again). pollGen: bumped on cleanup, so a check still
+   * on its way doesn't start polling again for a closed gate.
+   */
   const load = useCallback(async () => {
     clearTimeout(timer.current);
     if (!settings) { setSnapshots({}); setRun(null); return; }
@@ -115,7 +171,14 @@ export function useSnapshots(phone: string, gapi: GateApi, settings: CameraSetti
     setRefreshing(({ [key]: _, ...rest }) => rest);
   };
 
-  // URL of file (or of url, e.g. a video's picture) with the refresh version of file.
+  /**
+   * URL of file (or of url, e.g. a video's picture) with the refresh version of file.
+   *
+   * @param minute - Transaction minute key (`YYYYMMDD-HHMM`).
+   * @param file - File path or filename.
+   * @param [url] - Target URL.
+   * @returns Computed result.
+   */
   const src = (minute: string, file: string, url = file) => gateUrl(phone, `/snapshots/${minute}/${url}`)
     + (versions[`${minute}/${file}`] ? `?v=${versions[`${minute}/${file}`]}` : '');
 

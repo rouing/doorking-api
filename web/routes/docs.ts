@@ -1,17 +1,28 @@
-// The user guide and the API documentation pages.
+/**
+ * @module web/routes/docs
+ *
+ * The user guide and the API documentation pages.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ServerResponse } from 'node:http';
 import { helpPage } from '../../src/markdown.ts';
 import { type Route, route } from '../routing.ts';
 import type { Modules } from '../modules.ts';
 
+/**
+ * Docs routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function docsRoutes(modules: Modules): Route[] {
-  const { HERE, send } = modules.context;
+  const { HERE } = modules.context;
   const MANUAL = path.join(HERE, '..', 'docs', 'MANUAL.md');
-  // The API-key routes as OpenAPI 3.1 (docs/openapi.json, kept in step with ROUTES by a test) and a Swagger UI page
-  // for it at /api/docs, served from node_modules/swagger-ui-dist (no CDN, so the CSP stays 'self').
-  const OPENAPI = path.join(HERE, '..', 'docs', 'openapi.json');
+  /**
+   * The API-key routes as OpenAPI 3.1 (docs/openapi.json, kept in step with ROUTES by a test) and a Swagger UI page
+   * for it at /api/docs, served from node_modules/swagger-ui-dist (no CDN, so the CSP stays 'self').
+   */
+  const DOCS_DIR = path.join(HERE, '..', 'docs');
   const SWAGGER_DIR = path.join(HERE, '..', 'node_modules', 'swagger-ui-dist');
   const SWAGGER_FILES: Record<string, string> = {
     'swagger-ui.css': 'text/css', 'swagger-ui-bundle.js': 'text/javascript', 'favicon-32x32.png': 'image/png', 'favicon-16x16.png': 'image/png',
@@ -23,27 +34,18 @@ export function docsRoutes(modules: Modules): Route[] {
 <body><div id="swagger-ui"></div><script src="/api/docs/swagger-ui-bundle.js"></script><script src="/api/docs/init.js"></script></body></html>`;
   const DOCS_INIT = `window.ui = SwaggerUIBundle({ url: '/api/openapi.json', dom_id: '#swagger-ui', deepLinking: true, persistAuthorization: false,
   tryItOutEnabled: false, displayRequestDuration: true, defaultModelsExpandDepth: 0 });`;
-  // Like send(), with images from data: URLs allowed (Swagger UI's icons).
-  function sendDocs(res: ServerResponse, body: string | Buffer, type: string) {
-    res.writeHead(200, {
-      'Content-Type': type.startsWith('image/') ? type : `${type}; charset=utf-8`, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
-      'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
-    });
-    res.end(body);
-  }
   return [
     // The user guide (docs/MANUAL.md) as a page, read on each request so edits show at once. Public: it holds no gate data.
-    route('GET', '/help', 'public', ({ res }) => { send(res, 200, helpPage(fs.readFileSync(MANUAL, 'utf8')), 'text/html'); return undefined; }),
+    route('GET', '/help', 'public', ({ reply }) => reply.type('text/html; charset=utf-8').send(helpPage(fs.readFileSync(MANUAL, 'utf8')))),
 
     // The API-key routes as OpenAPI (public: it holds no data) and the browsable docs page.
-    route('GET', '/api/openapi.json', 'public', ({ res }) => { sendDocs(res, fs.readFileSync(OPENAPI, 'utf8'), 'application/json'); return undefined; }),
-    route('GET', '/api/docs', 'public', ({ res }) => { sendDocs(res, DOCS_PAGE, 'text/html'); return undefined; }),
-    route('GET', '/api/docs/:file', 'public', ({ params, res }) => {
-      if (params.file === 'init.js') { sendDocs(res, DOCS_INIT, 'text/javascript'); return undefined; }
+    route('GET', '/api/openapi.json', 'public', ({ reply }) => reply.header('Cache-Control', 'no-cache').type('application/json; charset=utf-8').sendFile('openapi.json', DOCS_DIR, { cacheControl: false })),
+    route('GET', '/api/docs', 'public', ({ reply }) => reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(DOCS_PAGE)),
+    route('GET', '/api/docs/:file', 'public', ({ params, reply }) => {
+      if (params.file === 'init.js') return reply.header('Cache-Control', 'no-cache').type('text/javascript; charset=utf-8').send(DOCS_INIT);
       const type = SWAGGER_FILES[params.file];
       if (!type) return [404, { error: 'Not found' }];
-      sendDocs(res, fs.readFileSync(path.join(SWAGGER_DIR, params.file)), type);
-      return undefined;
+      return reply.header('Cache-Control', 'no-cache').type(type).sendFile(params.file, SWAGGER_DIR, { cacheControl: false });
     }),
   ];
 }

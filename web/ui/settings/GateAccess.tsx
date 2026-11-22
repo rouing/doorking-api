@@ -1,4 +1,8 @@
-// Who can reach the gate (admins): its DKS login and master code, gate users and API keys.
+/**
+ * @module web/ui/settings/GateAccess
+ *
+ * Who can reach the gate (admins): its DKS login and master code, gate users and API keys.
+ */
 import { useEffect, useState } from 'react';
 import { Badge, Button, Callout, Card, Flex, Grid, Heading, Link, Table, Text, TextField } from '@radix-ui/themes';
 import type { ApiKeyInfo, GateLogin, GateRole, GateUser } from '../../../src/types.ts';
@@ -13,8 +17,15 @@ interface GateLoginCardProps {
   onJobStarted: () => void;
 }
 
-// The gate's DKS login and master code (admins). A new DKS login is checked with DKS Cloud before it is saved; a new
-// master code is checked by pulling residents with it and saved only when that works. Neither is ever shown.
+/**
+ * The gate's DKS login and master code (admins). A new DKS login is checked with DKS Cloud before it is saved; a new
+ * master code is checked by pulling residents with it and saved only when that works. Neither is ever shown.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onJobStarted - On job started.
+ * @returns Rendered React element.
+ */
 export function GateLoginCard({ gapi, onJobStarted }: GateLoginCardProps) {
   const [login, setLogin] = useState<GateLogin | null>(null);
   const [form, setForm] = useState({ dksUser: '', dksPassword: '', masterCode: '' });
@@ -74,8 +85,17 @@ interface GateUsersCardProps {
   onSessionChange: () => void;
 }
 
-// Who may use this gate (admins): roles, removing access, creating an account for the gate, and sharing it with an
-// existing account. A gate always keeps at least one admin; nobody can see or set another user's password.
+/**
+ * Who may use this gate (admins): roles, removing access, creating an account for the gate, and sharing it with an
+ * existing account. A gate always keeps at least one admin; nobody can see or set another user's password.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.me - Me.
+ * @param props.emailEnabled - Email enabled.
+ * @param props.onSessionChange - On session change.
+ * @returns Rendered React element.
+ */
 export function GateUsersCard({ gapi, me, emailEnabled, onSessionChange }: GateUsersCardProps) {
   const [users, setUsers] = useState<GateUser[]>([]);
   const [info, setInfo] = useState('');
@@ -186,8 +206,15 @@ interface ApiKeysCardProps {
   gapi: GateApi;
 }
 
-// API keys for scripts and other systems (admins). A key belongs to this gate, not to a person; it is shown once when
-// created and works only on this gate's routes, with its own role. Revoking stops it at once.
+/**
+ * API keys for scripts and other systems (admins). A key belongs to this gate, not to a person; it is shown once when
+ * created and works only on this gate's routes, with its own role. Revoking stops it at once.
+ *
+ * @param props - Component props.
+ * @param props.phone - Gate system phone number (digits or formatted).
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @returns Rendered React element.
+ */
 export function ApiKeysCard({ phone, gapi }: ApiKeysCardProps) {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
   const [form, setForm] = useState({ name: '', role: 'readonly' as GateRole, expiresDays: '0' });

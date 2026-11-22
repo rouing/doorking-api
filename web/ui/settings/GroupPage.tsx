@@ -8,11 +8,23 @@ import type { GateSettings } from './useGateSettings.ts';
 export const DAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 export const CLEAR_NOTE = 'Clear sets every setting on this page back to unset.'; // the gate stores relays 0-18; values for the others are kept unchanged
 
-// How rowState judges a row: edited / pending override what the fields say (rows that also show relay columns);
-// pendingText is the status of a saved, unsent row.
+/**
+ * How rowState judges a row: edited / pending override what the fields say (rows that also show relay columns);
+ * pendingText is the status of a saved, unsent row.
+ */
 interface RowStateOptions { edited?: boolean; pending?: boolean; pendingText?: string }
 
-// Row colour and status of a group of settings: blue = unsaved edit, green = saved but not sent to the gate.
+/**
+ * Row colour and status of a group of settings: blue = unsaved edit, green = saved but not sent to the gate.
+ *
+ * @param settings - Settings map or configuration.
+ * @param fields - Field names or field updates.
+ * @param [options] - Options object.
+ * @param [options.edited] - Edited.
+ * @param [options.pending] - Pending.
+ * @param [options.pendingText] - Pending text.
+ * @returns Operation result.
+ */
 export function rowState(settings: GateSettings, fields: (GateSettingRow | undefined)[], { edited, pending, pendingText = 'not sent' }: RowStateOptions = {}) {
   const list = fields.filter((field): field is GateSettingRow => Boolean(field));
   const isEdited = edited ?? list.some((setting) => setting.key in settings.edits);
@@ -28,7 +40,17 @@ interface BoxProps {
   help?: string;
 }
 
-// A checkbox, with an optional label and "?" tip (help: a key in HELP).
+/**
+ * A checkbox, with an optional label and "?" tip (help: a key in HELP).
+ *
+ * @param props - Component props.
+ * @param props.checked - Checked.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @param props.disabled - Whether the control is disabled.
+ * @param props.label - Display label.
+ * @param props.help - A key in HELP.
+ * @returns Operation result.
+ */
 export function Box({ checked, onChange, disabled, label, help }: BoxProps) {
   const box = <Checkbox checked={checked} disabled={disabled} onCheckedChange={(checked) => onChange(checked === true)} />;
   return label ? <Text as="label" size="2"><Flex gap="1" align="center">{box}{label}{help && <HelpTip of={help} />}</Flex></Text> : box;
@@ -39,12 +61,26 @@ interface TimeBoxProps {
   onChange: (v: string) => void;
 }
 
-// The browser's own time input (sized to the time), styled like the other fields.
+/**
+ * The browser's own time input (sized to the time), styled like the other fields.
+ *
+ * @param props - Component props.
+ * @param props.value - Input value.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @returns Rendered React element.
+ */
 export function TimeBox({ value, onChange }: TimeBoxProps) {
   return <input type="time" className="time-input" value={value} onChange={(event) => onChange(event.target.value)} />;
 }
 
-// A string of '0'/'1' flags with position i set to on.
+/**
+ * A string of '0'/'1' flags with position i set to on.
+ *
+ * @param bits - `string` value.
+ * @param i - `number` value.
+ * @param on - `boolean` value.
+ * @returns Operation result.
+ */
 export const setBit = (bits: string, i: number, on: boolean) => {
   const flags = [...bits.padEnd(i + 1, '0')];
   flags[i] = on ? '1' : '0';
@@ -62,9 +98,22 @@ interface GroupPageProps {
   children: ReactNode;
 }
 
-// A page editing one group of gate settings in the working copy (Save / Discard, plus `buttons`), then `children`.
-// clearValue: adds a Clear button that sets each setting of the group to its unset value (undefined = leave it).
-// help: a key in HELP, shown as a "?" tip after the title.
+/**
+ * A page editing one group of gate settings in the working copy (Save / Discard, plus `buttons`), then `children`.
+ * clearValue: adds a Clear button that sets each setting of the group to its unset value (undefined = leave it).
+ * help: a key in HELP, shown as a "?" tip after the title.
+ *
+ * @param props - Component props.
+ * @param props.title - Title.
+ * @param props.intro - Intro.
+ * @param props.settings - Settings map or configuration.
+ * @param props.group - Group.
+ * @param props.buttons - Buttons.
+ * @param props.clearValue - Optional function returning each setting's cleared value (`undefined` leaves the field unchanged).
+ * @param props.help - A key in HELP, shown as a "?" tip after the title.
+ * @param props.children - Children.
+ * @returns Rendered React element.
+ */
 export function GroupPage({ title, intro, settings, group, buttons, clearValue, help, children }: GroupPageProps) {
   const [saved, setSaved] = useState('');
   const fields = settings.fields.filter((setting) => setting.group === group);
@@ -103,7 +152,13 @@ interface HeadProps {
   cols: string[];
 }
 
-// Header row of plain column labels.
+/**
+ * Header row of plain column labels.
+ *
+ * @param props - Component props.
+ * @param props.cols - Table column definitions.
+ * @returns Rendered React element.
+ */
 export function Head({ cols }: HeadProps) {
   return <Table.Header><Table.Row>{cols.map((column, i) => <Table.ColumnHeaderCell key={i}>{column}</Table.ColumnHeaderCell>)}</Table.Row></Table.Header>;
 }

@@ -1,4 +1,8 @@
-// The signed-in user's own settings page.
+/**
+ * @module web/ui/account/UserSettings
+ *
+ * The signed-in user's own settings page.
+ */
 import { useState } from 'react';
 import { Badge, Button, Card, Checkbox, Flex, Heading, Text, TextField } from '@radix-ui/themes';
 import { api, errorText } from '../api.ts';
@@ -14,7 +18,14 @@ interface UserSettingsProps {
   onSaved: () => void;
 }
 
-// The signed-in user's own settings: dark mode, email and password. onSaved reloads the session (dark mode).
+/**
+ * The signed-in user's own settings: dark mode, email and password. onSaved reloads the session (dark mode).
+ *
+ * @param props - Component props.
+ * @param props.session - Authenticated user or API-key session.
+ * @param props.onSaved - On saved.
+ * @returns Rendered React element.
+ */
 export function UserSettings({ session, onSaved }: UserSettingsProps) {
   const [email, setEmail] = useState(session.pendingEmail || session.email);
   const [emailPassword, setEmailPassword] = useState('');

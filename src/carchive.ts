@@ -1,4 +1,4 @@
-// Reader for MFC CArchive files (little-endian, length-prefixed strings, class tags).
+/** Reader for MFC CArchive files (little-endian, length-prefixed strings, class tags). */
 export class ArchiveReader {
   private readonly buf: Buffer;
   private position = 0;
@@ -8,7 +8,7 @@ export class ArchiveReader {
     this.buf = buffer;
   }
 
-  // Bytes read so far.
+  /** Bytes read so far. */
   get pos(): number {
     return this.position;
   }
@@ -17,35 +17,65 @@ export class ArchiveReader {
     return this.position >= this.buf.length;
   }
 
+  /**
+   * U8.
+   *
+   * @returns `number` result.
+   */
   u8(): number {
     return this.buf[this.position++];
   }
 
+  /**
+   * U16.
+   *
+   * @returns `number` result.
+   */
   u16(): number {
     const value = this.buf.readUInt16LE(this.position);
     this.position += 2;
     return value;
   }
 
+  /**
+   * I16.
+   *
+   * @returns `number` result.
+   */
   i16(): number {
     const value = this.buf.readInt16LE(this.position);
     this.position += 2;
     return value;
   }
 
+  /**
+   * U32.
+   *
+   * @returns `number` result.
+   */
   u32(): number {
     const value = this.buf.readUInt32LE(this.position);
     this.position += 4;
     return value;
   }
 
+  /**
+   * Bytes.
+   *
+   * @param length - `number` value.
+   * @returns `Buffer` result.
+   */
   bytes(length: number): Buffer {
     const value = this.buf.subarray(this.position, this.position + length);
     this.position += length;
     return value;
   }
 
-  // CString: 1-byte length, or 0xFF + 2-byte length, or 0xFF 0xFFFF + 4-byte length.
+  /**
+   * CString: 1-byte length, or 0xFF + 2-byte length, or 0xFF 0xFFFF + 4-byte length.
+   *
+   * @returns `string` result.
+   */
   string(): string {
     let length = this.u8();
     if (length === 0xff) {
@@ -55,8 +85,13 @@ export class ArchiveReader {
     return this.buf.toString('latin1', this.position, (this.position += length));
   }
 
-  // Object tag before a serialized CObject. Returns the class name.
-  // 0xFFFF = new class (schema + name follow); 0x8000|index = class seen before.
+  /**
+   * Object tag before a serialized CObject. Returns the class name.
+   * 0xFFFF = new class (schema + name follow); 0x8000|index = class seen before.
+   *
+   * @returns `string` result.
+   * @throws Error when validation or the underlying operation fails.
+   */
   classTag(): string {
     const tag = this.u16();
     if (tag === 0xffff) {

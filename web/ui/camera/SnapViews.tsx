@@ -12,8 +12,18 @@ interface SnapTileProps {
   onOpen?: () => void;
 }
 
-// One saved picture (or video), or a "?" box when it is missing, with a ↻ button that fetches it again.
-// thumb: the small Transactions-table version; clicking it opens the viewer.
+/**
+ * One saved picture (or video), or a "?" box when it is missing, with a ↻ button that fetches it again.
+ * thumb: the small Transactions-table version; clicking it opens the viewer.
+ *
+ * @param props - Component props.
+ * @param props.transaction - Transaction record or row.
+ * @param props.file - File path or filename.
+ * @param props.thumb - The small Transactions-table version.
+ * @param props.snaps - Gate snapshot state and actions hook.
+ * @param props.onOpen - On open.
+ * @returns Rendered React element.
+ */
 function SnapTile({ transaction, file, thumb, snaps, onOpen }: SnapTileProps) {
   const snapshot = snaps.snapshots[transaction.minute];
   const key = `${transaction.minute}/${file}`;
@@ -51,7 +61,14 @@ interface SnapBarProps {
   snaps: Snaps;
 }
 
-// Progress for a transaction's minute while the snapshot run still has frames to fetch for it.
+/**
+ * Progress for a transaction's minute while the snapshot run still has frames to fetch for it.
+ *
+ * @param props - Component props.
+ * @param props.minute - Transaction minute key (`YYYYMMDD-HHMM`).
+ * @param props.snaps - Gate snapshot state and actions hook.
+ * @returns Rendered React element.
+ */
 function SnapBar({ minute, snaps }: SnapBarProps) {
   const counts = snaps.byMinute[minute];
   const now = minute === snaps.current;
@@ -70,8 +87,16 @@ interface SnapCellProps {
   onOpen: (transaction: TransactionRow) => void;
 }
 
-// The Camera cell of a transaction: each channel's first saved frame, a progress bar while the run fetches its
-// minute, or a button that gets that minute's pictures (or video) only.
+/**
+ * The Camera cell of a transaction: each channel's first saved frame, a progress bar while the run fetches its
+ * minute, or a button that gets that minute's pictures (or video) only.
+ *
+ * @param props - Component props.
+ * @param props.transaction - Transaction record or row.
+ * @param props.snaps - Gate snapshot state and actions hook.
+ * @param props.onOpen - On open.
+ * @returns Rendered React element.
+ */
 export function SnapCell({ transaction, snaps, onOpen }: SnapCellProps) {
   if (!transaction.camera) return <Text size="1" color="gray" title="Gate data transfers, hold-open events and other gate commands don't get camera footage">—</Text>;
   const snapshot = snaps.snapshots[transaction.minute];
@@ -109,7 +134,15 @@ interface SnapViewerProps {
   onClose: () => void;
 }
 
-// Every frame (or video) of one transaction's minute, one row per channel.
+/**
+ * Every frame (or video) of one transaction's minute, one row per channel.
+ *
+ * @param props - Component props.
+ * @param props.transaction - Transaction record or row.
+ * @param props.snaps - Gate snapshot state and actions hook.
+ * @param props.onClose - Callback invoked when the layer closes.
+ * @returns Rendered React element.
+ */
 export function SnapViewer({ transaction, snaps, onClose }: SnapViewerProps) {
   const snapshot = transaction && snaps.snapshots[transaction.minute];
   const byChannel = new Map<number, string[]>();

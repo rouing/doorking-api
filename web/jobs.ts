@@ -1,5 +1,9 @@
-// Gate connections (one at a time per DKS account: DKS Cloud refuses a second session on the same login; gates on
-// different logins run at the same time): pulls, sends, login checks, relay calls and scheduled transfers.
+/**
+ * @module web/jobs
+ *
+ * Gate connections (one at a time per DKS account: DKS Cloud refuses a second session on the same login; gates on
+ * different logins run at the same time): pulls, sends, login checks, relay calls and scheduled transfers.
+ */
 import crypto from 'node:crypto';
 import { withContext } from '@logtape/logtape';
 import * as dk from '../index.ts';
@@ -15,32 +19,73 @@ import { logger } from '../src/logging.ts';
 
 type PreparedSend = Awaited<ReturnType<typeof dk.prepareSend>> & { counts: number[] };
 
-// The gate connections and what limits them: the current or last connection of each gate, one connection at a time
-// per DKS account (relay calls included), and the shutdown flag.
+/**
+ * The gate connections and what limits them: the current or last connection of each gate, one connection at a time
+ * per DKS account (relay calls included), and the shutdown flag.
+ *
+ * @param deps - Injected module dependencies.
+ * @returns Operation result.
+ */
 function createConnections(deps: ContextModule) {
   const { siteNameOf } = deps;
   const IDLE: JobState = { state: 'idle', log: [] };
   const jobs = new Map<string, JobState>(); // phone -> the gate's current or last connection
   const relayCalls = new Map<string, number>(); // DKS account -> live relay calls running on it
-  // DKS logins are compared without case.
+  /**
+   * DKS logins are compared without case.
+   *
+   * @param dksUser - DKS Cloud account username.
+   * @returns `string` result.
+   */
   const accountOf = (dksUser: unknown): string => String(dksUser ?? '').trim().toLowerCase();
   const currentJob = (phone: string): JobState => jobs.get(phone) || IDLE;
-  // The running connection on a DKS account, if any.
+  /**
+   * The running connection on a DKS account, if any.
+   *
+   * @param account - Normalized (lowercase) DKS Cloud login name.
+   * @returns `JobState | undefined` result.
+   */
   const runningOn = (account: string): JobState | undefined => [...jobs.values()].find((job) => job.state === 'running' && job.account === account);
-  // Busy: the gate itself has a connection running (it may use another login, e.g. a login check), or its DKS account does.
+  /**
+   * Busy: the gate itself has a connection running (it may use another login, e.g. a login check), or its DKS account does.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @returns True when the condition holds.
+   */
   const accountBusy = (gate: Gate): boolean => currentJob(gate.phoneNumber).state === 'running'
     || Boolean(runningOn(accountOf(gate.user))) || Boolean(relayCalls.get(accountOf(gate.user)));
-  // The gate a user is adding (its first pull), or null.
+  /**
+   * The gate a user is adding (its first pull), or null.
+   *
+   * @param user - Local account username (or actor name for audit logs).
+   * @returns `JobState | null` result.
+   */
   const addingJobOf = (user: string): JobState | null =>
     [...jobs.values()].reverse().find((job) => job.adding && job.user === user) || null;
-  // Forgets the gate's last connection (its stored data was deleted).
+  /**
+   * Forgets the gate's last connection (its stored data was deleted).
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   */
   function forgetJob(phone: string): void {
     jobs.delete(phone);
   }
-  // Checked and acted on without awaiting in between, so two requests can't both start a connection on one account.
+  /**
+   * Checked and acted on without awaiting in between, so two requests can't both start a connection on one account.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @returns Promise resolving to `Reply> | nul`.
+   */
   const busy = (gate: Gate): Promise<Reply> | null => (accountBusy(gate)
     ? busyMessage(gate).then((error): Reply => [409, { error }]) : null);
-  // Runs a live relay call (GetRelays/SetRelays) on the gate's DKS account; refused (409) while that account is busy.
+  /**
+   * Runs a live relay call (GetRelays/SetRelays) on the gate's DKS account; refused (409) while that account is busy.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param fn - Callback function to execute.
+   * @returns Promise resolving to `T`.
+   * @throws HTTP 409 error on invalid input or conflict.
+   */
   async function withAccount<T>(gate: Gate, fn: () => Promise<T>): Promise<T> {
     if (accountBusy(gate)) throw dk.httpError(await busyMessage(gate), 409);
     const account = accountOf(gate.user);
@@ -59,22 +104,40 @@ function createConnections(deps: ContextModule) {
     const other = (await siteNameOf(running.phoneNumber ?? '')) || `the gate ending ${String(running.phoneNumber).slice(-4)}`;
     return `A gate connection is already running for ${other}, which uses the same DKS login`;
   }
-  // Server shutdown: no new connection or schedule starts.
+  /** Server shutdown: no new connection or schedule starts. */
   let stopping = false;
   const stopNewJobs = (): void => { stopping = true; };
   const isStopping = (): boolean => stopping;
-  // The running connections (for the shutdown log), and whether none (nor a relay call) is running.
+  /**
+   * The running connections (for the shutdown log), and whether none (nor a relay call) is running.
+   *
+   * @returns `JobState[]` result.
+   */
   const runningJobs = (): JobState[] => [...jobs.values()].filter((job) => job.state === 'running');
   const connectionsIdle = (): boolean => !runningJobs().length && !relayCalls.size;
   return { jobs, accountOf, currentJob, accountBusy, addingJobOf, forgetJob, busy, withAccount, stopNewJobs, isStopping, runningJobs, connectionsIdle };
 }
 type Connections = ReturnType<typeof createConnections>;
 
-// Pulls, sends and login checks: each a job on the gate's connection, recorded in its history when it ends.
+/**
+ * Pulls, sends and login checks: each a job on the gate's connection, recorded in its history when it ends.
+ *
+ * @param deps - Injected module dependencies.
+ * @param connections - `Connections` value.
+ * @returns Operation result.
+ */
 function createTransfers(deps: ContextModule & EditingModule & MailModule & SnapshotsModule, connections: Connections) {
   const { client, defaults, GATE_CONFIG_KEYS, gateAlert, logged, prefsOf, queueSnapshots, refuseDuplicates, serial, store } = deps;
   const { jobs, accountOf, isStopping } = connections;
-  // The gate-match config lives in the gate-scoped prefs (keyed by phone number), set under System Settings.
+  /**
+   * The gate-match config lives in the gate-scoped prefs (keyed by phone number), set under System Settings.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param what - Transfer kind (`residents`, `transactions`, `send`, or `snapshots`).
+   * @param [extra] - Additional text or options.
+   * @returns Promise resolving to `SessionRequest`.
+   * @throws HTTP 409 error on invalid input or conflict.
+   */
   async function sessionRequest(gate: Gate, what: string, extra: dk.SessionOptions = {}): Promise<SessionRequest> {
     if (!gate.user || !gate.password) throw dk.httpError('This gate has no DKS login yet. A gate admin can set it in System Settings → Gate login.', 409);
     const cfg: Partial<GateConfig> = (await prefsOf(gate.phoneNumber)).gateConfig || {};
@@ -88,10 +151,19 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
       user: gate.user, password: gate.password, phoneNumber: gate.phoneNumber, masterCode: gate.masterCode,
     });
   }
-  // Starts a gate connection (its DKS account must be free, see busy): the job is claimed at once, then makeRequest() builds the DKS session request and
-  // run(log, request) does the work. The job's state and log are read via GET .../job.
-  // When it ends, it is recorded in the gate's history (info adds fields to that entry; scheduled: true marks a
-  // scheduled transfer). Returns a promise of the finished job.
+  /**
+   * Starts a gate connection (its DKS account must be free, see busy): the job is claimed at once, then makeRequest() builds the DKS session request and
+   * run(log, request) does the work. The job's state and log are read via GET .../job.
+   * When it ends, it is recorded in the gate's history (info adds fields to that entry; scheduled: true marks a
+   * scheduled transfer). Returns a promise of the finished job.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param what - Transfer kind (`residents`, `transactions`, `send`, or `snapshots`).
+   * @param makeRequest - `() => Promise<SessionRequest>` value.
+   * @param run - Run.
+   * @param [info] - Additional job or audit metadata.
+   * @returns Promise resolving to `JobState`.
+   */
   function startJob(gate: Gate, what: string, makeRequest: () => Promise<SessionRequest>,
     run: (log: (line: string) => void, request: SessionRequest) => Promise<void>, info: JobInfo = {}): Promise<JobState> {
     const startedAt = new Date();
@@ -99,7 +171,9 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
       ...(info.adding && { adding: true }) };
     jobs.delete(gate.phoneNumber); // so the newest job is last (addingJobOf)
     jobs.set(gate.phoneNumber, job);
-    // Each job line also goes to the server log (the job keeps the last MAX_JOB_LOG lines), except a status repeated while the gate is polled.
+    /**
+     * Each job line also goes to the server log (the job keeps the last MAX_JOB_LOG lines), except a status repeated while the gate is polled.
+     */
     let lastLine = '';
     const log = (line: string) => {
       job.log.push(`${new Date().toLocaleTimeString('en-US')}  ${line}`);
@@ -133,7 +207,12 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
       }));
   }
   const roleText = (role: GateRole) => (role === 'admin' ? 'admin' : 'read only');
-  // A new master code (with the DKS login): checked by a residents pull with it, and saved only when that succeeds.
+  /**
+   * A new master code (with the DKS login): checked by a residents pull with it, and saved only when that succeeds.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @returns Promise resolving to `JobState`.
+   */
   function startLoginCheck(gate: Gate): Promise<JobState> {
     return startPull(gate, 'residents', {}, {
       afterPull: async (log) => {
@@ -144,9 +223,16 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
       },
     });
   }
-  // The first pull of a gate being added: on success the gate is saved with its DKS login and master code, and the
-  // person adding it becomes its admin. On failure everything stored for that phone number (its gate configuration
-  // and anything the pull left) is removed. Returns false when the gate was not added (nothing goes in its History).
+  /**
+   * The first pull of a gate being added: on success the gate is saved with its DKS login and master code, and the
+   * person adding it becomes its admin. On failure everything stored for that phone number (its gate configuration
+   * and anything the pull left) is removed. Returns false when the gate was not added (nothing goes in its History).
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param job - `JobState` value.
+   * @param log - Callback receiving progress or diagnostic messages.
+   * @returns Promise resolving to `true` when the condition holds.
+   */
   async function finishAdding(gate: Gate, job: JobState, log: (line: string) => void): Promise<boolean> {
     try {
       if (job.state === 'done') {
@@ -163,12 +249,24 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
     return false;
   }
   const MAX_JOB_LOG = 500;
-  // The board files of a pull, or null when one is missing.
+  /**
+   * The board files of a pull, or null when one is missing.
+   *
+   * @param files - Map of board filenames to binary buffers.
+   * @returns `BoardBuffers | null` result.
+   */
   const boardOf = (files: Record<string, Buffer>): BoardBuffers | null => (dk.CACHE_FILES.every((file) => files[file])
     ? { names: files['names.bin'], phone: files['phone.bin'], cards: files['cards.bin'] } : null);
-  // Runs the round-trip and rebuild checks on a pull (gate-state.ts; files: the pull, else the gate's stored files) and
-  // records them. masterCode: the one the pull used (a gate being added, or a new master code, isn't saved yet), else
-  // the saved one. Returns a line for the job log.
+  /**
+   * Runs the round-trip and rebuild checks on a pull (gate-state.ts; files: the pull, else the gate's stored files) and
+   * records them. masterCode: the one the pull used (a gate being added, or a new master code, isn't saved yet), else
+   * the saved one. Returns a line for the job log.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @param [files] - The pull, else the gate's stored files.
+   * @param [masterCode] - Master code used by the pull (needed when adding a gate or testing a new code).
+   * @returns Promise resolving to `string`.
+   */
   async function recordGateState(phone: string, files?: BoardBuffers | null, masterCode?: string): Promise<string> {
     const pulled = files === undefined ? await dk.readBaseFiles(store, phone) : files;
     if (!pulled) return 'Round-trip check skipped: the pull is missing a file';
@@ -182,7 +280,12 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
     logger('gate').info`Gate ${phone}: ${line}`;
     return line;
   }
-  // Job log lines for what a residents pull did to the working copy (gate-cache.ts applyPull).
+  /**
+   * Job log lines for what a residents pull did to the working copy (gate-cache.ts applyPull).
+   *
+   * @param result - Verified operation result.
+   * @returns `string[]` result.
+   */
   function pullLines(result: dk.PullResult): string[] {
     const plural = (count: number) => (count === 1 ? '' : 's');
     if (result.outcome === 'new') return ['Working copy made from this pull'];
@@ -198,14 +301,28 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
       ...result.notKept.map((skipped) => `Couldn't keep your change to ${skipped.label} (${skipped.error}); the gate's value is used`),
     ];
   }
-  // Applies a residents pull to the working copy (no edit is saved meanwhile) and logs what happened.
+  /**
+   * Applies a residents pull to the working copy (no edit is saved meanwhile) and logs what happened.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param files - Map of board filenames to binary buffers.
+   * @param log - Callback receiving progress or diagnostic messages.
+   */
   async function applyResidentsPull(gate: Gate, files: Record<string, Buffer>, log: (line: string) => void): Promise<void> {
     const result = await serial(gate.phoneNumber, () => dk.applyPull(store, gate.phoneNumber, files));
     for (const line of pullLines(result)) log(line);
   }
-  // prepare: runs first, inside the job (the gate's connection is already claimed, so nothing can start in between).
-  // steps.prepare runs before the session request is built; steps.afterPull once the files are read, before they are
-  // stored (an error in either fails the job).
+  /**
+   * prepare: runs first, inside the job (the gate's connection is already claimed, so nothing can start in between).
+   * steps.prepare runs before the session request is built; steps.afterPull once the files are read, before they are
+   * stored (an error in either fails the job).
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param what - Transfer kind (`residents`, `transactions`, `send`, or `snapshots`).
+   * @param [info] - Additional job or audit metadata.
+   * @param [steps] - Optional pre-request and post-pull hooks.
+   * @returns Promise resolving to `JobState`.
+   */
   function startPull(gate: Gate, what: dk.PullKind, info: JobInfo = {}, steps: PullSteps = {}): Promise<JobState> {
     const { prepare, afterPull } = steps;
     const pulled = (job: JobState) => { if (what === 'transactions' && job.state === 'done' && !isStopping()) queueSnapshots(gate.phoneNumber, gate.dir); return job; };
@@ -225,22 +342,39 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
       }
     }, info).then(pulled);
   }
-  // Resident counts for the send session's UserID (DoorKing32 FUN_004f7320: records with FL 0, FL 2).
-  // Derived from the working copy's names.bin directory, so no RESIDENT.DAT is needed.
+  /**
+   * Resident counts for the send session's UserID (DoorKing32 FUN_004f7320: records with FL 0, FL 2).
+   * Derived from the working copy's names.bin directory, so no RESIDENT.DAT is needed.
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   * @returns Promise resolving to the operation result.
+   */
   async function residentCounts(phone: string) {
     const { data } = await dk.readCacheFile(store, phone, 'names.bin'); // throws 404 "pull residents" if there is no working copy
     return dk.namesResidentCounts(data);
   }
-  // Everything a send needs from the working copy; throws (409/404) when it can't be sent.
+  /**
+   * Everything a send needs from the working copy; throws (409/404) when it can't be sent.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @returns Promise resolving to `PreparedSend`.
+   */
   async function prepareGateSend(gate: Gate): Promise<PreparedSend> {
     await refuseDuplicates(gate.phoneNumber);
     return { ...await dk.prepareSend(store, gate.phoneNumber), counts: await residentCounts(gate.phoneNumber) };
   }
-  // Sends the working copy, then pulls residents again to check the gate now holds what was sent.
-  // Match: the pull becomes the base and the working copy; edits saved while the send ran are kept on top of it (applied
-  // like any residents pull). Mismatch: the pull is applied like any residents pull (the changes not on the gate stay
-  // unsent) and the differing blocks are logged.
-  // prepared: from prepareGateSend, awaited before the busy check so the job is claimed without a gap.
+  /**
+   * Sends the working copy, then pulls residents again to check the gate now holds what was sent.
+   * Match: the pull becomes the base and the working copy; edits saved while the send ran are kept on top of it (applied
+   * like any residents pull). Mismatch: the pull is applied like any residents pull (the changes not on the gate stay
+   * unsent) and the differing blocks are logged.
+   * prepared: from prepareGateSend, awaited before the busy check so the job is claimed without a gap.
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param prepared - From prepareGateSend, awaited before the busy check so the job is claimed without a gap.
+   * @param [info] - Additional job or audit metadata.
+   * @returns Promise resolving to `JobState`.
+   */
   function startSend(gate: Gate, prepared: PreparedSend, info: JobInfo = {}): Promise<JobState> {
     return startJob(gate, 'send', () => sessionRequest(gate, 'send', { residentCounts: prepared.counts }), async (log, request) => {
       const pullRequest = await sessionRequest(gate, 'residents');
@@ -268,28 +402,45 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
 }
 type Transfers = ReturnType<typeof createTransfers>;
 
-// Scheduled transfers: due entries queued per DKS account and run one after another.
+/**
+ * Scheduled transfers: due entries queued per DKS account and run one after another.
+ *
+ * @param deps - Injected module dependencies.
+ * @param connections - `Connections` value.
+ * @param transfers - `Transfers` value.
+ * @returns Operation result.
+ */
 function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, connections: Connections, transfers: Transfers) {
   const { asGate, config, gateAlert, logged, scheduledSnapshots, store } = deps;
   const { accountBusy, accountOf, connectionsIdle, isStopping } = connections;
   const { prepareGateSend, startPull, startSend } = transfers;
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const scheduleText = (schedule: Schedule) => `${schedule.enabled ? '' : 'off, '}${schedule.days.map((day) => DAY_NAMES[day]).join(' ')} ${schedule.time}: ${schedule.actions.join(', ')}`;
-  // Scheduled transfers: checked every 30 s and once at startup, so a time missed while the server was stopped
-  // runs once. Due entries queue up per DKS account and run one at a time on it, each transfer waiting until the
-  // account is free; entries on different accounts run at the same time.
+  /**
+   * Scheduled transfers: checked every 30 s and once at startup, so a time missed while the server was stopped
+   * runs once. Due entries queue up per DKS account and run one at a time on it, each transfer waiting until the
+   * account is free; entries on different accounts run at the same time.
+   */
   const SCHEDULE_TICK_MS = config.schedules.checkSeconds * 1000;
   const scheduleQueue: { schedule: Schedule; account: string; now: boolean }[] = []; // now: queued by Run now
   const runningSchedules = new Map<string, Schedule>(); // DKS account -> the entry running on it
   const isScheduleQueued = (id: string): boolean => scheduleQueue.some((queued) => queued.schedule.id === id)
     || [...runningSchedules.values()].some((schedule) => schedule.id === id);
   const scheduleRunningFor = (phone: string): boolean => [...runningSchedules.values()].some((schedule) => schedule.phoneNumber === phone);
-  // Takes the gate's waiting entries off the queue (its stored data is being deleted).
+  /**
+   * Takes the gate's waiting entries off the queue (its stored data is being deleted).
+   *
+   * @param phone - Gate system phone number (digits or formatted).
+   */
   function dropQueuedSchedules(phone: string): void {
     for (let i = scheduleQueue.length - 1; i >= 0; i--) if (scheduleQueue[i].schedule.phoneNumber === phone) scheduleQueue.splice(i, 1);
   }
   const sleep = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
-  // Idle once every running connection and schedule ended (server shutdown).
+  /**
+   * Idle once every running connection and schedule ended (server shutdown).
+   *
+   * @returns True when the condition holds.
+   */
   const jobsIdle = (): boolean => connectionsIdle() && !runningSchedules.size;
   async function queueSchedule(sch: Schedule, now = false): Promise<boolean> {
     if (isStopping() || isScheduleQueued(sch.id)) return false;
@@ -313,7 +464,11 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
     } catch (err) { logger('schedule').error`Schedule check failed: ${(err as Error).message}`; }
     finally { checkingSchedules = false; }
   }
-  // Runs the account's queued entries one after another.
+  /**
+   * Runs the account's queued entries one after another.
+   *
+   * @param account - Normalized (lowercase) DKS Cloud login name.
+   */
   async function runAccountQueue(account: string) {
     if (runningSchedules.has(account)) return;
     for (let i = scheduleQueue.findIndex((queued) => queued.account === account); i >= 0 && !isStopping();
@@ -321,7 +476,9 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
       const [{ schedule: queued, now }] = scheduleQueue.splice(i, 1);
       runningSchedules.set(account, queued); // the login is busy from here, also while the schedule is reread
       try {
-        // As it is now: changed while it waited, it runs as changed; deleted (or turned off, unless run now), not at all.
+        /**
+         * As it is now: changed while it waited, it runs as changed; deleted (or turned off, unless run now), not at all.
+         */
         const schedule = await dk.getSchedule(store, queued.phoneNumber, queued.id).catch(() => queued);
         if (!schedule || (!schedule.enabled && !now)) {
           logger('schedule').info`Gate ${queued.phoneNumber}: schedule ${queued.id} not run (${schedule ? 'turned off' : 'deleted'} while it waited)`;
@@ -332,9 +489,14 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
       } finally { runningSchedules.delete(account); }
     }
   }
-  // Runs an entry's transfers in SCHEDULE_ACTIONS order with the gate's DKS login. A failed transfer does
-  // not stop the others; the entry's last result lists every error. Send is skipped when the working copy has
-  // no changes. Snapshots do not use the gate connection.
+  /**
+   * Runs an entry's transfers in SCHEDULE_ACTIONS order with the gate's DKS login. A failed transfer does
+   * not stop the others; the entry's last result lists every error. Send is skipped when the working copy has
+   * no changes. Snapshots do not use the gate connection.
+   *
+   * @param sch - Scheduled transfer entry.
+   * @throws Error when validation or the underlying operation fails.
+   */
   async function runSchedule(sch: Schedule) {
     const errors: string[] = [];
     const notes: string[] = [];
@@ -352,7 +514,14 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
     } catch (err) { errors.push((err as Error).message); }
     await recordScheduleOutcome(sch, errors, notes);
   }
-  // One transfer of a schedule (snapshots don't use the gate connection; the others wait until the account is free).
+  /**
+   * One transfer of a schedule (snapshots don't use the gate connection; the others wait until the account is free).
+   *
+   * @param gate - Resolved managed gate record with role and DKS credentials.
+   * @param what - Transfer kind (`residents`, `transactions`, `send`, or `snapshots`).
+   * @param since - Lower-bound timestamp.
+   * @returns Promise resolving to `{ error?: string; note?: string }`.
+   */
   async function runScheduledAction(gate: Gate, what: ScheduleAction, since: Date): Promise<{ error?: string; note?: string }> {
     if (isStopping()) return { error: 'not run, the server was stopping' };
     if (what === 'snapshots') return scheduledSnapshots(gate.phoneNumber, gate.dir, since);
@@ -366,7 +535,13 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
     const job = await (what === 'send' ? startSend(gate, prepared!, { scheduled: true }) : startPull(gate, what, { scheduled: true }));
     return job.state === 'failed' ? { error: job.error } : {};
   }
-  // Logs a schedule's run, alerts the gate's admins when it failed, and saves its last result.
+  /**
+   * Logs a schedule's run, alerts the gate's admins when it failed, and saves its last result.
+   *
+   * @param sch - Scheduled transfer entry.
+   * @param errors - `string[]` value.
+   * @param notes - `string[]` value.
+   */
   async function recordScheduleOutcome(sch: Schedule, errors: string[], notes: string[]): Promise<void> {
     logger('schedule')[errors.length ? 'error' : 'info']`Gate ${sch.phoneNumber}: schedule ${sch.id} ${errors.length ? `failed: ${errors.join('; ')}` : 'done'}${notes.length ? ` (${notes.join('; ')})` : ''}`;
     if (errors.length) {
@@ -384,6 +559,12 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
   return { scheduleText, SCHEDULE_TICK_MS, isScheduleQueued, scheduleRunningFor, dropQueuedSchedules, jobsIdle, queueSchedule, checkSchedules };
 }
 
+/**
+ * Create jobs.
+ *
+ * @param deps - Injected module dependencies.
+ * @returns Operation result.
+ */
 export function createJobs(deps: ContextModule & EditingModule & MailModule & SnapshotsModule) {
   const connections = createConnections(deps);
   const transfers = createTransfers(deps, connections);

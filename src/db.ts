@@ -1,9 +1,13 @@
-// Database: PostgreSQL through the pg driver, connected as config.json says (config.ts), with the encryption key in
-// its own file (paths.keyFile, created on first use). The database holds the gate lists, gate-scoped prefs,
-// sign-ins, history, saved DKS passwords, scheduled transfers, camera settings, the snapshot log, resident/vendor
-// notes, the transaction history and the gate files. Master codes, passwords and the gate files are encrypted with
-// AES-256-GCM using the key; anyone with the key and the database can decrypt them, so the key file must stay
-// private and never be committed.
+/**
+ * @module src/db
+ *
+ * Database: PostgreSQL through the pg driver, connected as config.json says (config.ts), with the encryption key in
+ * its own file (paths.keyFile, created on first use). The database holds the gate lists, gate-scoped prefs,
+ * sign-ins, history, saved DKS passwords, scheduled transfers, camera settings, the snapshot log, resident/vendor
+ * notes, the transaction history and the gate files. Master codes, passwords and the gate files are encrypted with
+ * AES-256-GCM using the key; anyone with the key and the database can decrypt them, so the key file must stay
+ * private and never be committed.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -12,23 +16,34 @@ import pg from 'pg';
 import { checkPrivate } from './config.ts';
 import { logger } from './logging.ts';
 
-// Gates are keyed by the digits of their phone number.
+/**
+ * Gates are keyed by the digits of their phone number.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns `string` result.
+ */
 export const phoneDigits = (phone: unknown): string => String(phone || '').replace(/\D/g, '');
 
-// Timestamps come back as ISO strings (as stored before), bigints (COUNT, identities) as numbers.
+/** Timestamps come back as ISO strings (as stored before), bigints (COUNT, identities) as numbers. */
 const parseTimestamptz = pg.types.getTypeParser(pg.types.builtins.TIMESTAMPTZ);
 pg.types.setTypeParser(pg.types.builtins.TIMESTAMPTZ, (value: string) => (parseTimestamptz(value) as Date).toISOString());
 pg.types.setTypeParser(pg.types.builtins.INT8, (value: string) => Number(value));
 
 export interface Queryable { query(text: string, values?: unknown[]): Promise<pg.QueryResult> }
-// db: the pool, or inside transaction() the transaction's client.
+/** db: the pool, or inside transaction() the transaction's client. */
 export interface Store { pool: pg.Pool; db: Queryable; key: Buffer; schema: string }
 
-// The schema (tables, indexes), applied every time a store opens; every statement is idempotent.
+/** The schema (tables, indexes), applied every time a store opens; every statement is idempotent. */
 export const SCHEMA_FILE = fileURLToPath(new URL('../sql/schema.sql', import.meta.url));
 const SCHEMA = fs.readFileSync(SCHEMA_FILE, 'utf8');
 
-// The key from keyFile (64 hex digits), created when missing.
+/**
+ * The key from keyFile (64 hex digits), created when missing.
+ *
+ * @param file - File path or filename.
+ * @returns `Buffer` result.
+ * @throws Error when validation or the underlying operation fails.
+ */
 function readKey(file: string): Buffer {
   if (!fs.existsSync(file)) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -63,32 +78,73 @@ async function connect({ connection, keyFile, schema = 'public', poolSize = 5 }:
   return { pool, db: pool, key, schema };
 }
 
-// Opens the database (creating the key and the tables when missing). Each call opens its own connection pool, which
-// closeStore ends.
+/**
+ * Opens the database (creating the key and the tables when missing). Each call opens its own connection pool, which
+ * closeStore ends.
+ *
+ * @param opts - Optional settings.
+ * @returns Promise resolving to `Store`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export function openStore(opts: StoreOptions): Promise<Store> {
   const schema = opts.schema || 'public';
   if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Invalid schema name ${schema}`);
   return connect({ ...opts, keyFile: path.resolve(opts.keyFile), schema });
 }
 
+/**
+ * Close store.
+ *
+ * @param store - Database store handle.
+ */
 export async function closeStore(store: Store): Promise<void> {
   await store.pool.end();
 }
 
+/**
+ * All.
+ *
+ * @param store - Database store handle.
+ * @param sql - Parameterized SQL query.
+ * @param [params] - Route path parameters or call parameters.
+ * @returns Promise resolving to `T[]`.
+ */
 export async function all<T>(store: Store, sql: string, params: unknown[] = []): Promise<T[]> {
   return (await store.db.query(sql, params)).rows as T[];
 }
 
+/**
+ * One.
+ *
+ * @param store - Database store handle.
+ * @param sql - Parameterized SQL query.
+ * @param [params] - Route path parameters or call parameters.
+ * @returns Promise resolving to `T | undefined`.
+ */
 export async function one<T>(store: Store, sql: string, params: unknown[] = []): Promise<T | undefined> {
   return (await store.db.query(sql, params)).rows[0] as T | undefined;
 }
 
-// Runs a statement; returns the number of rows it changed.
+/**
+ * Runs a statement; returns the number of rows it changed.
+ *
+ * @param store - Database store handle.
+ * @param sql - Parameterized SQL query.
+ * @param [params] - Route path parameters or call parameters.
+ * @returns Promise resolving to `number`.
+ */
 export async function run(store: Store, sql: string, params: unknown[] = []): Promise<number> {
   return (await store.db.query(sql, params)).rowCount ?? 0;
 }
 
-// Runs fn inside one transaction; fn gets a store whose queries use the transaction.
+/**
+ * Runs fn inside one transaction; fn gets a store whose queries use the transaction.
+ *
+ * @param store - Database store handle.
+ * @param fn - Callback function to execute.
+ * @returns Promise resolving to `T`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export async function transaction<T>(store: Store, fn: (tx: Store) => Promise<T>): Promise<T> {
   if (store.db !== store.pool) return fn(store);
   const client = await store.pool.connect();
@@ -105,7 +161,13 @@ export async function transaction<T>(store: Store, fn: (tx: Store) => Promise<T>
   }
 }
 
-// "v1:<iv>:<tag>:<ciphertext>", base64 parts.
+/**
+ * "v1:<iv>:<tag>:<ciphertext>", base64 parts.
+ *
+ * @param store - Database store handle.
+ * @param text - Input text string.
+ * @returns `string` result.
+ */
 export function encrypt(store: Store, text: unknown): string {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', store.key, iv);
@@ -113,7 +175,13 @@ export function encrypt(store: Store, text: unknown): string {
   return ['v1', iv, cipher.getAuthTag(), data].map((part) => (Buffer.isBuffer(part) ? part.toString('base64') : part)).join(':');
 }
 
-// Bytes: 12-byte IV, 16-byte tag, then the ciphertext.
+/**
+ * Bytes: 12-byte IV, 16-byte tag, then the ciphertext.
+ *
+ * @param store - Database store handle.
+ * @param data - Binary or structured payload.
+ * @returns `Buffer` result.
+ */
 export function encryptBytes(store: Store, data: Buffer): Buffer {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', store.key, iv);
@@ -121,12 +189,27 @@ export function encryptBytes(store: Store, data: Buffer): Buffer {
   return Buffer.concat([iv, cipher.getAuthTag(), out]);
 }
 
+/**
+ * Decrypt bytes.
+ *
+ * @param store - Database store handle.
+ * @param data - Binary or structured payload.
+ * @returns `Buffer` result.
+ */
 export function decryptBytes(store: Store, data: Buffer): Buffer {
   const decipher = crypto.createDecipheriv('aes-256-gcm', store.key, data.subarray(0, 12));
   decipher.setAuthTag(data.subarray(12, 28));
   return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]);
 }
 
+/**
+ * Decrypt.
+ *
+ * @param store - Database store handle.
+ * @param value - Input value.
+ * @returns `string` result.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export function decrypt(store: Store, value: unknown): string {
   const [version, iv, tag, data] = String(value).split(':');
   if (version !== 'v1' || data === undefined) throw new Error('Not an encrypted value');
@@ -135,17 +218,39 @@ export function decrypt(store: Store, value: unknown): string {
   return Buffer.concat([decipher.update(Buffer.from(data, 'base64')), decipher.final()]).toString('utf8');
 }
 
+/**
+ * Get meta.
+ *
+ * @param store - Database store handle.
+ * @param key - Lookup key, API key, or setting key.
+ * @returns Promise resolving to `string | null`.
+ */
 export async function getMeta(store: Store, key: string): Promise<string | null> {
   const row = await one<{ value: string }>(store, 'SELECT value FROM meta WHERE key = $1', [key]);
   return row ? row.value : null;
 }
 
+/**
+ * Set meta.
+ *
+ * @param store - Database store handle.
+ * @param key - Lookup key, API key, or setting key.
+ * @param value - Input value.
+ */
 export async function setMeta(store: Store, key: string, value: unknown): Promise<void> {
   await run(store, 'INSERT INTO meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
     [key, String(value)]);
 }
 
-// The app's login role: created with its password when missing (an existing role keeps its password).
+/**
+ * The app's login role: created with its password when missing (an existing role keeps its password).
+ *
+ * @param client - Admin PostgreSQL `pg.Client` connection.
+ * @param user - Local account username (or actor name for audit logs).
+ * @param password - Plain-text password.
+ * @returns Promise resolving to `string`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 async function ensureRole(client: pg.Client, user: string, password: string): Promise<string> {
   if ((await client.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [user])).rowCount) return `Login role ${user}: already exists (password left unchanged)`;
   if (!password) throw new Error(`No password for the new login role ${user}: set database.password in config.json`);
@@ -153,7 +258,15 @@ async function ensureRole(client: pg.Client, user: string, password: string): Pr
   return `Login role ${user}: created`;
 }
 
-// A database owned by user: created when missing and closed to other logins (an existing one is left alone).
+/**
+ * A database owned by user: created when missing and closed to other logins (an existing one is left alone).
+ *
+ * @param client - Admin PostgreSQL `pg.Client` connection.
+ * @param admin - PostgreSQL admin connection config.
+ * @param database - `string` value.
+ * @param user - Local account username (or actor name for audit logs).
+ * @returns Promise resolving to `string`.
+ */
 async function ensureDatabase(client: pg.Client, admin: pg.ClientConfig, database: string, user: string): Promise<string> {
   const id = (name: string) => client.escapeIdentifier(name);
   const existing = await client.query<{ owner: string }>('SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = $1', [database]);
@@ -163,7 +276,7 @@ async function ensureDatabase(client: pg.Client, admin: pg.ClientConfig, databas
   }
   await client.query(`CREATE DATABASE ${id(database)} OWNER ${id(user)}`);
   await client.query(`REVOKE ALL ON DATABASE ${id(database)} FROM PUBLIC`);
-  // In the new database: only the app's login may use its public schema.
+  /** In the new database: only the app's login may use its public schema. */
   const inDb = new pg.Client(admin.connectionString
     ? { ...admin, connectionString: Object.assign(new URL(admin.connectionString), { pathname: `/${database}` }).toString() }
     : { ...admin, database: database });
@@ -176,10 +289,20 @@ async function ensureDatabase(client: pg.Client, admin: pg.ClientConfig, databas
   return `Database ${database}: created, owned by ${user}, closed to other logins`;
 }
 
-// Creates the app's login role (LOGIN, with its password) and databases, each owned by that role, through an admin
-// connection (a superuser, or a role with CREATEROLE and CREATEDB). New databases are closed to other logins (no
-// PUBLIC access to the database or its public schema). What already exists is left alone: an existing role keeps
-// its password, an existing database its owner and permissions. Returns one line per step. The tables come from SCHEMA_FILE when the app opens the database.
+/**
+ * Creates the app's login role (LOGIN, with its password) and databases, each owned by that role, through an admin
+ * connection (a superuser, or a role with CREATEROLE and CREATEDB). New databases are closed to other logins (no
+ * PUBLIC access to the database or its public schema). What already exists is left alone: an existing role keeps
+ * its password, an existing database its owner and permissions. Returns one line per step. The tables come from SCHEMA_FILE when the app opens the database.
+ *
+ * @param admin - PostgreSQL admin connection config.
+ * @param options - Options object.
+ * @param options.user - Local account username (or actor name for audit logs).
+ * @param options.password - Plain-text password.
+ * @param options.databases - Database names to create.
+ * @returns Promise resolving to `string[]`.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export async function setupDatabase(admin: pg.ClientConfig, { user, password, databases }:
   { user: string; password: string; databases: string[] }): Promise<string[]> {
   for (const name of [user, ...databases]) {
@@ -191,8 +314,12 @@ export async function setupDatabase(admin: pg.ClientConfig, { user, password, da
   try {
     const id = (name: string) => client.escapeIdentifier(name);
     steps.push(await ensureRole(client, user, password));
-    // A non-superuser admin (CREATEROLE) holds only ADMIN over roles it creates (PostgreSQL 16+); giving a database
-    // to a role needs the right to SET ROLE to it, which ADMIN lets it grant itself.
+    /**
+     * A non-superuser admin (CREATEROLE) holds only ADMIN over roles it creates (PostgreSQL 16+); giving a database
+     * to a role needs the right to SET ROLE to it, which ADMIN lets it grant itself.
+     *
+     * @returns Computed result.
+     */
     const canSet = async () => (await client.query<{ ok: boolean }>(`SELECT rolsuper OR pg_has_role(current_user, $1, 'SET') AS ok
       FROM pg_roles WHERE rolname = current_user`, [user]).catch(() => client.query<{ ok: boolean }>(
       "SELECT rolsuper OR pg_has_role(current_user, $1, 'MEMBER') AS ok FROM pg_roles WHERE rolname = current_user", [user]))).rows[0]?.ok;

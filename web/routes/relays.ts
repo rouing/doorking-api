@@ -1,10 +1,20 @@
-// Live relays.
+/**
+ * @module web/routes/relays
+ *
+ * Live relays.
+ */
 import * as dk from '../../index.ts';
 import type { Modules } from '../modules.ts';
 import { G, type Route, route } from '../routing.ts';
 import type { Reply } from '../context.ts';
 import { logger } from '../../src/logging.ts';
 
+/**
+ * Relays routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function relaysRoutes(modules: Modules): Route[] {
   const { client, prefsOf, store } = modules.context;
   const { commandRelays, liveRelays } = modules.editing;

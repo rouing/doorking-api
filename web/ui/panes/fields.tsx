@@ -11,7 +11,15 @@ interface FieldProps {
   children: ReactNode;
 }
 
-// A labelled form field; help: a key in HELP (or own text) shown as a "?" tip after the label.
+/**
+ * A labelled form field; help: a key in HELP (or own text) shown as a "?" tip after the label.
+ *
+ * @param props - Component props.
+ * @param props.label - Display label.
+ * @param props.help - Key in `HELP` or literal help text.
+ * @param props.children - Children.
+ * @returns Rendered React element.
+ */
 export function Field({ label, help, children }: FieldProps) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -26,7 +34,18 @@ interface ChoiceProps {
   value: string; options: readonly ChoiceOption[]; onChange: (value: string) => void; disabled?: boolean; size?: '1' | '2'; title?: string;
 }
 
-// A drop-down list; each option is a value shown as itself, or a [value, label] pair.
+/**
+ * A drop-down list; each option is a value shown as itself, or a [value, label] pair.
+ *
+ * @param props - Component props.
+ * @param props.value - Input value.
+ * @param props.options - Optional settings.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @param props.disabled - Whether the control is disabled.
+ * @param props.size - Byte length or count.
+ * @param props.title - Title.
+ * @returns Rendered React element.
+ */
 export function Choice({ value, options, onChange, disabled, size, title }: ChoiceProps) {
   return (
     <Select.Root size={size} value={value} onValueChange={onChange} disabled={disabled}>
@@ -46,9 +65,16 @@ interface PhoneFieldProps {
   onChange: (v: string) => void;
 }
 
-// Phone input that formats as you type ((918) 555-0142, 1 (918) 555-0142 or 555-0142) and keeps the caret after
-// the same digit.
-// Backspace over a separator removes the digit before it.
+/**
+ * Phone input that formats as you type ((918) 555-0142, 1 (918) 555-0142 or 555-0142) and keeps the caret after
+ * the same digit.
+ * Backspace over a separator removes the digit before it.
+ *
+ * @param props - Component props.
+ * @param props.value - Input value.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @returns Rendered React element.
+ */
 export function PhoneField({ value, onChange }: PhoneFieldProps) {
   const ref = useRef<HTMLInputElement>(null);
   const caret = useRef<number | null>(null);
@@ -80,8 +106,16 @@ interface CardNumberProps {
   duplicate?: boolean;
 }
 
-// A card number with its Device Association name as a tooltip; red when no range holds it. dup: the card is also
-// assigned to another directory code (red background).
+/**
+ * A card number with its Device Association name as a tooltip; red when no range holds it. dup: the card is also
+ * assigned to another directory code (red background).
+ *
+ * @param props - Component props.
+ * @param props.card - Card.
+ * @param props.devices - Configured Device Association card ranges.
+ * @param [props.duplicate] - Duplicate.
+ * @returns Rendered React element.
+ */
 export function CardNumber({ card, devices, duplicate = false }: CardNumberProps) {
   const dev = deviceNameFor(devices, card);
   return (
@@ -97,7 +131,15 @@ interface CardListProps {
   dups?: Set<string>;
 }
 
-// Card numbers as fixed-width items that wrap onto aligned rows; cards in `dups` are marked as duplicates.
+/**
+ * Card numbers as fixed-width items that wrap onto aligned rows; cards in `dups` are marked as duplicates.
+ *
+ * @param props - Component props.
+ * @param props.cards - Raw `cards.bin` buffer or list of card numbers.
+ * @param props.devices - Configured Device Association card ranges.
+ * @param props.dups - Dups.
+ * @returns Rendered React element.
+ */
 export function CardList({ cards, devices, dups }: CardListProps) {
   return (
     <Flex gap="1" wrap="wrap" style={{ maxWidth: '24rem' }}>
@@ -113,8 +155,16 @@ interface CardsEditorProps {
   onChange: (cards: string[]) => void;
 }
 
-// Device (card) list with remove buttons and an add box (device codes 00001-65407; leading zeros dropped, no duplicates,
-// at most MAX_CARDS_PER_ENTRY).
+/**
+ * Device (card) list with remove buttons and an add box (device codes 00001-65407; leading zeros dropped, no duplicates,
+ * at most MAX_CARDS_PER_ENTRY).
+ *
+ * @param props - Component props.
+ * @param props.cards - Raw `cards.bin` buffer or list of card numbers.
+ * @param props.devices - Configured Device Association card ranges.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @returns Rendered React element.
+ */
 export function CardsEditor({ cards, devices, onChange }: CardsEditorProps) {
   const [add, setAdd] = useState('');
   const [error, setError] = useState('');

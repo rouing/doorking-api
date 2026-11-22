@@ -1,7 +1,11 @@
-// Approving another device to add a passkey: for when the account's passkey is on a device that can't confirm for
-// another one (a laptop can't scan a QR code). This device confirms with its passkey (the step-up dialog) and gets a
-// one-time code; the new device signs in and enters it under Passkeys, or scans the QR code, which opens the page
-// there with the code filled in (App keeps it as APPROVAL_KEY).
+/**
+ * @module web/ui/account/ApproveDevice
+ *
+ * Approving another device to add a passkey: for when the account's passkey is on a device that can't confirm for
+ * another one (a laptop can't scan a QR code). This device confirms with its passkey (the step-up dialog) and gets a
+ * one-time code; the new device signs in and enters it under Passkeys, or scans the QR code, which opens the page
+ * there with the code filled in (App keeps it as APPROVAL_KEY).
+ */
 import { useEffect, useRef, useState } from 'react';
 import { Button, Code, Flex, Text } from '@radix-ui/themes';
 import QRCode from 'qrcode';
@@ -17,7 +21,13 @@ interface ApprovalQrProps {
   code: string;
 }
 
-// The QR code of the page's address with the code (drawn on a canvas: the page's content policy allows no data: images).
+/**
+ * The QR code of the page's address with the code (drawn on a canvas: the page's content policy allows no data: images).
+ *
+ * @param props - Component props.
+ * @param props.code - One-time device approval code.
+ * @returns Rendered React element.
+ */
 function ApprovalQr({ code }: ApprovalQrProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -26,6 +36,11 @@ function ApprovalQr({ code }: ApprovalQrProps) {
   return <canvas ref={canvas} aria-label="QR code with the approval code" style={{ borderRadius: 'var(--radius-2)', background: '#fff' }} />;
 }
 
+/**
+ * ApproveDevice React component.
+ *
+ * @returns Rendered React element.
+ */
 export function ApproveDevice() {
   const [approval, setApproval] = useState<Approval | null>(null);
   const [info, setInfo] = useState('');

@@ -3,9 +3,13 @@ import { useRegisterSW } from 'virtual:pwa-register/react';
 
 const CHECK_MS = 60000;
 
-// Registers the service worker (vite.config.mts) and shows a notice when the server has a newer build of the page
-// than the one open (after `npm run build`). Checks every minute and when the tab gets focus. None under
-// `npm run dev`, which has no service worker.
+/**
+ * Registers the service worker (vite.config.mts) and shows a notice when the server has a newer build of the page
+ * than the one open (after `npm run build`). Checks every minute and when the tab gets focus. None under
+ * `npm run dev`, which has no service worker.
+ *
+ * @returns Rendered React element.
+ */
 export function UpdateNotice() {
   const { needRefresh: [newer], updateServiceWorker } = useRegisterSW({
     onRegisteredSW(_url, registration) {

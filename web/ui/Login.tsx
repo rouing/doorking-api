@@ -14,9 +14,17 @@ interface LoginProps {
   sso: SsoProviderInfo[];
 }
 
-// Sign in with a local account (gate admins create them), a passkey, or a single sign-on provider. "Remember user"
-// keeps only the username in this browser. Passkeys are also offered in the username box's suggestions (autofill),
-// and after a password sign-in the browser may save one by itself (savePasskeyAfterSignIn).
+/**
+ * Sign in with a local account (gate admins create them), a passkey, or a single sign-on provider. "Remember user"
+ * keeps only the username in this browser. Passkeys are also offered in the username box's suggestions (autofill),
+ * and after a password sign-in the browser may save one by itself (savePasskeyAfterSignIn).
+ *
+ * @param props - Component props.
+ * @param props.onSignedIn - On signed in.
+ * @param props.emailEnabled - Email enabled.
+ * @param props.sso - Per-server SSO flow and discovery cache.
+ * @returns Rendered React element.
+ */
 export function Login({ onSignedIn, emailEnabled, sso }: LoginProps) {
   const [forgot, setForgot] = useState(false);
   const [remember, setRemember] = useState(() => lsGet('dk-remember-user', false));
@@ -25,8 +33,14 @@ export function Login({ onSignedIn, emailEnabled, sso }: LoginProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  // Signs in with the browser's passkey answer. A passkey the server doesn't know (removed here) is reported to the
-  // browser, which then stops offering it (Chrome 132 and later).
+  /**
+   * Signs in with the browser's passkey answer. A passkey the server doesn't know (removed here) is reported to the
+   * browser, which then stops offering it (Chrome 132 and later).
+   *
+   * @param optionsJSON - `PasskeyOptions` value.
+   * @param response - WebAuthn browser response payload.
+   * @throws Error when validation or the underlying operation fails.
+   */
   async function passkeySession(optionsJSON: PasskeyOptions, response: AuthenticationResponseJSON) {
     try {
       await api('POST', '/api/passkey/session', { response });
@@ -46,7 +60,11 @@ export function Login({ onSignedIn, emailEnabled, sso }: LoginProps) {
     onError: (err) => { setError(passkeyError(err)); setBusy(false); },
   });
 
-  // Passkey sign-in with the button: no username needed, the browser offers this site's passkeys.
+  /**
+   * Passkey sign-in with the button: no username needed, the browser offers this site's passkeys.
+   *
+   * @returns Computed result.
+   */
   const withPasskey = () => autofill.whilePaused(async () => {
     setBusy(true);
     setError('');

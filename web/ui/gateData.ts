@@ -1,12 +1,22 @@
-// The open gate's data and connection, and the sidebar's spacing, for GateApp.
+/**
+ * @module web/ui/gateData
+ *
+ * The open gate's data and connection, and the sidebar's spacing, for GateApp.
+ */
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { CameraSettings, DataReply, GatePrefs, Job, ResidentsReply } from '../../src/types.ts';
 import { ApiError, errorText, type GateApi } from './api.ts';
 
-// The gate's transactions, residents, preferences and camera settings. loadData reloads them: nothing pulled yet
-// (404) is an empty page; any other failure keeps what is shown and says so (loadError, cleared by the next load that
-// works). afterLoad runs after each load (GateApp reloads the snapshots). loadOlder adds the next older page of
-// transactions (GET /data returns the newest page) at the end of the list.
+/**
+ * The gate's transactions, residents, preferences and camera settings. loadData reloads them: nothing pulled yet
+ * (404) is an empty page; any other failure keeps what is shown and says so (loadError, cleared by the next load that
+ * works). afterLoad runs after each load (GateApp reloads the snapshots). loadOlder adds the next older page of
+ * transactions (GET /data returns the newest page) at the end of the list.
+ *
+ * @param gapi - Gate-scoped API fetch helper.
+ * @param afterLoad - `() => void` value.
+ * @returns Operation result.
+ */
 export function useGateData(gapi: GateApi, afterLoad: () => void) {
   const [data, setData] = useState<DataReply | null>(null);
   const [residents, setResidents] = useState<ResidentsReply | null>(null);
@@ -52,9 +62,15 @@ interface GateJobEvents {
   onFinished: (job: Job) => void; // a pull or send started from this page finished well
 }
 
-// The gate's connection: polled every 3 s while it runs (a failed check is tried again). onFinished is not called for
-// a connection that had already finished when the gate was opened. stop() ends the polling (the page closes; a check
-// still on its way then doesn't start polling again). started(): a connection was just started here.
+/**
+ * The gate's connection: polled every 3 s while it runs (a failed check is tried again). onFinished is not called for
+ * a connection that had already finished when the gate was opened. stop() ends the polling (the page closes; a check
+ * still on its way then doesn't start polling again). started(): a connection was just started here.
+ *
+ * @param gapi - Gate-scoped API fetch helper.
+ * @param events - `GateJobEvents` value.
+ * @returns Operation result.
+ */
 export function useGateJob(gapi: GateApi, events: GateJobEvents) {
   const [job, setJob] = useState<Job | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -86,16 +102,21 @@ export function useGateJob(gapi: GateApi, events: GateJobEvents) {
     if (!first && latest.state === 'done') on.current.onFinished(latest);
   }, [gapi]);
 
-  // The first check: a connection that finished before the gate was opened is then known as already seen.
+  /** The first check: a connection that finished before the gate was opened is then known as already seen. */
   const start = useCallback(() => refresh().then(() => { if (lastFinished.current === undefined) lastFinished.current = ''; }), [refresh]);
   const stop = useCallback(() => { pollGen.current++; clearTimeout(timer.current); }, []);
   const started = () => { running.current = true; refresh(); };
   return { job, start, stop, started };
 }
 
-// Sidebar spacing: the roomiest density (0 normal, 1 compact, 2 tight) whose menu fits without scrolling. Rechecked
-// after every render (items and the job badge come and go) and on window resize. Not on phones: the drawer scrolls
-// and keeps its items full size. Returns the ref for the sidebar element.
+/**
+ * Sidebar spacing: the roomiest density (0 normal, 1 compact, 2 tight) whose menu fits without scrolling. Rechecked
+ * after every render (items and the job badge come and go) and on window resize. Not on phones: the drawer scrolls
+ * and keeps its items full size. Returns the ref for the sidebar element.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns Operation result.
+ */
 export function useSidebarDensity(phone: boolean) {
   const sidebar = useRef<HTMLElement>(null);
   useLayoutEffect(() => {

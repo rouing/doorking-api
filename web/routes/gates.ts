@@ -1,16 +1,32 @@
-// Gates a user can open: adding, leaving, DKS login, gate users and API keys.
+/**
+ * @module web/routes/gates
+ *
+ * Gates a user can open: adding, leaving, DKS login, gate users and API keys.
+ */
 import * as dk from '../../index.ts';
 import type { Modules } from '../modules.ts';
 import { G, type Route, route, webOnly } from '../routing.ts';
 import type { Gate, Reply } from '../context.ts';
 import { logger } from '../../src/logging.ts';
 
+/**
+ * Gates routes.
+ *
+ * @param modules - Composed server modules (`context`, `auth`, `mail`, `editing`, `snapshots`, `jobs`).
+ * @returns Registered route definitions for this area.
+ */
 export function gatesRoutes(modules: Modules): Route[] {
   const { APP, asGate, client, gateFor, gateInfo, mailer, NO_EMAIL, objectField, store } = modules.context;
   const { accessEmail, gateName, sendInvite, sendVerification } = modules.mail;
   const { gateConfigFrom } = modules.editing;
   const { accountBusy, addingJobOf, busy, currentJob, roleText, startLoginCheck, startPull } = modules.jobs;
-  // Asks DKS Cloud whether a DKS login works: null when it does, else the reply to send (502: DKS Cloud failed).
+  /**
+   * Asks DKS Cloud whether a DKS login works: null when it does, else the reply to send (502: DKS Cloud failed).
+   *
+   * @param dksUser - DKS Cloud account username.
+   * @param dksPassword - DKS Cloud account password.
+   * @returns Promise resolving to `Reply | null`.
+   */
   async function dksLoginRefusal(dksUser: string, dksPassword: string): Promise<Reply | null> {
     let reply;
     try { reply = String(await client().checkLogin(dksUser, dksPassword)).trim(); } catch (err) {
@@ -110,8 +126,10 @@ export function gatesRoutes(modules: Modules): Route[] {
       if (await dk.getUser(store, String(body.username ?? ''))) {
         return [409, { error: `The username "${dk.userKey(body.username)}" already exists. Share this gate with them instead.`, exists: true }];
       }
-      // With an email (and email set up) and no password: an invitation link; otherwise a temporary password (and a
-      // confirmation link to the email, if one is given).
+      /**
+       * With an email (and email set up) and no password: an invitation link; otherwise a temporary password (and a
+       * confirmation link to the email, if one is given).
+       */
       const invite = Boolean(mailer && body.email && !body.password);
       const user = await dk.createUser(store, { username: body.username, password: body.password, email: body.email, createdBy: session.user, invite });
       await dk.grantAccess(store, gate.phoneNumber, user.username, role, session.user);

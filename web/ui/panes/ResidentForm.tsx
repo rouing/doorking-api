@@ -9,8 +9,13 @@ import { HelpTip } from '../HelpTip.tsx';
 import { NOTE_MAX } from '../../../src/shared.ts';
 
 
-// Directory codes 0 and 1 (000, 001, ...) always get the maximum talk time; the DoorKing manual keeps them for the
-// manager's office or an emergency number, so new entries aren't offered them first.
+/**
+ * Directory codes 0 and 1 (000, 001, ...) always get the maximum talk time; the DoorKing manual keeps them for the
+ * manager's office or an emergency number, so new entries aren't offered them first.
+ *
+ * @param code - Directory code string.
+ * @returns Computed result.
+ */
 const reservedCode = (code: string) => /^\d+$/.test(code) && Number(code) <= 1;
 
 interface ResidentFormProps {
@@ -25,9 +30,23 @@ interface ResidentFormProps {
   onCancel?: () => void;
 }
 
-// Edits a resident (every field) or vendor (name, entry code, security level, cards) in the working copy, or adds a new one
-// (r null). Nothing goes to the gate until Send. Floor and elevator reference are hidden when the gate's features
-// turn them off; their values are kept.
+/**
+ * Edits a resident (every field) or vendor (name, entry code, security level, cards) in the working copy, or adds a new one
+ * (r null). Nothing goes to the gate until Send. Floor and elevator reference are hidden when the gate's features
+ * turn them off; their values are kept.
+ *
+ * @param props - Component props.
+ * @param props.resident - Resident/vendor row.
+ * @param props.vendor - Whether the entry is a vendor.
+ * @param props.dirDigits - Number of digits in directory codes (1–4).
+ * @param props.emptyCodes - List of currently vacant directory codes.
+ * @param props.devices - Configured Device Association card ranges.
+ * @param props.features - Visible feature toggles (`floors`, `elevators`).
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onDone - Callback invoked when the action completes.
+ * @param props.onCancel - Callback invoked when the user cancels.
+ * @returns Rendered React element.
+ */
 export function ResidentForm({ resident, vendor, dirDigits, emptyCodes, devices, features, gapi, onDone, onCancel }: ResidentFormProps) {
   const [code, setCode] = useState(resident ? resident.directoryCode : emptyCodes.find((emptyCode) => !reservedCode(emptyCode)) || '');
   const [name, setName] = useState(resident ? resident.name : '');
@@ -49,8 +68,12 @@ export function ResidentForm({ resident, vendor, dirDigits, emptyCodes, devices,
     try { await fn(); await onDone(); } catch (err) { setInfo(errorText(err)); setBusy(false); }
   };
 
-  // The edit payload; the combined phone is split into area code (3 digits, or 1 + area code for long distance)
-  // and the 7-digit number.
+  /**
+   * The edit payload; the combined phone is split into area code (3 digits, or 1 + area code for long distance)
+   * and the 7-digit number.
+   *
+   * @returns `Record<string, unknown> | null` result.
+   */
   function payload(): Record<string, unknown> | null {
     const out: Record<string, unknown> = { name, entryCode, cards, securityLevel: Number(securityLevel || 0) };
     if (vendor) return out;
@@ -62,7 +85,12 @@ export function ResidentForm({ resident, vendor, dirDigits, emptyCodes, devices,
     return { ...out, areaCode: full.slice(0, -7), phone: full.slice(-7), floor, elevatorRef: Number(elevatorRef) };
   }
 
-  // The note is local (not in the working copy), saved after the entry when it changed.
+  /**
+   * The note is local (not in the working copy), saved after the entry when it changed.
+   *
+   * @param dirCode - `string` value.
+   * @returns Rendered React element.
+   */
   const saveNote = (dirCode: string) => (note.trim() === ((resident && resident.note) || '') ? Promise.resolve()
     : gapi('PUT', `/residents/${encodeURIComponent(dirCode)}/note`, { note }));
 
@@ -86,13 +114,13 @@ export function ResidentForm({ resident, vendor, dirDigits, emptyCodes, devices,
   }
 
   const who = resident ? `${resident.name || '(no name)'} · code ${resident.directoryCode}` : '';
-  // Delete: empties the slot (the directory code stays, as the gate marks an empty slot).
+  /** Delete: empties the slot (the directory code stays, as the gate marks an empty slot). */
   async function clearSlot() {
     if (!resident || !await confirm({ title: `Delete ${noun} "${who}"?`, action: `Delete ${noun}`, color: 'red',
       body: 'This clears the name, phone, entry code and all cards for this directory slot in the working copy. The slot (directory code) itself stays, matching how the gate marks an empty slot. Nothing is sent to the gate until you Send.' })) return;
     run('Deleting…', () => gapi('DELETE', `/residents/${encodeURIComponent(resident.directoryCode)}`));
   }
-  // Remove code: takes the directory code itself off the gate.
+  /** Remove code: takes the directory code itself off the gate. */
   async function removeCode() {
     if (!resident || !await confirm({ title: `Remove directory code ${resident.directoryCode}?`, action: 'Remove code', color: 'red',
       body: `"${who}": this deletes the entry, phone record and all cards, and takes code ${resident.directoryCode} off the gate (it will no longer be a vacant slot). Nothing is sent to the gate until you Send.` })) return;

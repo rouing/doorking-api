@@ -38,8 +38,24 @@ interface DirectoryProps {
   onReload: () => Promise<void>;
 }
 
-// Residents or vendors in the working copy. Clicking a row shows its last 5 transactions and an Edit button;
-// Add opens a form for a new entry.
+/**
+ * Residents or vendors in the working copy. Clicking a row shows its last 5 transactions and an Edit button;
+ * Add opens a form for a new entry.
+ *
+ * @param props - Component props.
+ * @param props.kind - Item or operation kind.
+ * @param props.account - Gate site name used for the DoorKing CSV `ACCOUNT` column.
+ * @param props.list - List of input items.
+ * @param props.tx - Loaded transaction rows for recent-activity lookups, or `null`.
+ * @param props.devices - Configured Device Association card ranges.
+ * @param props.features - Visible feature toggles (`floors`, `elevators`).
+ * @param props.snaps - Gate snapshot state and actions hook.
+ * @param props.onOpenSnap - Callback to open the snapshot viewer for a transaction.
+ * @param props.highlight - Directory code to highlight and scroll into view.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onReload - Callback to reload the gate data.
+ * @returns Rendered React element.
+ */
 export function Directory({ kind, account, list, tx, devices, features, snaps, onOpenSnap, highlight, gapi, onReload }: DirectoryProps) {
   const cols = COLUMNS[kind].filter(([, k]) => (k !== 'floor' || features.floors) && (k !== 'elevatorRef' || features.elevators));
   const vendor = kind === 'vendors';
@@ -49,7 +65,11 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [dialog, confirm] = useConfirm();
-  // Back closes an open add or edit form, after asking (its typing would be lost).
+  /**
+   * Back closes an open add or edit form, after asking (its typing would be lost).
+   *
+   * @returns Computed result.
+   */
   const leaveForm = () => confirm({ title: 'Leave this form?', body: 'Changes you haven\'t saved are lost.', action: 'Leave', color: 'red' });
   useBackLayer(adding, () => setAdding(false), leaveForm);
   useBackLayer(editing, () => setEditing(false), leaveForm);
@@ -70,7 +90,9 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
     if (query) out = out.filter((resident) => [...Object.values(resident), dirCell(resident, 'securityLevel')].join(' ').toLowerCase().includes(query));
     return sortRows(out, sort, (col) => (resident: ResidentRow) => dirCell(resident, col));
   }, [list, kind, filter, sort]);
-  // Values held by more than one entry (all kinds, so a clash between a resident and a vendor shows on both pages).
+  /**
+   * Values held by more than one entry (all kinds, so a clash between a resident and a vendor shows on both pages).
+   */
   const dups = useMemo(() => {
     const of = (kindOf: string) => new Set((list?.duplicates || []).filter((duplicate) => duplicate.kind === kindOf).map((duplicate) => duplicate.value));
     return { directoryCode: of('directoryCode'), entryCode: of('entryCode'), card: of('card') };
@@ -81,7 +103,11 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
   const { limit, more } = useShownRows(rows.length, `${filter}|${kind}`);
   const end = Math.max(limit, rows.findIndex((resident) => resident.directoryCode === highlight) + 1); // a highlighted entry always shows
 
-  // Every directory code (residents, vendors and empty slots), in DoorKing's cloud export format.
+  /**
+   * Every directory code (residents, vendors and empty slots), in DoorKing's cloud export format.
+   *
+   * @returns Computed result.
+   */
   const csv = () => list && downloadText('ResidentsExport.csv', doorKingCsv(account, list.rows || [], list.unassignedCards));
 
   return (
@@ -165,8 +191,16 @@ interface LastEditProps {
   version: string;
 }
 
-// "Last edited by <user>, <time>" for a directory code, from History; clicking it lists every recorded change (what,
-// when, who). Nothing is shown when History has none. version: reloads after the working copy changes.
+/**
+ * "Last edited by <user>, <time>" for a directory code, from History; clicking it lists every recorded change (what,
+ * when, who). Nothing is shown when History has none. version: reloads after the working copy changes.
+ *
+ * @param props - Component props.
+ * @param props.resident - Resident/vendor row.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.version - Reloads after the working copy changes.
+ * @returns Rendered React element.
+ */
 function LastEdit({ resident, gapi, version }: LastEditProps) {
   const [changes, setChanges] = useState<EntryChange[] | null>(null);
   const [error, setError] = useState('');
@@ -237,7 +271,16 @@ interface RecentTransactionsProps {
   onOpenSnap: (transaction: TransactionRow) => void;
 }
 
-// Last 5 transactions for a resident (transaction rows are newest first), matched on directory code.
+/**
+ * Last 5 transactions for a resident (transaction rows are newest first), matched on directory code.
+ *
+ * @param props - Component props.
+ * @param props.resident - Resident/vendor row.
+ * @param props.tx - Loaded transaction rows for recent-activity lookups, or `null`.
+ * @param props.snaps - Gate snapshot state and actions hook.
+ * @param props.onOpenSnap - Callback to open the snapshot viewer for a transaction.
+ * @returns Rendered React element.
+ */
 function RecentTransactions({ resident, tx, snaps, onOpenSnap }: RecentTransactionsProps) {
   if (!tx) return <Text size="2" color="gray">No transactions yet. Pull transactions from the gate.</Text>;
   const recent = tx.filter((transaction) => transaction.directoryCode === resident.directoryCode).slice(0, 5);

@@ -1,4 +1,8 @@
-// Calls to the server's REST API (see web/server.ts). Errors carry the server's { error } message.
+/**
+ * @module web/ui/api
+ *
+ * Calls to the server's REST API (see web/server.ts). Errors carry the server's { error } message.
+ */
 import { createContext, useContext } from 'react';
 
 export class ApiError extends Error {
@@ -12,22 +16,38 @@ export class ApiError extends Error {
 }
 
 let signedOut = () => {};
-// Called when a request comes back 401 (the session ended), except the sign-in request itself, or 403 because the
-// user must choose a new password first: either way the page reloads the session.
+/**
+ * Called when a request comes back 401 (the session ended), except the sign-in request itself, or 403 because the
+ * user must choose a new password first: either way the page reloads the session.
+ *
+ * @param fn - Callback function to execute.
+ */
 export function onSignedOut(fn: () => void) { signedOut = fn; }
 
 let stepUp: (reply: Record<string, unknown>) => Promise<boolean> = async () => false;
 let stepping: Promise<boolean> | null = null;
-// Called when a sensitive action comes back 403 { stepUp: true } (a passkey confirmation is needed); resolves true
-// once the user has confirmed, and the request is then sent once more. Requests waiting at the same time share it.
+/**
+ * Called when a sensitive action comes back 403 { stepUp: true } (a passkey confirmation is needed); resolves true
+ * once the user has confirmed, and the request is then sent once more. Requests waiting at the same time share it.
+ *
+ * @param fn - Callback function to execute.
+ */
 export function onStepUp(fn: (reply: Record<string, unknown>) => Promise<boolean>) { stepUp = fn; }
 
+/**
+ * Api.
+ *
+ * @param method - `string` value.
+ * @param url - Target URL.
+ * @param [body] - Parsed JSON request body.
+ * @returns Promise resolving to `T`.
+ */
 export function api<T = unknown>(method: string, url: string, body?: unknown): Promise<T> { return call<T>(method, url, body, false); }
 
 async function call<T>(method: string, url: string, body: unknown, retried: boolean): Promise<T> {
   const res = await fetch(url, {
     method,
-    // The server rejects any POST/PUT without a JSON content-type (415), so set it for every non-GET.
+    /** The server rejects any POST/PUT without a JSON content-type (415), so set it for every non-GET. */
     headers: method === 'GET' ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -43,25 +63,64 @@ async function call<T>(method: string, url: string, body: unknown, retried: bool
 
 export type GateApi = <T = unknown>(method: string, sub: string, body?: unknown) => Promise<T>;
 
-// Requests for one gate: /api/gates/<phone><sub>.
+/**
+ * Requests for one gate: /api/gates/<phone><sub>.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param sub - When `true`, use the recorder sub-stream (lower resolution).
+ * @returns Computed result.
+ */
 export const gateUrl = (phone: string, sub: string) => `/api/gates/${encodeURIComponent(phone)}${sub}`;
+/**
+ * Gate api.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns `GateApi` result.
+ */
 export const gateApi = (phone: string): GateApi => (method, sub, body) => api(method, gateUrl(phone, sub), body);
 
+/**
+ * Error text.
+ *
+ * @param err - Caught error value.
+ * @returns Computed result.
+ */
 export const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-// True on a gate the signed-in user may only view (role readonly): edit controls are hidden or disabled. The server
-// refuses changes anyway.
+/**
+ * True on a gate the signed-in user may only view (role readonly): edit controls are hidden or disabled. The server
+ * refuses changes anyway.
+ */
 export const ReadOnlyContext = createContext(false);
+/**
+ * Use read only.
+ *
+ * @returns Computed result.
+ */
 export const useReadOnly = () => useContext(ReadOnlyContext);
 
-// Called after a page saved to the working copy, so the gate's state (matches the gate / changes not sent) and Send to
-// gate follow it (GateApp reloads its data).
+/**
+ * Called after a page saved to the working copy, so the gate's state (matches the gate / changes not sent) and Send to
+ * gate follow it (GateApp reloads its data).
+ */
 export const WorkingCopySavedContext = createContext<() => Promise<void> | void>(() => {});
 
-// Per-browser settings in localStorage. Never holds a password or master code.
+/**
+ * Per-browser settings in localStorage. Never holds a password or master code.
+ *
+ * @param key - Lookup key, API key, or setting key.
+ * @param def - `T` value.
+ * @returns `T` result.
+ */
 export function lsGet<T>(key: string, def: T): T {
   try { const v = localStorage.getItem(key); return v == null ? def : JSON.parse(v) as T; } catch { return def; }
 }
+/**
+ * Ls set.
+ *
+ * @param key - Lookup key, API key, or setting key.
+ * @param value - Input value.
+ */
 export function lsSet(key: string, value: unknown) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage blocked */ }
 }

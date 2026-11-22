@@ -1,13 +1,15 @@
 import { allFF, bcd, BLOCK_SIZE } from './board-files.ts';
 import { httpError } from './errors.ts';
 
-// Gate settings read directly from names.bin (positions from DoorKing32's send builder, FUN_004aad40).
-// Only fields whose position and encoding are confirmed are editable; the rest are shown read-only.
+/**
+ * Gate settings read directly from names.bin (positions from DoorKing32's send builder, FUN_004aad40).
+ * Only fields whose position and encoding are confirmed are editable; the rest are shown read-only.
+ */
 const DISPLAY_LINES_OFFSET = 0x190;
 const HOLIDAY_OFFSET = 0x9c3;
 const HOLIDAY_ROWS = 32;
 
-// maxLength: text types only, the most characters encode accepts.
+/** maxLength: text types only, the most characters encode accepts. */
 export interface FieldType { size: number; decode: (b: Buffer) => string; encode?: (v: string) => Buffer; maxLength?: number }
 export interface GateSettingField {
   key: string; group: string; name: string; offset: number; type: FieldType; editable?: boolean; secret?: boolean; note?: string;
@@ -19,7 +21,13 @@ export interface GateSetting {
 
 const toBcd = (value: number): number => ((Math.floor(value / 10) << 4) | (value % 10));
 const fieldType = (type: FieldType): FieldType => type;
-// The bytes of a "? (0x7)" or "? (005da0013491)" value (shown for bytes a type can't name), or null.
+/**
+ * The bytes of a "? (0x7)" or "? (005da0013491)" value (shown for bytes a type can't name), or null.
+ *
+ * @param v - `string` value.
+ * @param size - Byte length or count.
+ * @returns `Buffer | null` result.
+ */
 function rawValue(v: string, size: number): Buffer | null {
   const match = /^\? \((0x)?([0-9a-f]+)\)$/i.exec(v);
   if (!match) return null;
@@ -27,7 +35,7 @@ function rawValue(v: string, size: number): Buffer | null {
   return match[2].length === size * 2 ? Buffer.from(match[2], 'hex') : null;
 }
 
-// Field types: size in bytes, decode(bytes) -> string, encode(string) -> Buffer (throws when invalid).
+/** Field types: size in bytes, decode(bytes) -> string, encode(string) -> Buffer (throws when invalid). */
 const TYPES = {
   text: (size: number): FieldType => ({
     size,
@@ -81,7 +89,7 @@ const TYPES = {
     },
   }),
   digits: (size: number): FieldType => ({ size, decode: (buffer) => [...buffer].map((byte) => (byte <= 9 ? String(byte) : byte === 0x0a ? '0' : '')).join('') }),
-  // Talk time: one byte of seconds (DoorKing32 writes minutes * 60 + seconds), shown as m:ss. 0xFF = unset.
+  /** Talk time: one byte of seconds (DoorKing32 writes minutes * 60 + seconds), shown as m:ss. 0xFF = unset. */
   seconds: fieldType({
     size: 1,
     decode: (buffer) => (buffer[0] === 0xff ? '' : `${Math.floor(buffer[0] / 60)}:${String(buffer[0] % 60).padStart(2, '0')}`),
@@ -103,7 +111,7 @@ const TYPES = {
       return Buffer.from([Number(value)]);
     },
   }),
-  // Facility code: 16-bit big-endian, 0xFFFF = blank.
+  /** Facility code: 16-bit big-endian, 0xFFFF = blank. */
   code16: fieldType({
     size: 2,
     decode: (buffer) => (allFF(buffer) ? '' : String((buffer[0] << 8) | buffer[1])),
@@ -113,7 +121,7 @@ const TYPES = {
       return Buffer.from([(Number(value) >> 8) & 0xff, Number(value) & 0xff]);
     },
   }),
-  // Facility code: stored like code16, but valid codes are 000-255 (DoorKing manual 3.7.1).
+  /** Facility code: stored like code16, but valid codes are 000-255 (DoorKing manual 3.7.1). */
   facility: fieldType({
     size: 2,
     decode: (buffer) => (allFF(buffer) ? '' : String((buffer[0] << 8) | buffer[1])),
@@ -123,13 +131,13 @@ const TYPES = {
       return Buffer.from([0, Number(value)]);
     },
   }),
-  // On/off flag where 0x00 = on and 0xFF = off (facility codes enable).
+  /** On/off flag where 0x00 = on and 0xFF = off (facility codes enable). */
   onoff: fieldType({
     size: 1,
     decode: (buffer) => (buffer[0] === 0xff ? 'No' : 'Yes'),
     encode: (value) => Buffer.from([/^(yes|on|1|true)$/i.test(value) ? 0x00 : 0xff]),
   }),
-  // Hold-open time: hour byte (0x80 set, 0x20 PM, low 5 = BCD hour 1-12) + BCD minute. Value is 24h "HH:MM".
+  /** Hold-open time: hour byte (0x80 set, 0x20 PM, low 5 = BCD hour 1-12) + BCD minute. Value is 24h "HH:MM". */
   holdTime: fieldType({
     size: 2,
     decode: (buffer) => {
@@ -149,7 +157,9 @@ const TYPES = {
       return Buffer.from([0x80 | (h24 >= 12 ? 0x20 : 0) | toBcd(h12), toBcd(+match[2])]);
     },
   }),
-  // Day mask: bit 7 = Sun … bit 1 = Sat, as a 7-char "0"/"1" string. 0xFF = not set: '' (kept apart from 0x00, no days).
+  /**
+   * Day mask: bit 7 = Sun … bit 1 = Sat, as a 7-char "0"/"1" string. 0xFF = not set: '' (kept apart from 0x00, no days).
+   */
   dayMask: fieldType({
     size: 1,
     decode: (buffer) => (buffer[0] === 0xff ? ''
@@ -161,7 +171,7 @@ const TYPES = {
       return Buffer.from([byte]);
     },
   }),
-  // Elevator bitmap: elevator e (1-8) is bit (e-1). Value is an 8-char "0"/"1" string. 0x00 = none.
+  /** Elevator bitmap: elevator e (1-8) is bit (e-1). Value is an 8-char "0"/"1" string. 0x00 = none. */
   elevatorMask: fieldType({
     size: 1,
     decode: (buffer) => Array.from({ length: 8 }, (_, elevator) => ((buffer[0] & (1 << elevator)) ? '1' : '0')).join(''),
@@ -171,9 +181,11 @@ const TYPES = {
       return Buffer.from([byte]);
     },
   }),
-  // Text stored in a `size`-byte space-padded slot but limited to `max` input characters (e.g. the
-  // single-line System Message: a 48-byte slot the gate only accepts 27 usable characters in; the gate
-  // needs the space padding to 48 bytes for its marquee scrolling).
+  /**
+   * Text stored in a `size`-byte space-padded slot but limited to `max` input characters (e.g. the
+   * single-line System Message: a 48-byte slot the gate only accepts 27 usable characters in; the gate
+   * needs the space padding to 48 bytes for its marquee scrolling).
+   */
   textMax: (size: number, max: number): FieldType => ({
     size,
     maxLength: max,
@@ -183,7 +195,7 @@ const TYPES = {
       return Buffer.from(value.padEnd(size), 'latin1');
     },
   }),
-  // Elevator hold time: one byte of seconds, 0xFF = unset.
+  /** Elevator hold time: one byte of seconds, 0xFF = unset. */
   elevatorSeconds: fieldType({
     size: 1,
     decode: (buffer) => (buffer[0] === 0xff ? '' : String(buffer[0])),
@@ -193,8 +205,10 @@ const TYPES = {
       return Buffer.from([Number(value)]);
     },
   }),
-  // Security relays: 3 bytes (big-endian), relay r (0-18) at bit (r+5). Value is a 19-char "0"/"1" string.
-  // All-0xFF is the unused-record filler (bits 0-4 can never be a real relay), so it reads as none.
+  /**
+   * Security relays: 3 bytes (big-endian), relay r (0-18) at bit (r+5). Value is a 19-char "0"/"1" string.
+   * All-0xFF is the unused-record filler (bits 0-4 can never be a real relay), so it reads as none.
+   */
   relayMask: fieldType({
     size: 3,
     decode: (buffer) => {
@@ -208,8 +222,10 @@ const TYPES = {
       return Buffer.from([(bits >> 16) & 0xff, (bits >> 8) & 0xff, bits & 0xff]);
     },
   }),
-  // Security floors: 8 bytes, floor f (1-64) at byte (7 - (f-1)>>3) of this field, bit (f-1)&7.
-  // Value is a comma-separated list of floor numbers. All-0xFF is the unused-record filler (reads as none).
+  /**
+   * Security floors: 8 bytes, floor f (1-64) at byte (7 - (f-1)>>3) of this field, bit (f-1)&7.
+   * Value is a comma-separated list of floor numbers. All-0xFF is the unused-record filler (reads as none).
+   */
   floorMask: fieldType({
     size: 8,
     decode: (buffer) => {
@@ -228,7 +244,7 @@ const TYPES = {
       return buf;
     },
   }),
-  // One choice stored as a byte: names[0] = 0xFF, names[i] = i.
+  /** One choice stored as a byte: names[0] = 0xFF, names[i] = i. */
   choice: (names: string[]): FieldType => ({
     size: 1,
     decode: (buffer) => (buffer[0] === 0xff ? names[0] : names[buffer[0]] ?? `? (0x${buffer[0].toString(16)})`),
@@ -238,9 +254,11 @@ const TYPES = {
       return Buffer.from([i === 0 ? 0xff : i]);
     },
   }),
-  // Read-only (written back only from the stored value, never edited). The read-only types encode every value
-  // they decode, "? (...)" included, so the files rebuild exactly. A flag DoorKing32 writes like a digit:
-  // 0x01 = on, 0x0A (digit 0) = off.
+  /**
+   * Read-only (written back only from the stored value, never edited). The read-only types encode every value
+   * they decode, "? (...)" included, so the files rebuild exactly. A flag DoorKing32 writes like a digit:
+   * 0x01 = on, 0x0A (digit 0) = off.
+   */
   digitFlag: (on: string, off: string): FieldType => ({
     size: 1,
     decode: (buffer) => (buffer[0] === 0x01 ? on : buffer[0] === 0x0a ? off : buffer[0] === 0xff ? '' : `? (0x${buffer[0].toString(16)})`),
@@ -250,7 +268,7 @@ const TYPES = {
       return b;
     },
   }),
-  // Read-only. One byte naming a value (names[byte]); 0xFF = none.
+  /** Read-only. One byte naming a value (names[byte]); 0xFF = none. */
   named: (names: Record<number, string>): FieldType => ({
     size: 1,
     decode: (buffer) => (buffer[0] === 0xff ? '' : names[buffer[0]] ?? `? (0x${buffer[0].toString(16)})`),
@@ -261,7 +279,7 @@ const TYPES = {
       return b;
     },
   }),
-  // Read-only. A Unix time, 4 bytes little-endian, shown as "YYYY-MM-DD HH:MM:SS UTC". All 0xFF = none.
+  /** Read-only. A Unix time, 4 bytes little-endian, shown as "YYYY-MM-DD HH:MM:SS UTC". All 0xFF = none. */
   unixTime: fieldType({
     size: 4,
     decode: (buffer) => {
@@ -280,8 +298,10 @@ const TYPES = {
       return b;
     },
   }),
-  // Read-only. The system memory (number of directory codes), from the two 24-bit big-endian end addresses
-  // DoorKing32 writes: the directory area's (0xF80 + memory * 20), then phone.bin's (0x10D80 + memory * 10).
+  /**
+   * Read-only. The system memory (number of directory codes), from the two 24-bit big-endian end addresses
+   * DoorKing32 writes: the directory area's (0xF80 + memory * 20), then phone.bin's (0x10D80 + memory * 10).
+   */
   memorySize: fieldType({
     size: 6,
     decode: (buffer) => {
@@ -302,7 +322,9 @@ const TYPES = {
       return b;
     },
   }),
-  // Anti-pass back relay row: up to 10 relay numbers (0-18), sorted, 0xFF = empty. Value is a comma-separated list.
+  /**
+   * Anti-pass back relay row: up to 10 relay numbers (0-18), sorted, 0xFF = empty. Value is a comma-separated list.
+   */
   relayList: fieldType({
     size: 10,
     decode: (buffer) => {
@@ -319,8 +341,10 @@ const TYPES = {
       return buf;
     },
   }),
-  // Re-Sync List: enable byte (0x00 = on) + 5 big-endian numbers (0x0000 = empty box); all 0xFF when off.
-  // Value is '' when off, else the 5 boxes comma-separated (blank boxes allowed).
+  /**
+   * Re-Sync List: enable byte (0x00 = on) + 5 big-endian numbers (0x0000 = empty box); all 0xFF when off.
+   * Value is '' when off, else the 5 boxes comma-separated (blank boxes allowed).
+   */
   resyncList: fieldType({
     size: 11,
     decode: (buffer) => (buffer[0] === 0xff ? '' : Array.from({ length: 5 }, (_, i) => {
@@ -342,8 +366,10 @@ const TYPES = {
       return buf;
     },
   }),
-  // Scheduled re-sync days: 7 bytes Sat..Sun; day d (0=Sun..6=Sat) at byte (6-d) holds (7-d) when ticked,
-  // 0xFF when not. Value is a 7-char "0"/"1" string, Sun..Sat.
+  /**
+   * Scheduled re-sync days: 7 bytes Sat..Sun; day d (0=Sun..6=Sat) at byte (6-d) holds (7-d) when ticked,
+   * 0xFF when not. Value is a 7-char "0"/"1" string, Sun..Sat.
+   */
   dayList: fieldType({
     size: 7,
     decode: (buffer) => Array.from({ length: 7 }, (_, day) => (buffer[6 - day] === 0xff ? '0' : '1')).join(''),
@@ -360,7 +386,7 @@ const DISPLAY_LINE_NAMES = ['User message line 1', 'User message line 2', 'User 
 const TONES = [['Momentary', 'ToneMomentary'], ['Hold', 'ToneHold'], ['Release', 'ToneRelease'], ['Hold 1 Hr', 'ToneHold1Hr']];
 const TONE_OFFSETS: Record<number, number> = { 0: 0x58, 1: 0x07, 2: 0x0b };
 
-// key, group, name, offset, type, editable, secret, note.
+/** key, group, name, offset, type, editable, secret, note. */
 const FIELDS: GateSettingField[] = [
   { key: 'masterCode', group: 'System', name: 'Master code', offset: 0x00, type: TYPES.digits(4), secret: true },
   { key: 'talkTime', group: 'System', name: 'Talk time (m:ss)', offset: 0x10, type: TYPES.seconds, editable: true },
@@ -470,8 +496,10 @@ const FIELDS: GateSettingField[] = [
   { key: 'apbScheduleTime', group: 'Anti-Pass Back', name: 'Scheduled Re-Sync All time', offset: 0xa3f, type: TYPES.holdTime, editable: true },
 ];
 const BY_KEY = new Map(FIELDS.map((field) => [field.key, field]));
-// Fields the board files are built from: every setting with an encoder except the master code (kept out of the
-// values tables; see gate-state.ts). Users may change only the editable ones.
+/**
+ * Fields the board files are built from: every setting with an encoder except the master code (kept out of the
+ * values tables; see gate-state.ts). Users may change only the editable ones.
+ */
 export const WRITTEN_FIELDS = FIELDS.filter((field) => field.type.encode && !field.secret);
 const MIN_SIZE = Math.max(...FIELDS.map((field) => field.offset + field.type.size));
 
@@ -479,7 +507,12 @@ function checkSize(buf: Buffer): void {
   if (buf.length < MIN_SIZE) throw new Error(`names.bin is too short (${buf.length} bytes) to contain the settings`);
 }
 
-// names.bin -> list of settings with their current values.
+/**
+ * names.bin -> list of settings with their current values.
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `GateSetting[]` result.
+ */
 export function decodeGateSettings(buf: Buffer): GateSetting[] {
   checkSize(buf);
   return FIELDS.map((field) => ({
@@ -489,8 +522,15 @@ export function decodeGateSettings(buf: Buffer): GateSetting[] {
   }));
 }
 
-// Returns a copy of names.bin with the changed settings written in place, the list of changed bytes and a
-// names.map (one byte per 128-byte block, 1 = block changed). All other bytes stay as pulled from the gate.
+/**
+ * Returns a copy of names.bin with the changed settings written in place, the list of changed bytes and a
+ * names.map (one byte per 128-byte block, 1 = block changed). All other bytes stay as pulled from the gate.
+ *
+ * @param buf - Binary board file buffer.
+ * @param changes - Map of setting keys to new values.
+ * @returns Operation result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function applyGateSettings(buf: Buffer, changes: Record<string, unknown> | null | undefined) {
   checkSize(buf);
   const out = Buffer.from(buf);

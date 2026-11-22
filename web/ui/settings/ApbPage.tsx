@@ -8,12 +8,12 @@ import { Box, DAY_LETTERS, GroupPage, Head, rowState, setBit, TimeBox } from './
 import { useGateSettings, type GateSettings } from './useGateSettings.ts';
 
 const MAX_RELAYS = 10;
-// Values Clear sets (every setting on the page back to unset).
+/** Values Clear sets (every setting on the page back to unset). */
 const CLEAR: Record<string, string> = {
   apbMode: 'Off', apbRelaysIn: '', apbRelaysOut: '', apbCounterEvery: 'Off', apbCounterReset: '', apbResyncAll: 'No',
   apbResyncList: '', apbScheduleEnabled: 'No', apbScheduleDays: '0000000', apbScheduleTime: '',
 };
-// "?" tip of each row (a key in HELP).
+/** "?" tip of each row (a key in HELP). */
 const ROW_HELP: Record<string, string> = {
   'True Anti Passback': 'apbMode', 'Relays In': 'apbRelays', 'Relays Out': 'apbRelays', 'Record Facility Counter Every': 'apbCounter',
   'Reset Facility Counter to': 'apbCounter', 'Re-Sync': 'apbResync', 'Enable Scheduled Re-Sync All': 'apbResync',
@@ -25,7 +25,15 @@ interface GateChoiceProps {
   onChange: (v: string) => void;
 }
 
-// The gate's own value stays in the list even when it isn't one of the usual ones.
+/**
+ * The gate's own value stays in the list even when it isn't one of the usual ones.
+ *
+ * @param props - Component props.
+ * @param props.value - Input value.
+ * @param props.options - Optional settings.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @returns Rendered React element.
+ */
 function GateChoice({ value, options, onChange }: GateChoiceProps) {
   return <Choice size="1" value={value} options={options.includes(value) ? options : [...options, value]} onChange={onChange} />;
 }
@@ -37,7 +45,16 @@ interface RelayPicksProps {
   shown: number[];
 }
 
-// In/Out relays: checkboxes for the shown relays; hidden relays already set are kept. At most 10 in total.
+/**
+ * In/Out relays: checkboxes for the shown relays; hidden relays already set are kept. At most 10 in total.
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.setting - Setting.
+ * @param props.name - Display name or filename.
+ * @param props.shown - Shown.
+ * @returns Rendered React element.
+ */
 function RelayPicks({ settings, setting, name, shown }: RelayPicksProps) {
   const on = new Set(settings.current(setting).split(',').filter(Boolean).map(Number));
   const set = (relay: number, picked: boolean) => {
@@ -58,7 +75,15 @@ interface ResyncProps {
   list: GateSettingRow;
 }
 
-// Re-Sync: none, all devices, or a list of up to 5 device numbers.
+/**
+ * Re-Sync: none, all devices, or a list of up to 5 device numbers.
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.all - All.
+ * @param props.list - List of input items.
+ * @returns Rendered React element.
+ */
 function Resync({ settings, all, list }: ResyncProps) {
   const cur = settings.current(list);
   const mode = cur !== '' ? 'list' : settings.current(all) === 'Yes' ? 'all' : 'none';
@@ -89,8 +114,16 @@ interface ApbPageProps {
   relays: number[];
 }
 
-// Anti-Pass Back (names.bin block 20): mode, In/Out relays, facility counter, one-time re-sync and the scheduled
-// Re-Sync All. shown: relays 0-2 plus the Tracker relays.
+/**
+ * Anti-Pass Back (names.bin block 20): mode, In/Out relays, facility counter, one-time re-sync and the scheduled
+ * Re-Sync All. shown: relays 0-2 plus the Tracker relays.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.relayLabels - Relay labels.
+ * @param props.relays - Relays.
+ * @returns Rendered React element.
+ */
 export function ApbPage({ gapi, relayLabels, relays: shown }: ApbPageProps) {
   const settings = useGateSettings(gapi);
   const field = (key: string) => settings.field(key);

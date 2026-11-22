@@ -1,5 +1,9 @@
-// Board memory images exchanged with DKS Cloud (names.bin, phone.bin, cards.bin, rcv_out.bin)
-// and their .MAP change flags (one byte per 128-byte block, 1 = block changed).
+/**
+ * @module src/board-files
+ *
+ * Board memory images exchanged with DKS Cloud (names.bin, phone.bin, cards.bin, rcv_out.bin)
+ * and their .MAP change flags (one byte per 128-byte block, 1 = block changed).
+ */
 import type { ResidentRow } from './types.ts';
 
 export interface NamesLayout { areaCodeMode: 255 | 10; areaCodeOffset: number; areaCodeSlots: number; directoryOffset: number }
@@ -20,47 +24,81 @@ export interface RcvEvent {
   lookup: 'directory' | 'entryCode' | 'card' | null;
 }
 
-// Record sizes and fixed offsets of the board files, used by every module that reads or writes them.
+/** Record sizes and fixed offsets of the board files, used by every module that reads or writes them. */
 export const BLOCK_SIZE = 128; // a .map file has one byte per block of this size
 export const NAMES_ENTRY_SIZE = 20; // one directory entry in names.bin
 export const PHONE_RECORD_SIZE = 10; // one phone.bin record
 export const CARD_RECORD_SIZE = 4; // one cards.bin record
 export const NAMES_MIDDLE_POINTER_OFFSET = 0xf8; // 3-byte big-endian offset of the middle shown entry (DoorKing32.exe.c:119433)
-// names.bin layout depends on the gate's "Area codes" setting (DoorKing32 snapshots, 255 vs 10):
-//   255: area-code table at 0xA41 (255 entries), directory at 0xF80.
-//   10:  area-code table at 0x44 (10 entries), directory at 0xC00; the file is 0x380 bytes shorter.
-// The middle-entry pointer (0xF8) always counts as if the directory started at 0xF80.
+/**
+ * names.bin layout depends on the gate's "Area codes" setting (DoorKing32 snapshots, 255 vs 10):
+ *   255: area-code table at 0xA41 (255 entries), directory at 0xF80.
+ *   10:  area-code table at 0x44 (10 entries), directory at 0xC00; the file is 0x380 bytes shorter.
+ * The middle-entry pointer (0xF8) always counts as if the directory started at 0xF80.
+ */
 export const NAMES_LAYOUTS: Record<255 | 10, NamesLayout> = {
   255: { areaCodeMode: 255, areaCodeOffset: 0xa41, areaCodeSlots: 255, directoryOffset: 0xf80 },
   10: { areaCodeMode: 10, areaCodeOffset: 0x44, areaCodeSlots: 10, directoryOffset: 0xc00 },
 };
 const NAMES_10_LENGTH = 63104; // DoorKing32 names.bin in 10-area-code mode (64000 in 255 mode)
 
-// "Num of Digits in Dir Code" (1-4, per the DoorKing manual) at names.bin 0x40. The entry's code field (bytes
-// 16-19) holds the code right-justified and space padded ("   5", "  12", " 701", "1701"); phone.bin/cards.bin hold
-// it as F-padded BCD. 1 and 2 digits are not yet checked against DoorKing32 snapshots.
+/**
+ * "Num of Digits in Dir Code" (1-4, per the DoorKing manual) at names.bin 0x40. The entry's code field (bytes
+ * 16-19) holds the code right-justified and space padded ("   5", "  12", " 701", "1701"); phone.bin/cards.bin hold
+ * it as F-padded BCD. 1 and 2 digits are not yet checked against DoorKing32 snapshots.
+ */
 export const NAMES_DIR_DIGITS_OFFSET = 0x40;
+/**
+ * Names dir digits.
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `number` result.
+ */
 export const namesDirDigits = (buf: Buffer): number => ([1, 2, 3, 4].includes(buf[NAMES_DIR_DIGITS_OFFSET]) ? buf[NAMES_DIR_DIGITS_OFFSET] : 3);
 
-// Directory code of the entry at o, or null when o is not a directory entry.
+/**
+ * Directory code of the entry at o, or null when o is not a directory entry.
+ *
+ * @param buf - Binary board file buffer.
+ * @param offset - Byte offset.
+ * @returns `string | null` result.
+ */
 export function namesEntryCode(buf: Buffer, offset: number): string | null {
   if (offset + NAMES_ENTRY_SIZE > buf.length) return null;
   const match = /^ {0,3}(\d{1,4})$/.exec(buf.toString('latin1', offset + 16, offset + 20));
   return match ? match[1] : null;
 }
 
+/**
+ * Is names entry at.
+ *
+ * @param buf - Binary board file buffer.
+ * @param offset - Byte offset.
+ * @returns True when the condition holds.
+ */
 export const isNamesEntryAt = (buf: Buffer, offset: number): boolean => namesEntryCode(buf, offset) !== null;
 
-// Layout of a names.bin: from where the directory starts, else (empty directory) from the file length.
+/**
+ * Layout of a names.bin: from where the directory starts, else (empty directory) from the file length.
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `NamesLayout` result.
+ */
 export function namesLayout(buf: Buffer): NamesLayout {
   if (isNamesEntryAt(buf, NAMES_LAYOUTS[255].directoryOffset)) return NAMES_LAYOUTS[255];
   if (isNamesEntryAt(buf, NAMES_LAYOUTS[10].directoryOffset)) return NAMES_LAYOUTS[10];
   return buf.length === NAMES_10_LENGTH ? NAMES_LAYOUTS[10] : NAMES_LAYOUTS[255];
 }
 
-// phone.bin bytes 2-5 (area-code index + 7-digit local number).
-//   255 mode: byte 2 = index (0xFF = none), bytes 3-5 = number as 24-bit big-endian (0xFFFFFF = none).
-//   10 mode: high nibble of byte 2 = index (0xF = none), then the 7 digits as BCD (all 0xF = none).
+/**
+ * phone.bin bytes 2-5 (area-code index + 7-digit local number).
+ *   255 mode: byte 2 = index (0xFF = none), bytes 3-5 = number as 24-bit big-endian (0xFFFFFF = none).
+ *   10 mode: high nibble of byte 2 = index (0xF = none), then the 7 digits as BCD (all 0xF = none).
+ *
+ * @param rec - `Buffer` value.
+ * @param [areaCodeMode] - Area code mode.
+ * @returns `PhoneFields` result.
+ */
 export function readPhoneFields(rec: Buffer, areaCodeMode = 255): PhoneFields {
   if (areaCodeMode === 10) {
     const hex = rec.subarray(2, 6).toString('hex');
@@ -76,7 +114,17 @@ export function readPhoneFields(rec: Buffer, areaCodeMode = 255): PhoneFields {
   };
 }
 
-// Writes bytes 2-5 of the phone record at offset o. phone = up to 7 digits or null.
+/**
+ * Writes bytes 2-5 of the phone record at offset o. phone = up to 7 digits or null.
+ *
+ * @param buf - Binary board file buffer.
+ * @param offset - Byte offset.
+ * @param options - Options object.
+ * @param options.areaCodeIndex - Area code index.
+ * @param options.phone - Gate system phone number (digits or formatted).
+ * @param [areaCodeMode] - Area code mode.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export function writePhoneFields(
   buf: Buffer, offset: number,
   { areaCodeIndex, phone }: { areaCodeIndex?: number | null; phone?: string | number | null },
@@ -95,7 +143,12 @@ export function writePhoneFields(
   }
   buf.writeUIntBE(Number(phone), offset + 3, 3);
 }
-// Packed decimal digits; 0xF nibbles are padding.
+/**
+ * Packed decimal digits; 0xF nibbles are padding.
+ *
+ * @param bytes - `Iterable<number>` value.
+ * @returns `string | null` result.
+ */
 export function bcd(bytes: Iterable<number>): string | null {
   let out = '';
   for (const byte of bytes) {
@@ -107,12 +160,24 @@ export function bcd(bytes: Iterable<number>): string | null {
   return out;
 }
 
+/**
+ * All ff.
+ *
+ * @param bytes - `Uint8Array` value.
+ * @returns True when the condition holds.
+ */
 export const allFF = (bytes: Uint8Array): boolean => bytes.every((byte) => byte === 0xff);
 
-// phone.bin: 10 bytes per directory code. Bytes 2-5 depend on the area-code mode (see readPhoneFields).
-// Byte 8 is packed: bits 0-4 = security level (0-30), bits 5-7 = elevator reference index
-// (stored 0-7, shown +1 so 0 -> "1"). Byte 9 = floor number (0xFF = unset). Both confirmed by
-// isolated before/after gate pulls (hide lives in names.bin, not here).
+/**
+ * phone.bin: 10 bytes per directory code. Bytes 2-5 depend on the area-code mode (see readPhoneFields).
+ * Byte 8 is packed: bits 0-4 = security level (0-30), bits 5-7 = elevator reference index
+ * (stored 0-7, shown +1 so 0 -> "1"). Byte 9 = floor number (0xFF = unset). Both confirmed by
+ * isolated before/after gate pulls (hide lives in names.bin, not here).
+ *
+ * @param buf - Binary board file buffer.
+ * @param [areaCodeMode] - Area code mode.
+ * @returns `PhoneEntry[]` result.
+ */
 export function parsePhoneBin(buf: Buffer, areaCodeMode = 255): PhoneEntry[] {
   const entries: PhoneEntry[] = [];
   for (let offset = 0; offset + PHONE_RECORD_SIZE <= buf.length; offset += PHONE_RECORD_SIZE) {
@@ -133,7 +198,12 @@ export function parsePhoneBin(buf: Buffer, areaCodeMode = 255): PhoneEntry[] {
   return entries;
 }
 
-// cards.bin: 4 bytes per card: card number (16-bit big-endian), directory code (BCD, F-padded).
+/**
+ * cards.bin: 4 bytes per card: card number (16-bit big-endian), directory code (BCD, F-padded).
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `CardEntry[]` result.
+ */
 export function parseCardsBin(buf: Buffer): CardEntry[] {
   const cards: CardEntry[] = [];
   for (let offset = 0; offset + CARD_RECORD_SIZE <= buf.length; offset += CARD_RECORD_SIZE) {
@@ -147,9 +217,14 @@ export function parseCardsBin(buf: Buffer): CardEntry[] {
   return cards;
 }
 
-// names.bin: area code table and the A-Z directory (see NAMES_LAYOUTS; settings are decoded by gate-settings.ts).
-// Area code table: 2-byte BCD entries (F-padded), indexed by phone.bin's area code index.
-// Directory entry (20 bytes): name (15, space padded), flag byte, directory code (bytes 16-19, see namesEntryCode).
+/**
+ * names.bin: area code table and the A-Z directory (see NAMES_LAYOUTS; settings are decoded by gate-settings.ts).
+ * Area code table: 2-byte BCD entries (F-padded), indexed by phone.bin's area code index.
+ * Directory entry (20 bytes): name (15, space padded), flag byte, directory code (bytes 16-19, see namesEntryCode).
+ *
+ * @param buf - Binary board file buffer.
+ * @returns Operation result.
+ */
 export function parseNamesBin(buf: Buffer) {
   const layout = namesLayout(buf);
   const areaCodes: (string | null)[] = [];
@@ -170,7 +245,7 @@ export function parseNamesBin(buf: Buffer) {
       directoryCode: code,
       name: buf.toString('latin1', offset, offset + 15).trimEnd(),
       flag,
-      // flag byte 15 bitfield: bit 0 = vendor, bit 5 = shown in directory (clear = hidden).
+      /** flag byte 15 bitfield: bit 0 = vendor, bit 5 = shown in directory (clear = hidden). */
       vendor: Boolean(flag & 0x01),
       hidden: !(flag & 0x20),
     });
@@ -178,9 +253,14 @@ export function parseNamesBin(buf: Buffer) {
   return { areaCodeMode: layout.areaCodeMode, dirDigits: namesDirDigits(buf), areaCodes, directory };
 }
 
-// rcv_out.bin: raw 10-byte transaction records read from the board.
-// Hour byte: bits 7-6 = event flags, bit 5 = PM, bits 4-0 = BCD hour (1-12).
-// Code type 0x01 = keypad code (BCD), 0x02 = card number (16-bit big-endian).
+/**
+ * rcv_out.bin: raw 10-byte transaction records read from the board.
+ * Hour byte: bits 7-6 = event flags, bit 5 = PM, bits 4-0 = BCD hour (1-12).
+ * Code type 0x01 = keypad code (BCD), 0x02 = card number (16-bit big-endian).
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `RcvRecord[]` result.
+ */
 export function parseRcvOut(buf: Buffer): RcvRecord[] {
   const records: RcvRecord[] = [];
   for (let offset = 0; offset + PHONE_RECORD_SIZE <= buf.length; offset += PHONE_RECORD_SIZE) {
@@ -206,7 +286,7 @@ export function parseRcvOut(buf: Buffer): RcvRecord[] {
   return records;
 }
 
-// Event types from DoorKing32's transaction decoder (byte 4 of each rcv_out.bin record).
+/** Event types from DoorKing32's transaction decoder (byte 4 of each rcv_out.bin record). */
 const SYSTEM_EVENTS: Record<number, string> = { 5: 'H/U', 6: 'Admit', 7: 'Hold', 8: 'Rels', 9: '1 Hour', 10: 'Hr Rel' };
 const LINK_EVENTS: Record<number, [string, string]> = {
   0x0d: ['Modem-to-Modem', 'Download Data'], 0x0e: ['Modem-to-Modem', 'Upload Data'],
@@ -225,9 +305,15 @@ const APB_COUNTER = ['Set Facility Counter Manually', 'Set Facility Counter By D
   'Users In Facility', 'Dec Facility Counter Past Zero'];
 const DEFAULT_RELAY_NAMES = ['Relay 0', 'Entry', 'Exit'];
 
-// Decodes one parsed rcv_out.bin record into the columns of DoorKing32's transaction view.
-// Byte 2 bit 6 = admit (else deny); byte 7 = relay (0x12 = relay 0, 0 = relay 1, 1 = relay 2,
-// 0xFC-0xFF = combinations). lookup = 'directory' | 'entryCode' | 'card' when the number names a resident.
+/**
+ * Decodes one parsed rcv_out.bin record into the columns of DoorKing32's transaction view.
+ * Byte 2 bit 6 = admit (else deny); byte 7 = relay (0x12 = relay 0, 0 = relay 1, 1 = relay 2,
+ * 0xFC-0xFF = combinations). lookup = 'directory' | 'entryCode' | 'card' when the number names a resident.
+ *
+ * @param transaction - Transaction record or row.
+ * @param [relayNames] - `string[]` value.
+ * @returns `RcvEvent` result.
+ */
 export function decodeRcvEvent(transaction: { raw: string }, relayNames: string[] = DEFAULT_RELAY_NAMES): RcvEvent {
   const rec = Buffer.from(transaction.raw, 'hex');
   const type = rec[4];
@@ -247,7 +333,13 @@ export function decodeRcvEvent(transaction: { raw: string }, relayNames: string[
   return Object.assign(event, eventDetails(rec, event.access));
 }
 
-// The columns that depend on the record type (byte 4); access: the column as decoded from byte 2.
+/**
+ * The columns that depend on the record type (byte 4); access: the column as decoded from byte 2.
+ *
+ * @param rec - `Buffer` value.
+ * @param access - The column as decoded from byte 2.
+ * @returns `Partial<RcvEvent>` result.
+ */
 function eventDetails(rec: Buffer, access: string): Partial<RcvEvent> {
   const type = rec[4];
   const card = String(rec.readUInt16BE(5)).padStart(5, '0');
@@ -274,15 +366,26 @@ function eventDetails(rec: Buffer, access: string): Partial<RcvEvent> {
   return { eventType: `Type 0x${type.toString(16).padStart(2, '0')}`, access: '', relay: '' };
 }
 
-// A transaction record with a real month and day (the board leaves some blank or garbled).
+/**
+ * A transaction record with a real month and day (the board leaves some blank or garbled).
+ *
+ * @param record - Parsed binary record.
+ * @returns True when the condition holds.
+ */
 export const hasValidDate = (record: { month: number; day: number }): boolean =>
   record.month >= 1 && record.month <= 12 && record.day >= 1 && record.day <= 31;
 
 const CLOCK_AHEAD_MS = 2 * 86400000; // how far ahead of the server's clock the gate's may be (orderRcvOut)
 
-// rcv_out.bin is a 10,000-record ring buffer followed by a 6-byte trailer:
-// byte 0 = 0x99 when the buffer has wrapped, bytes 3-5 = next write address (0xA0000 + index * 10).
-// Returns records oldest -> newest with a year inferred backwards from pulledAt (the board stores no year).
+/**
+ * rcv_out.bin is a 10,000-record ring buffer followed by a 6-byte trailer:
+ * byte 0 = 0x99 when the buffer has wrapped, bytes 3-5 = next write address (0xA0000 + index * 10).
+ * Returns records oldest -> newest with a year inferred backwards from pulledAt (the board stores no year).
+ *
+ * @param buf - Binary board file buffer.
+ * @param [pulledAt] - Timestamp of the last pull, or `null`.
+ * @returns `RcvRecord[]` result.
+ */
 export function orderRcvOut(buf: Buffer, pulledAt: Date = new Date()): RcvRecord[] {
   const records = parseRcvOut(buf);
   let ordered = records;
@@ -295,9 +398,15 @@ export function orderRcvOut(buf: Buffer, pulledAt: Date = new Date()): RcvRecord
         : records.slice(0, next);
     }
   }
-  // Walking back from the newest, a record dated after the newer one belongs to the year before. A gate clock may run
-  // up to CLOCK_AHEAD_MS ahead of the server's (so the newest records may even be in the next year), and records with
-  // no valid date are skipped (they get the year of the record after them).
+  /**
+   * Walking back from the newest, a record dated after the newer one belongs to the year before. A gate clock may run
+   * up to CLOCK_AHEAD_MS ahead of the server's (so the newest records may even be in the next year), and records with
+   * no valid date are skipped (they get the year of the record after them).
+   *
+   * @param year - `number` value.
+   * @param record - Parsed binary record.
+   * @returns Computed result.
+   */
   const dayOf = (year: number, record: RcvRecord) => Date.UTC(year, record.month - 1, record.day);
   let year = pulledAt.getFullYear();
   let newer = Date.UTC(year, pulledAt.getMonth(), pulledAt.getDate()) + CLOCK_AHEAD_MS;
@@ -313,38 +422,64 @@ export function orderRcvOut(buf: Buffer, pulledAt: Date = new Date()): RcvRecord
   return ordered;
 }
 
-// .MAP: indexes of 128-byte blocks flagged as changed.
+/**
+ * .MAP: indexes of 128-byte blocks flagged as changed.
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `{ blocks: number; changedBlocks: number[]; blockSize: number }` result.
+ */
 export function parseMap(buf: Buffer): { blocks: number; changedBlocks: number[]; blockSize: number } {
   const changedBlocks: number[] = [];
   buf.forEach((changed, i) => changed && changedBlocks.push(i));
   return { blocks: buf.length, changedBlocks, blockSize: BLOCK_SIZE };
 }
 
-// DKS Cloud transfers files as hex text (two digits per byte). Anything else is a message, not a file (for example
-// "Session not found"), and is refused with its start.
+/**
+ * DKS Cloud transfers files as hex text (two digits per byte). Anything else is a message, not a file (for example
+ * "Session not found"), and is refused with its start.
+ *
+ * @param text - Input text string.
+ * @returns `Buffer` result.
+ * @throws Error when validation or the underlying operation fails.
+ */
 export function decodeFileText(text: unknown): Buffer {
   const hex = String(text).trim();
   if (/^([0-9a-f]{2})*$/i.test(hex)) return Buffer.from(hex, 'hex');
   throw new Error(`DKS Cloud sent something other than a file: ${hex.slice(0, 80)}`);
 }
 
-// Hex text for SendResidentData (DoorKing32 writes two hex digits per byte).
+/**
+ * Hex text for SendResidentData (DoorKing32 writes two hex digits per byte).
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `string` result.
+ */
 export const encodeFileText = (buf: Uint8Array): string => Buffer.from(buf).toString('hex').toUpperCase();
 
-// The two counts DoorKing32 embeds in the send session's UserID as "{residents,vendors}"
-// (DoorKing32 FUN_004f7320 counts resident records with FL 0 and FL 2). Both are directory
-// facts, so we derive them from names.bin instead of reading RESIDENT.DAT:
-//   vendors   = directory entries with the vendor flag bit set (flag & 1), the FL 2 records;
-//   residents = every other occupied directory entry, the FL 0 records.
-// Confirmed against the sample data: flag&1 reproduces the vendor count exactly, and
-// residents + vendors equals the occupied directory size (the binary's memory-fit guard).
+/**
+ * The two counts DoorKing32 embeds in the send session's UserID as "{residents,vendors}"
+ * (DoorKing32 FUN_004f7320 counts resident records with FL 0 and FL 2). Both are directory
+ * facts, so we derive them from names.bin instead of reading RESIDENT.DAT:
+ *   vendors   = directory entries with the vendor flag bit set (flag & 1), the FL 2 records;
+ *   residents = every other occupied directory entry, the FL 0 records.
+ * Confirmed against the sample data: flag&1 reproduces the vendor count exactly, and
+ * residents + vendors equals the occupied directory size (the binary's memory-fit guard).
+ *
+ * @param buf - Binary board file buffer.
+ * @returns `[number, number]` result.
+ */
 export function namesResidentCounts(buf: Buffer): [number, number] {
   const { directory } = parseNamesBin(buf);
   const vendors = directory.filter((entry) => (entry.flag & 1) === 1).length;
   return [directory.length - vendors, vendors];
 }
 
-// The same join from buffers ({ names, phone, cards }; any may be missing).
+/**
+ * The same join from buffers ({ names, phone, cards }; any may be missing).
+ *
+ * @param bufs - Working-copy board buffers (`names`, `phone`, `cards`).
+ * @returns `ResidentsData` result.
+ */
 export function residentRows(bufs: { names?: Buffer | null; phone?: Buffer | null; cards?: Buffer | null }): ResidentsData {
   const names = bufs.names && { data: bufs.names };
   const phones = bufs.phone && { data: bufs.phone };

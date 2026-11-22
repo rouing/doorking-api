@@ -1,13 +1,17 @@
-// Applies resident/vendor edits to the working-copy board buffers (names.bin, phone.bin, cards.bin).
-// Pure: takes and returns Buffers, never touches the gate. Field encodings were all confirmed by
-// isolated before/after gate pulls (see board-files.ts and the decode scoreboard):
-//   names entry (20 bytes): name 0-14 (15, space padded), flag 15 (bit0=vendor, bit5=shown),
-//     directory code 16-19 (right-justified, space padded; 1-4 digits per names.bin 0x40, see namesDirDigits).
-//   phone record (10 bytes): dir code 0-1 (BCD), area-code index + 7-digit local number 2-5 (layout
-//     depends on the area-code mode, see readPhoneFields), entry code 6-7 (BCD),
-//     byte 8 = bits0-4 security | bits5-7 elevator-1, floor 9 (0xFF = unset).
-//   cards record (4 bytes): card number 0-1 (BE), dir code 2-3 (BCD).
-// names.bin and phone.bin layouts follow the area-code mode (255 or 10), detected from names.bin (namesLayout).
+/**
+ * @module src/residents-edit
+ *
+ * Applies resident/vendor edits to the working-copy board buffers (names.bin, phone.bin, cards.bin).
+ * Pure: takes and returns Buffers, never touches the gate. Field encodings were all confirmed by
+ * isolated before/after gate pulls (see board-files.ts and the decode scoreboard):
+ *   names entry (20 bytes): name 0-14 (15, space padded), flag 15 (bit0=vendor, bit5=shown),
+ *     directory code 16-19 (right-justified, space padded; 1-4 digits per names.bin 0x40, see namesDirDigits).
+ *   phone record (10 bytes): dir code 0-1 (BCD), area-code index + 7-digit local number 2-5 (layout
+ *     depends on the area-code mode, see readPhoneFields), entry code 6-7 (BCD),
+ *     byte 8 = bits0-4 security | bits5-7 elevator-1, floor 9 (0xFF = unset).
+ *   cards record (4 bytes): card number 0-1 (BE), dir code 2-3 (BCD).
+ * names.bin and phone.bin layouts follow the area-code mode (255 or 10), detected from names.bin (namesLayout).
+ */
 
 import {
   bcd, CARD_RECORD_SIZE, NAMES_DIR_DIGITS_OFFSET, NAMES_ENTRY_SIZE, NAMES_LAYOUTS, NAMES_MIDDLE_POINTER_OFFSET, namesDirDigits, namesEntryCode,
@@ -18,9 +22,11 @@ import { httpError } from './errors.ts';
 import { MAX_CARDS_PER_ENTRY } from './shared.ts';
 
 export interface BoardBuffers { names: Buffer; phone: Buffer; cards: Buffer }
-// Fields of a resident edit; only those present are changed (see applyResidentEdit).
-// An edit of one directory code, as sent by the page or API (values are checked when applied); a field left out is
-// left as it is.
+/**
+ * Fields of a resident edit; only those present are changed (see applyResidentEdit).
+ * An edit of one directory code, as sent by the page or API (values are checked when applied); a field left out is
+ * left as it is.
+ */
 export interface ResidentEdit {
   directoryCode?: unknown; name?: unknown; vendor?: unknown; hidden?: unknown; cards?: unknown;
   areaCode?: unknown; phone?: unknown; entryCode?: unknown; securityLevel?: unknown; elevatorRef?: unknown; floor?: unknown;
@@ -33,8 +39,15 @@ const NAMES_AREA_CODE_SLOTS = 255;
 
 const digits = (text: unknown): string => String(text == null ? '' : text).replace(/\D/g, '');
 
-// Right-justify decimal digits into nbytes (leading-F padding), matching the bcd() decoder.
-// Empty -> all 0xFF (the "unset" convention the parsers use).
+/**
+ * Right-justify decimal digits into nbytes (leading-F padding), matching the bcd() decoder.
+ * Empty -> all 0xFF (the "unset" convention the parsers use).
+ *
+ * @param value - Input value.
+ * @param nbytes - `number` value.
+ * @returns `Buffer` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function encodeBcd(value: unknown, nbytes: number): Buffer {
   const typed = digits(value);
   if (!typed) return Buffer.alloc(nbytes, 0xff);
@@ -49,7 +62,14 @@ export function encodeBcd(value: unknown, nbytes: number): Buffer {
 const dirStart = (names: Buffer) => namesLayout(names).directoryOffset;
 const phoneMode = (names: Buffer) => namesLayout(names).areaCodeMode;
 
-// Directory code at the gate's digit count (names.bin 0x40); shorter input gets leading zeros.
+/**
+ * Directory code at the gate's digit count (names.bin 0x40); shorter input gets leading zeros.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param value - Input value.
+ * @returns `string` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 function dirCode(names: Buffer, value: unknown): string {
   const digitCount = namesDirDigits(names);
   const code = digits(value).padStart(digitCount, '0');
@@ -57,6 +77,13 @@ function dirCode(names: Buffer, value: unknown): string {
   return code;
 }
 
+/**
+ * Find names entry.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @returns `number` result.
+ */
 export function findNamesEntry(names: Buffer, code: string | null): number {
   for (let offset = dirStart(names); offset + NAMES_ENTRY_SIZE <= names.length; offset += NAMES_ENTRY_SIZE) {
     if (namesEntryCode(names, offset) === code) return offset;
@@ -66,26 +93,46 @@ export function findNamesEntry(names: Buffer, code: string | null): number {
 
 const isEntryAt = (names: Buffer, offset: number): boolean => namesEntryCode(names, offset) !== null;
 
-// Offset just past the last directory entry.
+/**
+ * Offset just past the last directory entry.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @returns `number` result.
+ */
 function directoryEnd(names: Buffer): number {
   let offset = dirStart(names);
   while (isEntryAt(names, offset)) offset += NAMES_ENTRY_SIZE;
   return offset;
 }
 
-// Offset just past the last used phone record.
+/**
+ * Offset just past the last used phone record.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns `number` result.
+ */
 function phoneEnd(phone: Buffer): number {
   let end = 0;
   for (let offset = 0; offset + PHONE_RECORD_SIZE <= phone.length; offset += PHONE_RECORD_SIZE) if (!(phone[offset] === 0xff && phone[offset + 1] === 0xff)) end = offset + PHONE_RECORD_SIZE;
   return end;
 }
 
-// DoorKing32 order: empty slots, then residents (shown or hidden), then vendors; each by name ignoring case.
+/**
+ * DoorKing32 order: empty slots, then residents (shown or hidden), then vendors; each by name ignoring case.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param offset - Byte offset.
+ * @returns `number` result.
+ */
 const entryGroup = (names: Buffer, offset: number): number => (names[offset + 15] & 0x01 ? 2 : isEmptySlot(names, offset) ? 0 : 1);
 const nameKey = (name: string): string => name.toUpperCase();
 
-// Writes the middle shown-entry pointer at 0xF8-0xFA, as DoorKing32 does on save. Unchanged when nothing is shown.
-// The stored offset always counts from the 255-mode directory start (0xF80).
+/**
+ * Writes the middle shown-entry pointer at 0xF8-0xFA, as DoorKing32 does on save. Unchanged when nothing is shown.
+ * The stored offset always counts from the 255-mode directory start (0xF80).
+ *
+ * @param names - Raw `names.bin` buffer.
+ */
 export function updateMiddlePointer(names: Buffer): void {
   const start = dirStart(names);
   const shown: number[] = [];
@@ -97,7 +144,13 @@ export function updateMiddlePointer(names: Buffer): void {
   names[NAMES_MIDDLE_POINTER_OFFSET + 2] = offset & 0xff;
 }
 
-// Recomputes the middle pointer only when the directory itself changed, so other edits leave the header alone.
+/**
+ * Recomputes the middle pointer only when the directory itself changed, so other edits leave the header alone.
+ *
+ * @param before - State or buffer before the change.
+ * @param result - Verified operation result.
+ * @returns `T` result.
+ */
 export function withPointer<T extends { names: Buffer }>(before: Buffer, result: T): T {
   const start = dirStart(before);
   const end = Math.max(directoryEnd(before), directoryEnd(result.names));
@@ -105,6 +158,13 @@ export function withPointer<T extends { names: Buffer }>(before: Buffer, result:
   return result;
 }
 
+/**
+ * Find phone record.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @returns `number` result.
+ */
 export function findPhoneRecord(phone: Buffer, code: string): number {
   for (let offset = 0; offset + PHONE_RECORD_SIZE <= phone.length; offset += PHONE_RECORD_SIZE) {
     if (phone[offset] === 0xff && phone[offset + 1] === 0xff) continue;
@@ -113,12 +173,25 @@ export function findPhoneRecord(phone: Buffer, code: string): number {
   return -1;
 }
 
-// Area-code slots allowed by the gate's "Area codes" setting ('10 Area Codes' or '255 Area Codes').
+/**
+ * Area-code slots allowed by the gate's "Area codes" setting ('10 Area Codes' or '255 Area Codes').
+ *
+ * @param setting - `unknown` value.
+ * @returns `number` result.
+ */
 export const areaCodeLimit = (setting: unknown): number => (/^\s*10\b/.test(String(setting || '')) ? 10 : NAMES_AREA_CODE_SLOTS);
 
-// Finds the area-code table index for value, appending to the first free slot (below limit) when absent.
-// '' -> 0xFF (none). An area code is 3 digits, or 4 as 1 + area code for long-distance dialing (DoorKing manual:
-// "Alternate Area Code"); the 4-digit form is stored as all 4 BCD digits (1315 -> 13 15).
+/**
+ * Finds the area-code table index for value, appending to the first free slot (below limit) when absent.
+ * '' -> 0xFF (none). An area code is 3 digits, or 4 as 1 + area code for long-distance dialing (DoorKing manual:
+ * "Alternate Area Code"); the 4-digit form is stored as all 4 BCD digits (1315 -> 13 15).
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param value - Input value.
+ * @param [limit] - Maximum number of rows to return.
+ * @returns `number` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function areaCodeIndex(names: Buffer, value: unknown, limit: number = NAMES_AREA_CODE_SLOTS): number {
   const typed = digits(value);
   if (!typed) return 0xff;
@@ -139,7 +212,13 @@ export function areaCodeIndex(names: Buffer, value: unknown, limit: number = NAM
   return free;
 }
 
-// Each phone record's area-code index (0xFF = none), keyed by phone-record offset (unused records skipped).
+/**
+ * Each phone record's area-code index (0xFF = none), keyed by phone-record offset (unused records skipped).
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param [mode] - Operation or layout mode.
+ * @returns `[number, number][]` result.
+ */
 function phoneAreaIndexes(phone: Buffer, mode = 255): [number, number][] {
   const out: [number, number][] = [];
   const end = phoneEnd(phone);
@@ -151,7 +230,13 @@ function phoneAreaIndexes(phone: Buffer, mode = 255): [number, number][] {
   return out;
 }
 
-// The area-code table with how many phone records use each entry: [{ index, code, uses }].
+/**
+ * The area-code table with how many phone records use each entry: [{ index, code, uses }].
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @returns `AreaCodeUse[]` result.
+ */
 export function areaCodeUsage(names: Buffer, phone: Buffer): AreaCodeUse[] {
   const { areaCodeOffset, areaCodeSlots, areaCodeMode } = namesLayout(names);
   const uses: Record<number, number> = {};
@@ -167,11 +252,16 @@ export function areaCodeUsage(names: Buffer, phone: Buffer): AreaCodeUse[] {
   return out;
 }
 
-// Puts the files in the layout DoorKing's software leaves after an edit (verified against a gate edited with it,
-// 2026-11-16): the directory in DoorKing32 order (empty slots, residents, vendors; by name ignoring case; ties and
-// empty slots keep their current order) with the middle pointer recomputed, cards.bin sorted by card number and
-// packed from the first record, and area codes no phone record uses cleared, so their slots are used again. Run after
-// users' edits only: files rebuilt from stored values keep the gate's layout.
+/**
+ * Puts the files in the layout DoorKing's software leaves after an edit (verified against a gate edited with it,
+ * 2026-11-16): the directory in DoorKing32 order (empty slots, residents, vendors; by name ignoring case; ties and
+ * empty slots keep their current order) with the middle pointer recomputed, cards.bin sorted by card number and
+ * packed from the first record, and area codes no phone record uses cleared, so their slots are used again. Run after
+ * users' edits only: files rebuilt from stored values keep the gate's layout.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @returns `BoardBuffers` result.
+ */
 export function tidyBoard(buffers: BoardBuffers): BoardBuffers {
   const names = Buffer.from(buffers.names);
   const start = dirStart(names);
@@ -201,16 +291,30 @@ export function tidyBoard(buffers: BoardBuffers): BoardBuffers {
   return { names, phone: buffers.phone, cards };
 }
 
-// "directory code 101 (Smith, J)" for conflict messages; names is optional.
+/**
+ * "directory code 101 (Smith, J)" for conflict messages; names is optional.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @returns `string` result.
+ */
 function holderLabel(names: Buffer | undefined, code: string | null): string {
   const offset = names ? findNamesEntry(names, code) : -1;
   const name = offset >= 0 ? names!.toString('latin1', offset, offset + 15).trim() : '';
   return `directory code ${code}${name ? ` (${name})` : ''}`;
 }
 
-// desired = array of card-number strings. Adds missing ones to free (all-0xFF) slots, clears removed ones.
-// A card number already held by another directory code is refused (409); more than MAX_CARDS_PER_ENTRY cards too,
-// unless the entry already had that many (only removing is then allowed to stay above it).
+/**
+ * desired = array of card-number strings. Adds missing ones to free (all-0xFF) slots, clears removed ones.
+ * A card number already held by another directory code is refused (409); more than MAX_CARDS_PER_ENTRY cards too,
+ * unless the entry already had that many (only removing is then allowed to stay above it).
+ *
+ * @param cards - Raw `cards.bin` buffer or list of card numbers.
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @param desired - Map of relay numbers to desired active state (`true` = held open).
+ * @param [names] - Raw `names.bin` buffer.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function applyCards(cards: Buffer, code: string, desired: unknown, names?: Buffer): void {
   if (desired != null && !Array.isArray(desired)) throw httpError('Cards must be a list of card numbers');
   const want = new Set((desired || []).map((card) => digits(card)).filter(Boolean).map((card) => String(Number(card)))); // "5" and "00005" are one card
@@ -248,16 +352,29 @@ export function applyCards(cards: Buffer, code: string, desired: unknown, names?
   }
 }
 
-// edit: { directoryCode (required), name, hidden, vendor, areaCode, phone, entryCode, securityLevel,
-//   elevatorRef, floor, cards[] }. Only provided fields are changed. Returns new buffers.
-// opts.areaCodeSlots limits where a new area code may go (see areaCodeLimit).
-// A name typed by a user: refused (400) when it has a character the files can't hold (one byte each, plain ASCII
-// 0x20-0x7E; "Œ" would otherwise be stored as "R"). Names already on the gate aren't checked.
+/**
+ * edit: { directoryCode (required), name, hidden, vendor, areaCode, phone, entryCode, securityLevel,
+ *   elevatorRef, floor, cards[] }. Only provided fields are changed. Returns new buffers.
+ * opts.areaCodeSlots limits where a new area code may go (see areaCodeLimit).
+ * A name typed by a user: refused (400) when it has a character the files can't hold (one byte each, plain ASCII
+ * 0x20-0x7E; "Œ" would otherwise be stored as "R"). Names already on the gate aren't checked.
+ *
+ * @param name - Display name or filename.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function checkName(name: unknown): void {
   const bad = [...String(name ?? '')].find((char) => char < ' ' || char > '~');
   if (bad) throw httpError(`Names can use only plain letters, digits, spaces and punctuation ("${bad}" can't be stored on the gate)`);
 }
 
+/**
+ * Apply resident edit.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param edit - `ResidentEdit` value.
+ * @param [opts] - Optional settings.
+ * @returns `BoardBuffers` result.
+ */
 export function applyResidentEdit(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
   return withPointer(buffers.names, editBuffers(buffers, edit, opts));
 }
@@ -272,8 +389,10 @@ function editBuffers(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOption
   if ('name' in edit) names.write(String(edit.name ?? '').slice(0, 15).padEnd(15, ' '), entry, 15, 'latin1');
   if ('vendor' in edit || 'hidden' in edit) names[entry + 15] = editedFlag(names[entry + 15], edit);
   let phoneOffset = findPhoneRecord(phone, code);
-  // A names entry with no phone record (other software can leave one): it gets a blank record when a phone field is
-  // given a value; otherwise only names and cards change.
+  /**
+   * A names entry with no phone record (other software can leave one): it gets a blank record when a phone field is
+   * given a value; otherwise only names and cards change.
+   */
   const phoneValueGiven = PHONE_FIELDS.some((key) => key in edit && String(edit[key] ?? '') !== '');
   if (phoneOffset < 0 && !phoneValueGiven) {
     if ('cards' in edit) applyCards(cards, code, edit.cards, names);
@@ -292,8 +411,14 @@ function editBuffers(buffers: BoardBuffers, edit: ResidentEdit, opts: EditOption
   return { names, phone, cards };
 }
 
-// The names entry flag byte with vendor (bit 0) and shown (bit 5) as edited: hidden clears bit 5, and vendors are never
-// shown, so it stays clear for them.
+/**
+ * The names entry flag byte with vendor (bit 0) and shown (bit 5) as edited: hidden clears bit 5, and vendors are never
+ * shown, so it stays clear for them.
+ *
+ * @param flag - `number` value.
+ * @param edit - `ResidentEdit` value.
+ * @returns `number` result.
+ */
 function editedFlag(flag: number, edit: ResidentEdit): number {
   const withVendor = 'vendor' in edit ? (edit.vendor ? flag | 0x01 : flag & ~0x01) : flag;
   if (!('hidden' in edit)) return withVendor;
@@ -318,7 +443,15 @@ function localNumberOf(value: unknown): string | null {
   return number ? number.padStart(7, '0') : null;
 }
 
-// Sets the entry code; a code another record already has is refused (409).
+/**
+ * Sets the entry code; a code another record already has is refused (409).
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param phoneOffset - `number` value.
+ * @param entryCode - `unknown` value.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 function editEntryCode(names: Buffer, phone: Buffer, phoneOffset: number, entryCode: unknown): void {
   const bytes = encodeBcd(entryCode, 2);
   const changed = !bytes.equals(phone.subarray(phoneOffset + 6, phoneOffset + 8)) && digits(entryCode);
@@ -329,7 +462,14 @@ function editEntryCode(names: Buffer, phone: Buffer, phoneOffset: number, entryC
   bytes.copy(phone, phoneOffset + 6);
 }
 
-// Offset of another phone record with this entry code, or -1.
+/**
+ * Offset of another phone record with this entry code, or -1.
+ *
+ * @param phone - Gate system phone number (digits or formatted).
+ * @param bytes - `Buffer` value.
+ * @param skipOffset - `number` value.
+ * @returns `number` result.
+ */
 function entryCodeHolder(phone: Buffer, bytes: Buffer, skipOffset: number): number {
   for (let offset = 0; offset + PHONE_RECORD_SIZE <= phone.length; offset += PHONE_RECORD_SIZE) {
     const blank = phone[offset] === 0xff && phone[offset + 1] === 0xff;
@@ -350,7 +490,13 @@ function elevatorRefOf(value: unknown): number {
   return ref;
 }
 
-// Floor 1-64, or 0xFF for none (blank).
+/**
+ * Floor 1-64, or 0xFF for none (blank).
+ *
+ * @param value - Input value.
+ * @returns `number` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 function floorByteOf(value: unknown): number {
   if (value === '' || value == null) return 0xff;
   const floor = Number(value);
@@ -358,8 +504,14 @@ function floorByteOf(value: unknown): number {
   return floor;
 }
 
-// Sets whether a directory code is shown in the entry-panel directory: a resident is shown only with a name and a
-// phone number; a vendor never is. Applied to users' adds and edits, not to rebuilds from stored values.
+/**
+ * Sets whether a directory code is shown in the entry-panel directory: a resident is shown only with a name and a
+ * phone number; a vendor never is. Applied to users' adds and edits, not to rebuilds from stored values.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param directoryCode - Directory code (with or without leading zeros).
+ * @returns `BoardBuffers` result.
+ */
 export function applyShownRule(buffers: BoardBuffers, directoryCode: string): BoardBuffers {
   const names = Buffer.from(buffers.names);
   const code = dirCode(names, directoryCode);
@@ -372,10 +524,17 @@ export function applyShownRule(buffers: BoardBuffers, directoryCode: string): Bo
   return withPointer(buffers.names, { ...buffers, names });
 }
 
-// Deletes a resident/vendor by returning its slot to the gate's own "empty slot" state: the directory
-// entry keeps its code but the name is blanked and the flag cleared (0x00), the phone record keeps its
-// code but every field is blanked (area/phone/entry = 0xFF, byte 8 = 0x01, floor = 0xFF), and all of the
-// slot's cards are removed. This matches genuine empty slots byte-for-byte (verified against names.bin).
+/**
+ * Deletes a resident/vendor by returning its slot to the gate's own "empty slot" state: the directory
+ * entry keeps its code but the name is blanked and the flag cleared (0x00), the phone record keeps its
+ * code but every field is blanked (area/phone/entry = 0xFF, byte 8 = 0x01, floor = 0xFF), and all of the
+ * slot's cards are removed. This matches genuine empty slots byte-for-byte (verified against names.bin).
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param directoryCode - Directory code (with or without leading zeros).
+ * @returns `BoardBuffers` result.
+ * @throws HTTP 404 error on invalid input or conflict.
+ */
 export function deleteResident(buffers: BoardBuffers, directoryCode: string): BoardBuffers {
   const names = Buffer.from(buffers.names);
   const phone = Buffer.from(buffers.phone);
@@ -395,8 +554,15 @@ export function deleteResident(buffers: BoardBuffers, directoryCode: string): Bo
   return withPointer(buffers.names, { names, phone, cards });
 }
 
-// Removes a directory code entirely, as DoorKing32 does: the names entry and phone record are taken out,
-// later entries/records move up, the freed bytes at the end become 0xFF, and the code's cards are removed.
+/**
+ * Removes a directory code entirely, as DoorKing32 does: the names entry and phone record are taken out,
+ * later entries/records move up, the freed bytes at the end become 0xFF, and the code's cards are removed.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param directoryCode - Directory code (with or without leading zeros).
+ * @returns `BoardBuffers` result.
+ * @throws HTTP 404 error on invalid input or conflict.
+ */
 export function removeDirectoryCode(buffers: BoardBuffers, directoryCode: string): BoardBuffers {
   const names = Buffer.from(buffers.names);
   const phone = Buffer.from(buffers.phone);
@@ -417,7 +583,12 @@ export function removeDirectoryCode(buffers: BoardBuffers, directoryCode: string
   return withPointer(buffers.names, { names, phone, cards });
 }
 
-// The directory codes the gate's memory holds (System memory, names.bin 0xBF), or null when it isn't set.
+/**
+ * The directory codes the gate's memory holds (System memory, names.bin 0xBF), or null when it isn't set.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @returns `number | null` result.
+ */
 function memoryEntries(names: Buffer): number | null {
   const field = SYSTEM_MEMORY;
   const v = field ? field.type.decode(names.subarray(field.offset, field.offset + field.type.size)) : '';
@@ -425,9 +596,18 @@ function memoryEntries(names: Buffer): number | null {
 }
 const SYSTEM_MEMORY = GATE_SETTING_FIELDS.find((field) => field.key === 'systemMemory');
 
-// Inserts a new directory code: the names entry goes in DoorKing32's name order and the phone record
-// (fields blank, byte 8 = 0x01) in code order; later entries/records move down. Refused when the directory already
-// holds as many codes as the gate's System memory.
+/**
+ * Inserts a new directory code: the names entry goes in DoorKing32's name order and the phone record
+ * (fields blank, byte 8 = 0x01) in code order; later entries/records move down. Refused when the directory already
+ * holds as many codes as the gate's System memory.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @param name - Display name or filename.
+ * @param flag - `number` value.
+ * @returns `BoardBuffers` result.
+ * @throws HTTP 400/409 error on invalid input or conflict.
+ */
 function insertDirectoryCode(buffers: BoardBuffers, code: string, name: string, flag: number): BoardBuffers {
   const names = Buffer.from(buffers.names);
   const phone = Buffer.from(buffers.phone);
@@ -454,7 +634,14 @@ function insertDirectoryCode(buffers: BoardBuffers, code: string, name: string, 
   return { names, phone: insertPhoneRecord(phone, code), cards: buffers.cards };
 }
 
-// A copy of phone.bin with a blank record for code (fields blank, byte 8 = 0x01) in code order; later records move down.
+/**
+ * A copy of phone.bin with a blank record for code (fields blank, byte 8 = 0x01) in code order; later records move down.
+ *
+ * @param buf - Binary board file buffer.
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @returns `Buffer` result.
+ * @throws HTTP 409 error on invalid input or conflict.
+ */
 function insertPhoneRecord(buf: Buffer, code: string): Buffer {
   const phone = Buffer.from(buf);
   const pEnd = phoneEnd(phone);
@@ -469,13 +656,24 @@ function insertPhoneRecord(buf: Buffer, code: string): Buffer {
   return phone;
 }
 
-// True when a directory slot is unused: blank name and flag 0x00 (no vendor/shown bits). A hidden resident
-// also has flag 0x00 but keeps its name, so the name check is what separates the two.
+/**
+ * True when a directory slot is unused: blank name and flag 0x00 (no vendor/shown bits). A hidden resident
+ * also has flag 0x00 but keeps its name, so the name check is what separates the two.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @param offset - Byte offset.
+ * @returns True when the condition holds.
+ */
 function isEmptySlot(names: Buffer, offset: number): boolean {
   return names[offset + 15] === 0x00 && names.toString('latin1', offset, offset + 15).trim() === '';
 }
 
-// Available (vacant) directory codes that a new resident/vendor can be assigned to.
+/**
+ * Available (vacant) directory codes that a new resident/vendor can be assigned to.
+ *
+ * @param names - Raw `names.bin` buffer.
+ * @returns `string[]` result.
+ */
 export function emptySlots(names: Buffer): string[] {
   const out: string[] = [];
   for (let offset = dirStart(names); isEntryAt(names, offset); offset += NAMES_ENTRY_SIZE) {
@@ -486,10 +684,18 @@ export function emptySlots(names: Buffer): string[] {
 
 export interface Duplicate { kind: 'directoryCode' | 'entryCode' | 'card'; value: string; holders: string[]; text: string }
 
-// Values held by more than one entry: a directory code with more than one directory entry or phone record, an entry
-// code on more than one phone record, a card number assigned to more than one directory code. Edits refuse to
-// create these; this finds them in pulled data (another program may have written them) so the page can show them
-// and a send can refuse them.
+/**
+ * Values held by more than one entry: a directory code with more than one directory entry or phone record, an entry
+ * code on more than one phone record, a card number assigned to more than one directory code. Edits refuse to
+ * create these; this finds them in pulled data (another program may have written them) so the page can show them
+ * and a send can refuse them.
+ *
+ * @param options - Options object.
+ * @param options.names - Raw `names.bin` buffer.
+ * @param options.phone - Gate system phone number (digits or formatted).
+ * @param options.cards - Raw `cards.bin` buffer or list of card numbers.
+ * @returns `Duplicate[]` result.
+ */
 export function findDuplicates({ names, phone, cards }: BoardBuffers): Duplicate[] {
   const out: Duplicate[] = [];
   const entries = new Map<string, string[]>();
@@ -530,9 +736,17 @@ export function findDuplicates({ names, phone, cards }: BoardBuffers): Duplicate
   return out;
 }
 
-// Adds a resident/vendor. A vacant unit code is filled in place; a code that isn't on the gate yet is
-// inserted (see insertDirectoryCode). A name is required (an entry with no name is itself the "empty"
-// state). Fields are applied via the same encoder used for edits, so the byte layout is identical to the gate's.
+/**
+ * Adds a resident/vendor. A vacant unit code is filled in place; a code that isn't on the gate yet is
+ * inserted (see insertDirectoryCode). A name is required (an entry with no name is itself the "empty"
+ * state). Fields are applied via the same encoder used for edits, so the byte layout is identical to the gate's.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param entry - Resident/vendor entry data or history entry.
+ * @param [opts] - Optional settings.
+ * @returns `BoardBuffers` result.
+ * @throws HTTP 400/409 error on invalid input or conflict.
+ */
 export function addEntry(buffers: BoardBuffers, entry: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
   const code = dirCode(buffers.names, entry && entry.directoryCode);
   if (!String(entry.name || '').trim()) throw httpError('A name is required');
@@ -542,7 +756,16 @@ export function addEntry(buffers: BoardBuffers, entry: ResidentEdit, opts: EditO
   return placeEntry(buffers, code, entry, opts, slot < 0);
 }
 
-// Writes the entry's fields under `code`, first inserting its directory entry when `insert` (addEntry, addStoredEntry).
+/**
+ * Writes the entry's fields under `code`, first inserting its directory entry when `insert` (addEntry, addStoredEntry).
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param code - Directory code, HTTP status code, or verification code.
+ * @param entry - Resident/vendor entry data or history entry.
+ * @param opts - Optional settings.
+ * @param insert - `boolean` value.
+ * @returns `BoardBuffers` result.
+ */
 function placeEntry(buffers: BoardBuffers, code: string, entry: ResidentEdit, opts: EditOptions, insert: boolean): BoardBuffers {
   const vendor = Boolean(entry.vendor);
   const hidden = Boolean(entry.hidden);
@@ -551,8 +774,16 @@ function placeEntry(buffers: BoardBuffers, code: string, entry: ResidentEdit, op
   return withPointer(buffers.names, editBuffers(start, { ...entry, directoryCode: code, vendor, hidden }, opts));
 }
 
-// Adds a directory code exactly as given, for rebuilding files from stored values: a blank name with neither vendor
-// nor shown makes the gate's empty slot (as deleteResident leaves it). Users add through addEntry.
+/**
+ * Adds a directory code exactly as given, for rebuilding files from stored values: a blank name with neither vendor
+ * nor shown makes the gate's empty slot (as deleteResident leaves it). Users add through addEntry.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param entry - Resident/vendor entry data or history entry.
+ * @param [opts] - Optional settings.
+ * @returns `BoardBuffers` result.
+ * @throws HTTP 409 error on invalid input or conflict.
+ */
 export function addStoredEntry(buffers: BoardBuffers, entry: ResidentEdit, opts: EditOptions = {}): BoardBuffers {
   const code = dirCode(buffers.names, entry && entry.directoryCode);
   if (findNamesEntry(buffers.names, code) >= 0 || findPhoneRecord(buffers.phone, code) >= 0) {
@@ -561,13 +792,20 @@ export function addStoredEntry(buffers: BoardBuffers, entry: ResidentEdit, opts:
   return placeEntry(buffers, code, entry, opts, true);
 }
 
-// Converts names.bin and phone.bin to the given area-code mode (255 or 10), as DoorKing32 does when the
-// "Area codes" setting changes (matched against DoorKing32 snapshots):
-//   255 -> 10: area codes no phone record uses are dropped and the rest keep their order (at most 10);
-//     the table moves from 0xA41 to 0x44, the directory from 0xF80 to 0xC00, and names.bin shrinks by 0x380.
-//   10 -> 255: the table moves back to 0xA41 (same indexes), the directory to 0xF80, and names.bin grows by 0x380.
-// phone.bin keeps its size; each record's area-code index and number are rewritten in the new layout.
-// The middle pointer is kept: it counts from 0xF80 in both modes.
+/**
+ * Converts names.bin and phone.bin to the given area-code mode (255 or 10), as DoorKing32 does when the
+ * "Area codes" setting changes (matched against DoorKing32 snapshots):
+ *   255 -> 10: area codes no phone record uses are dropped and the rest keep their order (at most 10);
+ *     the table moves from 0xA41 to 0x44, the directory from 0xF80 to 0xC00, and names.bin shrinks by 0x380.
+ *   10 -> 255: the table moves back to 0xA41 (same indexes), the directory to 0xF80, and names.bin grows by 0x380.
+ * phone.bin keeps its size; each record's area-code index and number are rewritten in the new layout.
+ * The middle pointer is kept: it counts from 0xF80 in both modes.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param mode - Operation or layout mode.
+ * @returns `BoardBuffers` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function convertAreaCodeMode(buffers: BoardBuffers, mode: number): BoardBuffers {
   const to = NAMES_LAYOUTS[mode as 255 | 10];
   if (!to) throw httpError(`Area-code mode must be 255 or 10 (got ${mode})`);
@@ -599,10 +837,17 @@ export function convertAreaCodeMode(buffers: BoardBuffers, mode: number): BoardB
   return { names, phone, cards: buffers.cards };
 }
 
-// Changes "Num of Digits in Dir Code" (1-4), as DoorKing32 does (3 <-> 4 matched against DoorKing32 snapshots):
-//   increase: every code in names.bin, phone.bin and cards.bin gets leading zeros (701 -> 0701); order is unchanged.
-//   decrease: all resident data is wiped: the directory, area-code table and middle pointer in names.bin, and
-//     every phone.bin and cards.bin record become 0xFF. The rest of the names.bin header is kept.
+/**
+ * Changes "Num of Digits in Dir Code" (1-4), as DoorKing32 does (3 <-> 4 matched against DoorKing32 snapshots):
+ *   increase: every code in names.bin, phone.bin and cards.bin gets leading zeros (701 -> 0701); order is unchanged.
+ *   decrease: all resident data is wiped: the directory, area-code table and middle pointer in names.bin, and
+ *     every phone.bin and cards.bin record become 0xFF. The rest of the names.bin header is kept.
+ *
+ * @param buffers - Board file buffers (`names`, `phone`, `cards`).
+ * @param digitCount - `unknown` value.
+ * @returns `BoardBuffers` result.
+ * @throws HTTP 400 error on invalid input or conflict.
+ */
 export function convertDirDigits(buffers: BoardBuffers, digitCount: unknown): BoardBuffers {
   const count = Number(digitCount);
   if (![1, 2, 3, 4].includes(count)) throw httpError('Directory code count must be 1, 2, 3 or 4');

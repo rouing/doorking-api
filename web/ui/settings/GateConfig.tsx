@@ -23,9 +23,17 @@ interface ConfigFieldsProps {
   disabled?: boolean;
 }
 
-// Gate configuration (must match the gate; DKS Cloud uses it to connect), the working copy's area codes and the
-// directory code digits. gate: what the gate's last pull records (system memory, memory chips), to point out a mismatch.
-// The gate configuration fields (drop-downs for the settings with fixed choices).
+/**
+ * Gate configuration (must match the gate; DKS Cloud uses it to connect), the working copy's area codes and the
+ * directory code digits. gate: what the gate's last pull records (system memory, memory chips), to point out a mismatch.
+ * The gate configuration fields (drop-downs for the settings with fixed choices).
+ *
+ * @param props - Component props.
+ * @param props.config - Validated server configuration.
+ * @param props.onChange - Callback invoked when the value changes.
+ * @param props.disabled - Whether the control is disabled.
+ * @returns Rendered React element.
+ */
 export function ConfigFields({ config, onChange, disabled }: ConfigFieldsProps) {
   return (
     <Grid columns={{ initial: '1', sm: '2', md: '3' }} gap="3">
@@ -49,6 +57,18 @@ interface GateConfigProps {
   onSaved: () => Promise<void>;
 }
 
+/**
+ * GateConfig React component.
+ *
+ * @param props - Component props.
+ * @param props.prefs - Gate-scoped preferences object.
+ * @param props.defaults - Defaults.
+ * @param props.list - List of input items.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param [props.gate] - Currently open gate summary (`GateInfo`).
+ * @param props.onSaved - On saved.
+ * @returns Rendered React element.
+ */
 export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: GateConfigProps) {
   const [cfg, setCfg] = useState<Record<string, string>>(() => Object.fromEntries(GATE_CONFIG_KEYS.map((key) => [key, (prefs.gateConfig && prefs.gateConfig[key]) || defaults[key] || ''])));
   const [info, setInfo] = useState('');
@@ -78,7 +98,12 @@ export function GateConfig({ prefs, defaults, list, gapi, gate = {}, onSaved }: 
     }
   }
 
-  // The Floors/Elevators switches save at once; they only change what the page shows.
+  /**
+   * The Floors/Elevators switches save at once; they only change what the page shows.
+   *
+   * @param key - Lookup key, API key, or setting key.
+   * @param on - `boolean` value.
+   */
   async function toggle(key: keyof GateFeatures, on: boolean) {
     const next = { ...features, [key]: on };
     setFeatures(next);

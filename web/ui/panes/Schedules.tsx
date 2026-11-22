@@ -13,7 +13,14 @@ interface SchedulesProps {
   video: boolean;
 }
 
-// This gate's scheduled transfers (days 0-6 = Sun-Sat, 24-hour time), run by the server with the gate's DKS login.
+/**
+ * This gate's scheduled transfers (days 0-6 = Sun-Sat, 24-hour time), run by the server with the gate's DKS login.
+ *
+ * @param props - Component props.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.video - Clip duration in seconds (`0` for a single still frame).
+ * @returns Rendered React element.
+ */
 export function Schedules({ gapi, video }: SchedulesProps) {
   const NAMES: Record<ScheduleAction, string> = { send: 'Send to gate', residents: 'Pull residents', transactions: 'Pull transactions',
     snapshots: video ? 'Camera videos' : 'Camera snapshots' };

@@ -7,14 +7,16 @@ import { Box, setBit } from './GroupPage.tsx';
 import { SettingInput, SettingsBar } from './SettingsBar.tsx';
 import type { GateSettings } from './useGateSettings.ts';
 
-// Relay bitmask settings shown as a checkbox per relay (bit r = relay r).
+/** Relay bitmask settings shown as a checkbox per relay (bit r = relay r). */
 const RELAY_BITS: [string, string][] = [['relayPostalSwitch', 'Postal switch'], ['relayRotaryDial9', 'Rotary dial 9']];
 
-// Settings groups that have their own page (kept out of this editor).
+/** Settings groups that have their own page (kept out of this editor). */
 export const DEDICATED_GROUPS = new Set(['Holidays', 'Facility Codes', 'Hold Open', 'Elevator', 'Relay Elevator', 'Security', 'Anti-Pass Back']);
 
-// Relays: one row per relay, one column per setting (strike time, the 4 open tones, entry code range, plus the
-// postal switch / rotary dial 9 checkboxes from RELAY_BITS).
+/**
+ * Relays: one row per relay, one column per setting (strike time, the 4 open tones, entry code range, plus the
+ * postal switch / rotary dial 9 checkboxes from RELAY_BITS).
+ */
 const RELAY_COLS: [string, string][] = [
   ['Time', 'Strike time (s)'], ['ToneMomentary', 'Momentary'], ['ToneHold', 'Hold'], ['ToneRelease', 'Release'],
   ['ToneHold1Hr', 'Hold 1 Hr'], ['EntryCodeRangeFrom', 'From'], ['EntryCodeRangeTo', 'To'],
@@ -44,7 +46,14 @@ interface FieldRowsProps {
   fields: GateSettingRow[];
 }
 
-// One row per setting: its name (and note) on the left, its box on the right.
+/**
+ * One row per setting: its name (and note) on the left, its box on the right.
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.fields - Field names or field updates.
+ * @returns Rendered React element.
+ */
 function FieldRows({ settings, fields }: FieldRowsProps) {
   return (
     <Table.Root size="1" variant="surface" style={{ width: 'fit-content', maxWidth: '100%' }}>
@@ -63,8 +72,14 @@ function FieldRows({ settings, fields }: FieldRowsProps) {
   );
 }
 
-// Tone-open settings whose digit another tone also uses, and one line per clashing digit. Tracker command relays are
-// left out (their row is locked); the server refuses the same clashes.
+/**
+ * Tone-open settings whose digit another tone also uses, and one line per clashing digit. Tracker command relays are
+ * left out (their row is locked); the server refuses the same clashes.
+ *
+ * @param settings - Settings map or configuration.
+ * @param locked - `Record<number, string>` value.
+ * @returns `{ keys: Set<string>; lines: string[] }` result.
+ */
 function toneClashes(settings: GateSettings, locked: Record<number, string>): { keys: Set<string>; lines: string[] } {
   const uses = new Map<string, GateSettingRow[]>();
   for (const setting of settings.fields) {
@@ -90,10 +105,22 @@ interface RelayTableProps {
   clash: { keys: Set<string>; lines: string[] };
 }
 
-// lockedRelays: relay -> note, for Tracker command relays. Their whole row is read-only: strike time fixed at 00, and
-// the tones, entry code range, postal switch and rotary dial 9 belong on relay 0 instead (DoorKing manual 3.1.3).
-// relays: the rows (0-2, plus the Tracker relays, which have only a name); nameCell: the name box of a relay.
-// clash: tone-open settings that share a digit (red).
+/**
+ * lockedRelays: relay -> note, for Tracker command relays. Their whole row is read-only: strike time fixed at 00, and
+ * the tones, entry code range, postal switch and rotary dial 9 belong on relay 0 instead (DoorKing manual 3.1.3).
+ * relays: the rows (0-2, plus the Tracker relays, which have only a name); nameCell: the name box of a relay.
+ * clash: tone-open settings that share a digit (red).
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.fields - Field names or field updates.
+ * @param props.relayLabels - Relay labels.
+ * @param props.lockedRelays - Relay -> note, for Tracker command relays.
+ * @param props.relays - Relay numbers to show (0–2, plus enabled Tracker relays 3–18).
+ * @param props.nameCell - The name box of a relay.
+ * @param props.clash - Set of tone-open setting keys that share a duplicate digit.
+ * @returns Rendered React element.
+ */
 function RelayTable({ settings, fields, relayLabels, lockedRelays, relays, nameCell, clash }: RelayTableProps) {
   const byKey = new Map(fields.map((setting) => [setting.key, setting]));
   const used = new Set<string>();
@@ -186,9 +213,23 @@ interface GateSettingsEditorProps {
   onReload: () => Promise<void> | void;
 }
 
-// The gate settings editor. prefs (System Settings): every group except Relays and Display; relays: the Relays
-// group; display: the Display group of the LCD layout chosen (single line or 8 line).
-// relays / nameCell: the Relays view's rows and name boxes (see RelayTable).
+/**
+ * The gate settings editor. prefs (System Settings): every group except Relays and Display; relays: the Relays
+ * group; display: the Display group of the LCD layout chosen (single line or 8 line).
+ * relays / nameCell: the Relays view's rows and name boxes (see RelayTable).
+ *
+ * @param props - Component props.
+ * @param props.settings - Settings map or configuration.
+ * @param props.view - View.
+ * @param [props.displayMode] - Display mode.
+ * @param [props.relayLabels] - Relay labels.
+ * @param [props.lockedRelays] - Locked relays.
+ * @param [props.relays] - The Relays group.
+ * @param props.nameCell - Name cell.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onReload - Callback to reload the gate data.
+ * @returns Rendered React element.
+ */
 export function GateSettingsEditor({ settings, view, displayMode = 'single', relayLabels = {}, lockedRelays = {}, relays = [0, 1, 2], nameCell,
   gapi, onReload }: GateSettingsEditorProps) {
   const shown = settings.fields.filter((setting) => !DEDICATED_GROUPS.has(setting.group));

@@ -1,8 +1,12 @@
-// Email: an outbox (table emails) that a background sender delivers over SMTP (nodemailer), retrying failures, and
-// single-use link tokens (table email_tokens) for verifying an address, resetting a password and accepting an
-// invitation. Bodies hold links, so they are encrypted with the key and removed once an email is sent or given up;
-// tokens are stored only as SHA-256 hashes and expire. Links use the URL fragment (#reset=…), which browsers never
-// send to the server, so tokens don't end up in proxy logs.
+/**
+ * @module src/email
+ *
+ * Email: an outbox (table emails) that a background sender delivers over SMTP (nodemailer), retrying failures, and
+ * single-use link tokens (table email_tokens) for verifying an address, resetting a password and accepting an
+ * invitation. Bodies hold links, so they are encrypted with the key and removed once an email is sent or given up;
+ * tokens are stored only as SHA-256 hashes and expire. Links use the URL fragment (#reset=…), which browsers never
+ * send to the server, so tokens don't end up in proxy logs.
+ */
 import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { all, decrypt, encrypt, one, run, transaction, type Store } from './db.ts';
@@ -24,8 +28,16 @@ export interface Mailer { sendMail(message: { from: string; to: string; subject:
 
 const sha = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
 
-// A new link token for the user (earlier unused ones of the same kind stop working). data: e.g. the address being
-// verified. Returns the token (for the link only).
+/**
+ * A new link token for the user (earlier unused ones of the same kind stop working). data: e.g. the address being
+ * verified. Returns the token (for the link only).
+ *
+ * @param store - Database store handle.
+ * @param kind - Item or operation kind.
+ * @param username - Local account username.
+ * @param [data] - Binary or structured payload.
+ * @returns Promise resolving to `string`.
+ */
 export async function createToken(store: Store, kind: TokenKind, username: string, data = ''): Promise<string> {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = Date.now();
@@ -39,13 +51,27 @@ export async function createToken(store: Store, kind: TokenKind, username: strin
 
 type TokenUse = { username: string; data: string } | null;
 
-// The token's user and data if it is valid, unexpired and of this kind; a token of this kind is used up either way
-// when found (one of another kind, e.g. an invitation opened as a password reset, is left as it is).
+/**
+ * The token's user and data if it is valid, unexpired and of this kind; a token of this kind is used up either way
+ * when found (one of another kind, e.g. an invitation opened as a password reset, is left as it is).
+ *
+ * @param store - Database store handle.
+ * @param kind - Item or operation kind.
+ * @param token - One-time link token or session token.
+ * @returns Promise resolving to `TokenUse`.
+ */
 export function useToken(store: Store, kind: TokenKind, token: unknown): Promise<TokenUse> {
   return findToken(store, kind, token, 'DELETE FROM email_tokens WHERE token_hash = $1 AND kind = $2 RETURNING username, data, expires_at');
 }
 
-// The same, without using it up (to show whose invitation it is).
+/**
+ * The same, without using it up (to show whose invitation it is).
+ *
+ * @param store - Database store handle.
+ * @param kind - Item or operation kind.
+ * @param token - One-time link token or session token.
+ * @returns Promise resolving to `TokenUse`.
+ */
 export function peekToken(store: Store, kind: TokenKind, token: unknown): Promise<TokenUse> {
   return findToken(store, kind, token, 'SELECT username, data, expires_at FROM email_tokens WHERE token_hash = $1 AND kind = $2');
 }
@@ -57,18 +83,41 @@ async function findToken(store: Store, kind: TokenKind, token: unknown, sql: str
   return { username: row.username, data: row.data };
 }
 
+/**
+ * Delete expired tokens.
+ *
+ * @param store - Database store handle.
+ * @returns Promise resolving to `number`.
+ */
 export async function deleteExpiredTokens(store: Store): Promise<number> {
   return run(store, 'DELETE FROM email_tokens WHERE expires_at < now()');
 }
 
-// Queues an email (kind: what it is, for the log). The body is stored encrypted until it is sent.
+/**
+ * Queues an email (kind: what it is, for the log). The body is stored encrypted until it is sent.
+ *
+ * @param store - Database store handle.
+ * @param options - Options object.
+ * @param options.to - Recipient email address.
+ * @param options.subject - Provider subject identifier (`sub` claim).
+ * @param options.text - Input text string.
+ * @param options.kind - What it is, for the log.
+ * @returns Promise resolving to `number`.
+ */
 export async function queueEmail(store: Store, { to, subject, text, kind }: { to: string; subject: string; text: string; kind: string }): Promise<number> {
   const row = await one<{ id: number }>(store, `INSERT INTO emails (to_addr, subject, kind, body, status, attempts, next_try, created_at)
     VALUES ($1, $2, $3, $4, 'queued', 0, now(), now()) RETURNING id`, [to, subject, kind, encrypt(store, text)]);
   return row!.id;
 }
 
-// A failed send: tried again after wait minutes, or given up (wait undefined: the retries are used up).
+/**
+ * A failed send: tried again after wait minutes, or given up (wait undefined: the retries are used up).
+ *
+ * @param store - Database store handle.
+ * @param id - Unique record identifier.
+ * @param msg - Error or email message.
+ * @param wait - `number | undefined` value.
+ */
 async function recordFailure(store: Store, id: number, msg: string, wait: number | undefined): Promise<void> {
   if (wait === undefined) {
     await run(store, "UPDATE emails SET status = 'failed', attempts = attempts + 1, error = $2, body = NULL WHERE id = $1", [id, msg]);
@@ -78,8 +127,16 @@ async function recordFailure(store: Store, id: number, msg: string, wait: number
     [id, msg, String(wait)]);
 }
 
-// Sends the queued emails that are due. A failure is tried again after RETRY_MINUTES; after the last it is given up.
-// Returns the counts. log(message) gets each failure.
+/**
+ * Sends the queued emails that are due. A failure is tried again after RETRY_MINUTES; after the last it is given up.
+ * Returns the counts. log(message) gets each failure.
+ *
+ * @param store - Database store handle.
+ * @param mailer - Configured SMTP mailer, or `null` when email is disabled.
+ * @param from - `string` value.
+ * @param [log] - Callback receiving progress or diagnostic messages.
+ * @returns Promise resolving to `{ sent: number; failed: number }`.
+ */
 export async function sendQueued(store: Store, mailer: Mailer, from: string, log: (message: string) => void = () => {}): Promise<{ sent: number; failed: number }> {
   const out = { sent: 0, failed: 0 };
   const due = await all<QueuedEmailRow>(store,
@@ -100,14 +157,25 @@ export async function sendQueued(store: Store, mailer: Mailer, from: string, log
   return out;
 }
 
-// The most recent emails (without bodies), newest first.
+/**
+ * The most recent emails (without bodies), newest first.
+ *
+ * @param store - Database store handle.
+ * @param [limit] - Maximum number of rows to return.
+ * @returns Promise resolving to `OutboxEmail[]`.
+ */
 export async function listEmails(store: Store, limit = 100): Promise<OutboxEmail[]> {
   return (await all<OutboxEmailRow>(store,
     `SELECT id, to_addr, subject, kind, status, attempts, error, created_at, sent_at FROM emails ORDER BY id DESC LIMIT $1`, [limit]))
     .map((row) => ({ id: row.id, to: row.to_addr, subject: row.subject, kind: row.kind, status: row.status, attempts: row.attempts, error: row.error, createdAt: row.created_at, sentAt: row.sent_at }));
 }
 
-// The SMTP sender for config.email, or null when email is off (no host).
+/**
+ * The SMTP sender for config.email, or null when email is off (no host).
+ *
+ * @param cfg - Configuration or settings object.
+ * @returns `Mailer | null` result.
+ */
 export function createMailer(cfg: ServerConfig['email']): Mailer | null {
   if (!cfg.host) return null;
   return nodemailer.createTransport({
@@ -116,7 +184,7 @@ export function createMailer(cfg: ServerConfig['email']): Mailer | null {
   });
 }
 
-// The texts. app: the address links point to. All plain text.
+/** The texts. app: the address links point to. All plain text. */
 const SIGN = '\n\n— DoorKing Gate Manager';
 export const messages = {
   verify: (app: string, user: string, token: string) => ({

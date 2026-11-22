@@ -38,7 +38,15 @@ interface NavButtonProps {
   onClick: () => void;
 }
 
-// One page in the menu; the open one is highlighted.
+/**
+ * One page in the menu; the open one is highlighted.
+ *
+ * @param props - Component props.
+ * @param props.label - Display label.
+ * @param props.current - Current password or state.
+ * @param props.onClick - On click.
+ * @returns Rendered React element.
+ */
 function NavButton({ label, current, onClick }: NavButtonProps) {
   return <Button className="nav-item" variant={current ? 'soft' : 'ghost'} color={current ? undefined : 'gray'} onClick={onClick}>{label}</Button>;
 }
@@ -57,8 +65,24 @@ interface GateConnectionProps {
   onNotify: (text: string) => void;
 }
 
-// The desktop sidebar's gate connection: Send to gate and Reset to gate (admins), the pulls, the running or last
-// connection, and Show progress.
+/**
+ * The desktop sidebar's gate connection: Send to gate and Reset to gate (admins), the pulls, the running or last
+ * connection, and Show progress.
+ *
+ * @param props - Component props.
+ * @param props.job - Job.
+ * @param props.progressShown - Progress shown.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.readOnly - Read only.
+ * @param props.workingCopy - Working copy.
+ * @param props.hasWorkingCopy - Has working copy.
+ * @param props.onPull - On pull.
+ * @param props.onShowProgress - On show progress.
+ * @param props.onReset - On reset.
+ * @param props.onJobStarted - On job started.
+ * @param props.onNotify - On notify.
+ * @returns Rendered React element.
+ */
 function GateConnection({ job, progressShown, gapi, readOnly, workingCopy, hasWorkingCopy, onPull, onShowProgress, onReset, onJobStarted,
   onNotify }: GateConnectionProps) {
   const running = job?.state === 'running';
@@ -89,8 +113,33 @@ function GateConnection({ job, progressShown, gapi, readOnly, workingCopy, hasWo
   );
 }
 
-// The sidebar's contents (GateApp puts them in the desktop sidebar or the phone's More menu): the gate switcher, the
-// pages, the pinned pages and Help, the gate connection (desktop) and the user's settings and Sign out.
+/**
+ * The sidebar's contents (GateApp puts them in the desktop sidebar or the phone's More menu): the gate switcher, the
+ * pages, the pinned pages and Help, the gate connection (desktop) and the user's settings and Sign out.
+ *
+ * @param props - Component props.
+ * @param props.gate - Currently open gate summary (`GateInfo`).
+ * @param props.user - Local account username (or actor name for audit logs).
+ * @param props.page - Page.
+ * @param props.phone - Gate system phone number (digits or formatted).
+ * @param props.elevators - Elevators.
+ * @param props.job - Job.
+ * @param props.progressShown - Progress shown.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.readOnly - Read only.
+ * @param props.workingCopy - Working copy.
+ * @param props.hasWorkingCopy - Has working copy.
+ * @param props.onGo - On go.
+ * @param props.onSwitchGate - On switch gate.
+ * @param props.onAllGates - On all gates.
+ * @param props.onPull - On pull.
+ * @param props.onShowProgress - On show progress.
+ * @param props.onReset - On reset.
+ * @param props.onJobStarted - On job started.
+ * @param props.onNotify - On notify.
+ * @param props.onSignOut - On sign out.
+ * @returns Rendered React element.
+ */
 export function SidebarItems({ gate, user, page, phone, elevators, job, progressShown, gapi, readOnly, workingCopy, hasWorkingCopy, onGo,
   onSwitchGate, onAllGates, onPull, onShowProgress, onReset, onJobStarted, onNotify, onSignOut }: SidebarItemsProps) {
   const listed = (key: NavKey) => pageShown(key, elevators) && !(phone && TAB_PAGES.includes(key));

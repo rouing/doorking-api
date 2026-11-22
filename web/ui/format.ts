@@ -1,13 +1,35 @@
-// Display helpers shared by the tables.
+/**
+ * @module web/ui/format
+ *
+ * Display helpers shared by the tables.
+ */
 import type { GateFeatures, GatePrefs, GateTracker, ResidentRow, TransactionRow } from '../../src/types.ts';
 import { NO_FOOTAGE_EVENTS } from '../../src/snapshot-files.ts';
 
-// A row's value for a column key (a field of the row; undefined when it has none).
+/**
+ * A row's value for a column key (a field of the row; undefined when it has none).
+ *
+ * @param row - `object` value.
+ * @param key - Lookup key, API key, or setting key.
+ * @returns `unknown` result.
+ */
 export const fieldOf = (row: object, key: string): unknown => (row as { [field: string]: unknown })[key];
 
+/**
+ * Cell.
+ *
+ * @param value - Input value.
+ * @returns `string` result.
+ */
 export const cell = (value: unknown): string => (Array.isArray(value) ? value.join(' ') : value == null ? '' : String(value));
 
-// Compares two cell values: numeric when both look numeric, else case-insensitive with numbers in order.
+/**
+ * Compares two cell values: numeric when both look numeric, else case-insensitive with numbers in order.
+ *
+ * @param a - First value to compare.
+ * @param b - Second value to compare.
+ * @returns `number` result.
+ */
 export function cmpCells(a: unknown, b: unknown): number {
   const textA = cell(a);
   const textB = cell(b);
@@ -17,11 +39,21 @@ export function cmpCells(a: unknown, b: unknown): number {
   return textA.localeCompare(textB, undefined, { numeric: true });
 }
 
-// An unused directory slot: no name, phone, entry code or cards (the gate keeps the slot's code, flag 0x00).
+/**
+ * An unused directory slot: no name, phone, entry code or cards (the gate keeps the slot's code, flag 0x00).
+ *
+ * @param resident - Resident/vendor row.
+ * @returns Computed result.
+ */
 export const isEmptySlot = (resident: ResidentRow) => !resident.name && !resident.phone && !resident.entryCode && !(resident.cards && resident.cards.length);
 
-// The phone as one value; the gate stores the area code (3 digits, or 4 as 1 + area code for long distance) and
-// the 7-digit number separately.
+/**
+ * The phone as one value; the gate stores the area code (3 digits, or 4 as 1 + area code for long distance) and
+ * the 7-digit number separately.
+ *
+ * @param resident - Resident/vendor row.
+ * @returns `string` result.
+ */
 export function phoneFull(resident: ResidentRow): string {
   const local = (resident.phone || '').replace(/\D/g, '');
   if (!local) return '';
@@ -30,34 +62,65 @@ export function phoneFull(resident: ResidentRow): string {
     : local.length === 7 ? `${local.slice(0, 3)}-${local.slice(3)}` : full;
 }
 
-// Partial phone digits as typed: up to 7 as 555-1234, 8-10 as (918) 555-0142, 11 as 1 (918) 555-0142.
+/**
+ * Partial phone digits as typed: up to 7 as 555-1234, 8-10 as (918) 555-0142, 11 as 1 (918) 555-0142.
+ *
+ * @param digits - Target directory code digit count (1–4).
+ * @returns Computed result.
+ */
 export const formatPhoneDigits = (digits: string) => (digits.length <= 7
   ? (digits.length > 3 ? `${digits.slice(0, 3)}-${digits.slice(3)}` : digits)
   : digits.length === 11 ? `${digits[0]} (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`
     : `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`);
 
-// The gate's Tracker switches; Tracker 1/2 count only while Tracker is on.
+/**
+ * The gate's Tracker switches; Tracker 1/2 count only while Tracker is on.
+ *
+ * @param prefs - Gate-scoped preferences object.
+ * @returns `GateTracker` result.
+ */
 export const trackerOf = (prefs: GatePrefs): GateTracker => {
   const enabled = prefs.tracker?.enabled === true;
   return { enabled, tracker1: enabled && prefs.tracker?.tracker1 === true, tracker2: enabled && prefs.tracker?.tracker2 === true };
 };
 
-// Relays 0-2, plus 3-10 with Tracker 2 and 11-18 with Tracker 1.
+/**
+ * Relays 0-2, plus 3-10 with Tracker 2 and 11-18 with Tracker 1.
+ *
+ * @param tracker - `GateTracker` value.
+ * @returns `number[]` result.
+ */
 export const trackerRelays = (tracker: GateTracker): number[] => [0, 1, 2,
   ...(tracker.tracker2 ? Array.from({ length: 8 }, (_, i) => 3 + i) : []), ...(tracker.tracker1 ? Array.from({ length: 8 }, (_, i) => 11 + i) : [])];
 
-// The gate's Floors/Elevators switches (System Settings > Gate configuration); shown unless turned off.
+/**
+ * The gate's Floors/Elevators switches (System Settings > Gate configuration); shown unless turned off.
+ *
+ * @param prefs - Gate-scoped preferences object.
+ * @returns `GateFeatures` result.
+ */
 export const featuresOf = (prefs: GatePrefs): GateFeatures => ({
   floors: prefs.features?.floors !== false, elevators: prefs.features?.elevators !== false,
 });
 
-// Security level as shown: 0 = Disabled, 1 = Enabled (always valid), else the level number. The gate stores the number.
+/**
+ * Security level as shown: 0 = Disabled, 1 = Enabled (always valid), else the level number. The gate stores the number.
+ *
+ * @param level - `unknown` value.
+ * @returns `string` result.
+ */
 export const securityText = (level: unknown): string => {
   const text = cell(level);
   return text === '0' ? 'Disabled' : text === '1' ? 'Enabled' : text;
 };
 
-// Text of a directory column (hidden flag, combined phone, security level, blank floor/elevator).
+/**
+ * Text of a directory column (hidden flag, combined phone, security level, blank floor/elevator).
+ *
+ * @param resident - Resident/vendor row.
+ * @param key - Lookup key, API key, or setting key.
+ * @returns `string` result.
+ */
 export function dirCell(resident: ResidentRow, key: string): string {
   if (key === 'hidden') return resident.hidden ? 'Hidden' : '';
   if (key === 'phoneFull') return phoneFull(resident);
@@ -65,10 +128,15 @@ export function dirCell(resident: ResidentRow, key: string): string {
   return cell(fieldOf(resident, key));
 }
 
-// Transaction event types that are gate/system actions: the ones that never get camera footage, and System.
+/** Transaction event types that are gate/system actions: the ones that never get camera footage, and System. */
 const TX_SYSTEM = new Set([...NO_FOOTAGE_EVENTS, 'System']);
 
-// Row colour of a transaction: denied red, system actions amber, admitted green.
+/**
+ * Row colour of a transaction: denied red, system actions amber, admitted green.
+ *
+ * @param transaction - Transaction record or row.
+ * @returns `'red' | 'amber' | 'green' | null` result.
+ */
 export function txTone(transaction: TransactionRow): 'red' | 'amber' | 'green' | null {
   if (transaction.access === 'Deny') return 'red';
   if (TX_SYSTEM.has(transaction.eventType) || (!transaction.eventType && !transaction.lookup && transaction.name)) return 'amber';
@@ -76,8 +144,13 @@ export function txTone(transaction: TransactionRow): 'red' | 'amber' | 'green' |
   return null;
 }
 
-// Finds the resident/vendor a transaction refers to: by its resolved directory code, else by its Number,
-// matched as the transaction's lookup says (directory code, entry code or card).
+/**
+ * Finds the resident/vendor a transaction refers to: by its resolved directory code, else by its Number,
+ * matched as the transaction's lookup says (directory code, entry code or card).
+ *
+ * @param rows - List of data rows.
+ * @returns `(transaction: TransactionRow) => ResidentRow | null` result.
+ */
 export function residentFinder(rows: ResidentRow[]): (transaction: TransactionRow) => ResidentRow | null {
   const by = { directory: new Map<unknown, ResidentRow>(), entryCode: new Map<unknown, ResidentRow>(), card: new Map<unknown, ResidentRow>() };
   for (const resident of rows) {
@@ -93,19 +166,32 @@ export function residentFinder(rows: ResidentRow[]): (transaction: TransactionRo
   };
 }
 
-// Downloads rows as a CSV file.
+/**
+ * Downloads rows as a CSV file.
+ *
+ * @param name - Display name or filename.
+ * @param header - CSV column headers.
+ * @param rows - List of data rows.
+ */
 export function downloadCsv(name: string, header: string[], rows: string[][]) {
   const esc = (value: string) => (/[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
   downloadText(name, [header, ...rows].map((row) => row.map(esc).join(',')).join('\r\n') + '\r\n');
 }
 
-// The whole directory as DoorKing's cloud exports it (ResidentsExport.csv, matched against one, 2026-11-16): one row per
-// directory code in the gate's directory order (empty slots first, vendors last), 62 columns: ACCOUNT (the site
-// name), Resident, H (hidden: Y/N; vendors N), AAC (area code as stored, 3 or 4 digits), PHONE (555-0142), Dir, ENT, SL,
-// Device + DEVICE2-25 (card numbers, 5 digits, ascending), FL (blank when unset), ER, NOTES + NOTES2-25 (per-device
-// notes: kept empty), Vendor (Y/N), RESIDENTNOTES (the local note). Text columns are always quoted, the others never;
-// CRLF line ends. Cards without a directory code are listed on directory code 0 (000), as the cloud does. 25 is also
-// the gate's limit of cards per directory code.
+/**
+ * The whole directory as DoorKing's cloud exports it (ResidentsExport.csv, matched against one, 2026-11-16): one row per
+ * directory code in the gate's directory order (empty slots first, vendors last), 62 columns: ACCOUNT (the site
+ * name), Resident, H (hidden: Y/N; vendors N), AAC (area code as stored, 3 or 4 digits), PHONE (555-0142), Dir, ENT, SL,
+ * Device + DEVICE2-25 (card numbers, 5 digits, ascending), FL (blank when unset), ER, NOTES + NOTES2-25 (per-device
+ * notes: kept empty), Vendor (Y/N), RESIDENTNOTES (the local note). Text columns are always quoted, the others never;
+ * CRLF line ends. Cards without a directory code are listed on directory code 0 (000), as the cloud does. 25 is also
+ * the gate's limit of cards per directory code.
+ *
+ * @param account - Gate site name written to the CSV `ACCOUNT` column.
+ * @param rows - List of data rows.
+ * @param [unassignedCards] - `string[]` value.
+ * @returns `string` result.
+ */
 export function doorKingCsv(account: string, rows: ResidentRow[], unassignedCards: string[] = []): string {
   const quoted = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
   const plain = (value: unknown) => String(value ?? '').replace(/[",\r\n]/g, ' ');
@@ -125,7 +211,13 @@ export function doorKingCsv(account: string, rows: ResidentRow[], unassignedCard
   return [header.join(','), ...lines].join('\r\n') + '\r\n';
 }
 
-// Downloads text as a file.
+/**
+ * Downloads text as a file.
+ *
+ * @param name - Display name or filename.
+ * @param text - Input text string.
+ * @param [type] - MIME type or record type.
+ */
 export function downloadText(name: string, text: string, type = 'text/csv') {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([text], { type }));
@@ -134,9 +226,20 @@ export function downloadText(name: string, text: string, type = 'text/csv') {
   URL.revokeObjectURL(link.href);
 }
 
-// An account phone number (E.164) for display: +1 (214) 555-0100 for US/Canada, else as stored.
+/**
+ * An account phone number (E.164) for display: +1 (214) 555-0100 for US/Canada, else as stored.
+ *
+ * @param e164 - `string` value.
+ * @returns Operation result.
+ */
 export const fmtIntlPhone = (e164: string) => {
   const match = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164 || '');
   return match ? `+1 (${match[1]}) ${match[2]}-${match[3]}` : e164 || '';
 };
+/**
+ * Fmt time.
+ *
+ * @param time - `string | number | undefined | null` value.
+ * @returns Computed result.
+ */
 export const fmtTime = (time: string | number | undefined | null) => (time ? new Date(time).toLocaleString('en-US') : '');

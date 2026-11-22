@@ -12,8 +12,17 @@ interface RelayNameBoxProps {
   onSaved: () => Promise<void>;
 }
 
-// The name of one relay (a box in the Relays page's relay settings table). Saved on its own when the box loses
-// focus or on Enter; blank goes back to "Relay N". Shared by every account that manages the gate; not sent to it.
+/**
+ * The name of one relay (a box in the Relays page's relay settings table). Saved on its own when the box loses
+ * focus or on Enter; blank goes back to "Relay N". Shared by every account that manages the gate; not sent to it.
+ *
+ * @param props - Component props.
+ * @param props.relay - Relay.
+ * @param props.prefs - Gate-scoped preferences object.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onSaved - On saved.
+ * @returns Rendered React element.
+ */
 export function RelayNameBox({ relay, prefs, gapi, onSaved }: RelayNameBoxProps) {
   const k = String(relay);
   const saved = (prefs.relayLabels && prefs.relayLabels[k]) || `Relay ${k}`;
@@ -45,8 +54,16 @@ interface DeviceAssociationProps {
   onSaved: () => Promise<void>;
 }
 
-// Device Association: names for ranges of device codes (00001-65407), up to 10 rows. The server checks names,
-// ranges and overlaps on save.
+/**
+ * Device Association: names for ranges of device codes (00001-65407), up to 10 rows. The server checks names,
+ * ranges and overlaps on save.
+ *
+ * @param props - Component props.
+ * @param props.prefs - Gate-scoped preferences object.
+ * @param props.gapi - Gate-scoped API fetch helper.
+ * @param props.onSaved - On saved.
+ * @returns Rendered React element.
+ */
 export function DeviceAssociation({ prefs, gapi, onSaved }: DeviceAssociationProps) {
   const fill = (list: DeviceRange[]) => Array.from({ length: 10 }, (_, i) => ({ ...(list[i] || { name: '', from: '', to: '' }) }));
   const [rows, setRows] = useState(() => fill(prefs.deviceAssociation || DEFAULT_DEVICE_ASSOCIATION));
