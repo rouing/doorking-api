@@ -1,6 +1,26 @@
 # TODO
 
-Open work, unverified hardware tests, and backlog items.
+Open work, unverified hardware tests, planned 10x features, and backlog items.
+
+## Planned next (10x roadmap — active plan)
+- [ ] **#11 Human-readable diff in "Send to Gate" dialog:** show the exact From → To summary of every unsent resident, card, and setting change inside the Send confirmation dialog (`GET /send` + `SendSummary`).
+- [ ] **#14 Floating US holidays auto-fill (year-aware):** compute floating US holidays (MLK Day, Presidents' Day, Memorial Day, Labor Day, Columbus Day, Thanksgiving, Day after Thanksgiving) for a chosen year in `src/holidays.ts` with one-click fill on the Holidays page.
+- [ ] **#12 Global quick-jump search (`Cmd/Ctrl+K`):** instant search modal across residents, vendors, cards, entry codes, phone numbers, notes, and recent transactions from anywhere inside an open gate.
+- [ ] **#6 Timed "Safe Hold-Open" relay auto-release:** "Hold open for 15m / 30m / 1h / Until time" option with persisted PostgreSQL timer (`relay_timers`), live countdown, automatic `SetRelays` release with retries, and failure alert.
+- [ ] **#15 Point-in-time pull archive & rollback:** keep the last N residents pulls in `gate_pull_archive` with compare and one-click restore to the working copy from History.
+- [ ] **#8 Access hygiene & "Ghost Card / Leaked Code" audit dashboard:** Insights/Audit page mining `tx_history` + `gate_residents` + `gate_cards` for dormant credentials (90/180/365d), active unassigned cards (with camera snapshots), high-frequency/leaked entry codes, and gate traffic/cycle counts.
+- [ ] **#9 Outbound webhooks & automation bridge:** per-gate HMAC-SHA256 signed webhooks backed by a retry outbox (`webhooks`, `webhook_deliveries`) firing on gate/transaction/relay/send/snapshot events.
+- [ ] **#10 Maker-checker (`editor` role) & bulk operations:** multi-select bulk actions on Residents/Vendors (bulk security level, disable, delete, CSV import preview) plus an `editor` role that can modify the working copy while `gate-admin` approves and sends to the gate.
+
+## Later / Backlog (10x ideas for after the planned set)
+- [ ] **#1 Auto-expiring visitor & contractor passes:** time-boxed guest/vendor entry codes auto-sent before start and auto-removed at expiry (requires live Send validation first).
+- [ ] **#2 Multi-gate property fleet sync:** group gates into a Property, propagate resident/card/code changes across all panels, show fleet drift, and queue sends across gates.
+- [ ] **#3 Property roster sync & Move-In / Move-Out turnover wizard:** diff external HOA/property CSVs against `gate_residents`/`gate_cards` and guide unit turnover (revoke outgoing tenant cards/codes, provision incoming).
+- [ ] **#4 Local vision / ALPR sidecar on saved camera snapshots:** opt-in container indexing license plates, tailgating, and multi-plate card sharing linked to `tx_history`.
+- [ ] **#5 Resident self-service portal & "Buzz Me In" PWA:** `resident` role scoped to one directory code for momentary opens, own-unit history/snapshots, and change requests.
+- [ ] **#7 Gate health & security anomaly alerts:** alert via email/push/webhook on stuck hold-open, repeated denied attempts (with snapshot), consecutive pull failures / daytime silence, buffer wrap gaps, and out-of-band gate edits.
+- [ ] **#13 One-click safe entry code generator & copy welcome message:** generate non-colliding random 4-digit codes in `ResidentForm` and copy formatted resident keypad instructions.
+- [ ] **#16 Backup health indicator & one-click encrypted backup export:** `node cli.ts backup` + UI status warning when backups are overdue (extends automated PostgreSQL backups below).
 
 ## Security & tests
 - [ ] **Passkey step-up on live relay control:** add `PUT /api/gates/:phone/relays` to `STEP_UP` in `web/requests.ts` so holding a gate open requires a recent passkey confirmation (same as Send to gate).
@@ -22,7 +42,7 @@ Open work, unverified hardware tests, and backlog items.
 - [ ] **Read-only board settings:** confirm `dialType` (`0x0F`) and `multipleSystems` (`0x06`) via one-change diffs before making them editable; investigate unexplained bytes `0x13`–`0x14`, `0x37`, `0x43`, `0xC5`.
 - [ ] **Dahua video mode edge cases:** test the gap-skip / resume path and browser H.265 playback across a full app snapshot run.
 
-## Features & roadmap
+## Other platform roadmap items
 - [ ] **Web Push notifications** to installed apps (PWA) for failed sends and scheduled transfers (VAPID keys in `config.json`, subscription table, `push` handler in service worker via `injectManifest`, toggle in User Settings).
 - [ ] **Single sign-on enhancements:**
   - Count strong SSO logins toward step-up (requires provider `amr`/`acr` or Entra `acrs` + `auth_time`)
