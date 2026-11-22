@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Card, Checkbox, Flex, Heading, RadioGroup, Text } from '@radix-ui/themes';
-import type { GatePrefs, Relay } from '../../../src/types.ts';
+import { Badge, Button, Callout, Card, Checkbox, Flex, Heading, RadioGroup, Select, Text } from '@radix-ui/themes';
+import type { GatePrefs, Relay, RelayTimer } from '../../../src/types.ts';
 import { errorText, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { trackerOf, trackerRelays } from '../format.ts';
@@ -34,19 +34,50 @@ interface LiveRelaysProps {
  * @param props.commandRelays - Relay numbers acting as Tracker command relays (disabled in live control).
  * @returns Rendered React element.
  */
+const HOLD_OPTIONS: [string, string][] = [
+  ['15', 'Auto-release after 15 min'],
+  ['30', 'Auto-release after 30 min'],
+  ['60', 'Auto-release after 1 hour'],
+  ['120', 'Auto-release after 2 hours'],
+  ['240', 'Auto-release after 4 hours'],
+  ['0', 'Hold until manually released'],
+];
+
+/** Formats remaining time until `releaseAt` as a concise countdown string. */
+function countdownText(releaseAt: string, nowMs: number): string {
+  const remaining = Math.max(0, new Date(releaseAt).getTime() - nowMs);
+  const mins = Math.ceil(remaining / 60000);
+  if (mins <= 0) return 'releasing soon';
+  if (mins < 60) return `${mins}m left`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `${hours}h ${rem}m left` : `${hours}h left`;
+}
+
 function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
   const [state, setState] = useState<Record<number, string> | null>(null);
+  const [timers, setTimers] = useState<RelayTimer[]>([]);
+  const [holdMinutes, setHoldMinutes] = useState('30');
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState('');
   const [dialog, confirm] = useConfirm();
   const codes = (list: Relay[]) => Object.fromEntries(Array.from({ length: 19 }, (_, i) => [i, list.find((relay) => relay.relay === i)?.code ?? '2']));
 
+  useEffect(() => {
+    if (!timers.length) return;
+    const interval = setInterval(() => setNowMs(Date.now()), 15000);
+    return () => clearInterval(interval);
+  }, [timers.length]);
+
   const refresh = useCallback(async () => {
     setBusy(true);
     setInfo('Asking the gate…');
     try {
-      const reply = await gapi<{ checkedAt: string; relays: Relay[] }>('GET', '/relays');
+      const reply = await gapi<{ checkedAt: string; relays: Relay[]; timers?: RelayTimer[] }>('GET', '/relays');
       setState(codes(reply.relays));
+      setTimers(reply.timers || []);
+      setNowMs(Date.now());
       setInfo(`Checked ${new Date(reply.checkedAt).toLocaleTimeString()}`);
     } catch (err) { setInfo(errorText(err)); }
     setBusy(false);
@@ -56,14 +87,33 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
   async function toggle(i: number) {
     if (!state) return;
     const on = state[i] !== '1';
-    if (!await confirm({ title: `${on ? 'HOLD OPEN' : 'Release'} ${labels[i]} now?`, action: on ? 'Hold open' : 'Release', color: on ? 'red' : 'blue',
-      body: `This changes the gate immediately${on ? ' and holds it open until released' : ''}.` })) return;
+    const minutes = Number(holdMinutes);
+    const bodyText = on
+      ? (minutes > 0
+        ? `This holds ${labels[i] || `Relay ${i}`} open immediately and automatically releases it in ${minutes} minutes.`
+        : `This changes the gate immediately and holds it open until manually released.`)
+      : 'This releases the relay immediately.';
+    if (!await confirm({ title: `${on ? 'HOLD OPEN' : 'Release'} ${labels[i] || `Relay ${i}`} now?`, action: on ? 'Hold open' : 'Release', color: on ? 'red' : 'blue',
+      body: bodyText })) return;
     setBusy(true);
     setInfo(on ? 'Holding open…' : 'Releasing…');
     try {
-      const reply = await gapi<{ after: Relay[]; reply: string }>('PUT', '/relays', { [i]: on });
+      const payload: Record<string, unknown> = { [i]: on, ...(on && minutes > 0 ? { holdMinutes: minutes } : {}) };
+      const reply = await gapi<{ after: Relay[]; reply: string; timers?: RelayTimer[] }>('PUT', '/relays', payload);
       setState(codes(reply.after));
+      setTimers(reply.timers || []);
+      setNowMs(Date.now());
       setInfo(`Done (${reply.reply || 'ok'}) · ${new Date().toLocaleTimeString()}`);
+    } catch (err) { setInfo(errorText(err)); }
+    setBusy(false);
+  }
+
+  async function cancelTimer(relayNum: number) {
+    setBusy(true);
+    try {
+      const reply = await gapi<{ timers: RelayTimer[] }>('DELETE', `/relays/${relayNum}/timer`);
+      setTimers(reply.timers || []);
+      setInfo(`Auto-release timer cancelled on ${labels[relayNum] || `Relay ${relayNum}`}`);
     } catch (err) { setInfo(errorText(err)); }
     setBusy(false);
   }
@@ -74,19 +124,47 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
       <Flex direction="column" gap="3">
         <Heading size="3">Live relay control<HelpTip of="liveRelays" /></Heading>
         <Text size="2" color="gray"><strong>Changes the gate immediately.</strong> Tap a relay to hold it open (green) or release it (red).
-          Separate from the Hold Open schedule. Refresh to read the gate's current state.</Text>
-        <Flex gap="3" align="center" wrap="wrap"><Button variant="soft" color="gray" onClick={refresh} disabled={busy}>Refresh state</Button>
-          <Text size="2" color="gray">{info}</Text></Flex>
+          Choose a hold duration to auto-release the gate automatically so it is never left open by mistake.</Text>
+        <Flex gap="3" align="center" wrap="wrap">
+          <Button variant="soft" color="gray" onClick={refresh} disabled={busy}>Refresh state</Button>
+          <Select.Root size="2" value={holdMinutes} onValueChange={setHoldMinutes} disabled={busy}>
+            <Select.Trigger />
+            <Select.Content>
+              {HOLD_OPTIONS.map(([val, label]) => <Select.Item key={val} value={val}>{label}</Select.Item>)}
+            </Select.Content>
+          </Select.Root>
+          <Text size="2" color="gray">{info}</Text>
+        </Flex>
+        {timers.length > 0 && (
+          <Callout.Root color="amber">
+            <Flex direction="column" gap="2">
+              {timers.map((timer) => (
+                <Flex key={timer.relay} align="center" gap="3" wrap="wrap">
+                  <Text size="2">
+                    <strong>{labels[timer.relay] || `Relay ${timer.relay}`}</strong> auto-releases at{' '}
+                    {new Date(timer.releaseAt).toLocaleTimeString()} ({countdownText(timer.releaseAt, nowMs)})
+                    {timer.lastError ? ` — retry failed: ${timer.lastError}` : ''}
+                  </Text>
+                  <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => cancelTimer(timer.relay)}>Cancel timer</Button>
+                </Flex>
+              ))}
+            </Flex>
+          </Callout.Root>
+        )}
         <Flex gap="3" wrap="wrap">
           {relays.map((i) => {
             const command = commandRelays.includes(i);
             const code = state && !command ? state[i] : null;
+            const timer = timers.find((entry) => entry.relay === i);
             return (
               <Button key={i} size="4" color={code === '1' ? 'green' : code === '0' ? 'red' : 'gray'} disabled={busy || code === null}
                 variant={command ? 'soft' : undefined}
                 title={command ? `Tracker command relay: it commands relays ${i === 1 ? '11-18' : '3-10'}, so it can't be held open here` : undefined}
                 onClick={() => toggle(i)} style={{ minWidth: 180, height: 'auto', padding: '12px 16px', flexDirection: 'column', alignItems: 'flex-start' }}>
-                <Text weight="bold">{labels[i] || `Relay ${i}`}</Text>
+                <Flex align="center" gap="2">
+                  <Text weight="bold">{labels[i] || `Relay ${i}`}</Text>
+                  {timer && <Badge size="1" color="amber">{countdownText(timer.releaseAt, nowMs)}</Badge>}
+                </Flex>
                 <Text size="1">{command ? `Tracker command relay (relays ${i === 1 ? '11-18' : '3-10'})` : code === null ? 'tap Refresh to check'
                   : `${code === '1' ? 'HELD OPEN' : code === '0' ? 'Released' : 'Unknown — refresh'} — tap to ${code === '1' ? 'release' : 'hold open'}`}</Text>
               </Button>

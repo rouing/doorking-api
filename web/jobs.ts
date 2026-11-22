@@ -311,6 +311,8 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
   async function applyResidentsPull(gate: Gate, files: Record<string, Buffer>, log: (line: string) => void): Promise<void> {
     const result = await serial(gate.phoneNumber, () => dk.applyPull(store, gate.phoneNumber, files));
     for (const line of pullLines(result)) log(line);
+    const board = boardOf(files);
+    if (board) await dk.archivePull(store, gate.phoneNumber, board, { actor: gate.actor }).catch(logged('gate', 'Pull archive failed'));
   }
   /**
    * prepare: runs first, inside the job (the gate's connection is already claimed, so nothing can start in between).
@@ -389,6 +391,8 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
         throw new Error(`Check pull differs from what was sent: ${JSON.stringify(check.differentBlocks)}. What the gate doesn't hold is still unsent.`);
       }
       const later = await serial(gate.phoneNumber, () => dk.acceptSentPull(store, gate.phoneNumber, files, prepared.files));
+      const board = boardOf(files);
+      if (board) await dk.archivePull(store, gate.phoneNumber, board, { actor: gate.actor }).catch(logged('gate', 'Pull archive failed'));
       const lines = later ? ['Check passed: the gate holds what was sent. Changes saved while sending:', ...pullLines(later)]
         : ['Check passed: the gate holds the working copy, which now matches the gate.'];
       for (const line of lines) log(line);
@@ -411,8 +415,8 @@ type Transfers = ReturnType<typeof createTransfers>;
  * @returns Operation result.
  */
 function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, connections: Connections, transfers: Transfers) {
-  const { asGate, config, gateAlert, logged, scheduledSnapshots, store } = deps;
-  const { accountBusy, accountOf, connectionsIdle, isStopping } = connections;
+  const { asGate, client, config, gateAlert, logged, prefsOf, scheduledSnapshots, store } = deps;
+  const { accountBusy, accountOf, connectionsIdle, isStopping, withAccount } = connections;
   const { prepareGateSend, startPull, startSend } = transfers;
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const scheduleText = (schedule: Schedule) => `${schedule.enabled ? '' : 'off, '}${schedule.days.map((day) => DAY_NAMES[day]).join(' ')} ${schedule.time}: ${schedule.actions.join(', ')}`;
@@ -451,11 +455,39 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
     return true;
   }
   let checkingSchedules = false;
+  /** Releases any live relays whose timed hold-open (`relay_timers`) has expired. */
+  async function checkRelayTimers(): Promise<void> {
+    if (isStopping()) return;
+    for (const timer of await dk.dueRelayTimers(store)) {
+      if (isStopping()) return;
+      const rec = await dk.getGate(store, timer.phone);
+      if (!rec) { await dk.clearRelayTimer(store, timer.phone, timer.relay); continue; }
+      const gate = asGate(rec, 'admin', 'timer');
+      if (accountBusy(gate)) continue; // try again on next tick once the DKS login is free
+      const labels: Record<string, string | undefined> = (await prefsOf(gate.phoneNumber)).relayLabels || {};
+      const label = labels[timer.relay] || `Relay ${timer.relay}`;
+      try {
+        await withAccount(gate, () => dk.controlRelays(client(), gate, { [timer.relay]: false }));
+        await dk.clearRelayTimer(store, gate.phoneNumber, timer.relay);
+        const summary = `${label} auto-released (timed hold ended)`;
+        logger('gate').info`Gate ${gate.phoneNumber}: ${summary}`;
+        await dk.addEvent(store, gate.phoneNumber, { user: 'app', action: 'relay', summary, result: 'done' });
+      } catch (err) {
+        const message = (err as Error).message;
+        const attempts = await dk.recordRelayTimerFailure(store, gate.phoneNumber, timer.relay, message);
+        logger('gate').error`Gate ${gate.phoneNumber}: auto-release of ${label} failed (try ${attempts}): ${message}`;
+        if (attempts === 3) {
+          await gateAlert(gate.phoneNumber, `Auto-release of ${label} failed`, `The timed hold set by ${timer.setBy} could not release the gate after 3 tries. Error: ${message}`).catch(logged('email', 'Gate alert not sent'));
+        }
+      }
+    }
+  }
   async function checkSchedules() {
     if (checkingSchedules || isStopping()) return;
     checkingSchedules = true;
     const now = new Date();
     try {
+      await checkRelayTimers();
       for (const sch of await dk.listSchedules(store)) {
         if (!dk.scheduleIsDue(sch, now)) continue;
         await dk.updateScheduleRun(store, sch.id, { lastDue: dk.lastDue(sch, now)!.toISOString() });
@@ -556,7 +588,7 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
     } catch (err) { logger('schedule').error`Schedule result not saved: ${(err as Error).message}`; }
   }
 
-  return { scheduleText, SCHEDULE_TICK_MS, isScheduleQueued, scheduleRunningFor, dropQueuedSchedules, jobsIdle, queueSchedule, checkSchedules };
+  return { scheduleText, SCHEDULE_TICK_MS, isScheduleQueued, scheduleRunningFor, dropQueuedSchedules, jobsIdle, queueSchedule, checkSchedules, checkRelayTimers };
 }
 
 /**

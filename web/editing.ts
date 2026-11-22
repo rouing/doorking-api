@@ -503,7 +503,7 @@ function createHistoryLog(deps: ContextModule, working: WorkingCopy) {
     const current: BoardBuffers = { names: files['names.bin'].data, phone: files['phone.bin'].data, cards: files['cards.bin'].data };
     return changeDetails(base, current);
   }
-  return { PREF_LABELS, logChange, withHistory, pick, same, revertEvent, saveNote, dropNote, workingCopyDiff };
+  return { PREF_LABELS, changeDetails, logChange, withHistory, pick, same, revertEvent, saveNote, dropNote, workingCopyDiff };
 }
 
 /**
@@ -615,9 +615,9 @@ export function createEditing(deps: ContextModule) {
   const prefs = createPrefsEditor(deps, working);
   const { commandRelays, liveRelays } = relays;
   const { applyToCache, cameraTransactions, editOpts, editorResidents, gateData, gateSettings, refuseDuplicates, saveSettings, sendFile, TX_PAGE, TX_PAGE_MAX, workingBuffers } = working;
-  const { dropNote, logChange, pick, PREF_LABELS, revertEvent, same, saveNote, withHistory, workingCopyDiff } = history;
+  const { changeDetails, dropNote, logChange, pick, PREF_LABELS, revertEvent, same, saveNote, withHistory, workingCopyDiff } = history;
   const { gateConfigFrom, savePrefs } = prefs;
-  return { gateData, cameraTransactions, TX_PAGE, TX_PAGE_MAX, gateSettings, saveSettings, commandRelays, liveRelays, refuseDuplicates, editorResidents, saveNote, dropNote, applyToCache, PREF_LABELS, workingBuffers, logChange, withHistory, pick, same, revertEvent, savePrefs, gateConfigFrom, editOpts, sendFile, workingCopyDiff };
+  return { gateData, cameraTransactions, TX_PAGE, TX_PAGE_MAX, gateSettings, saveSettings, commandRelays, liveRelays, refuseDuplicates, editorResidents, saveNote, dropNote, applyToCache, PREF_LABELS, workingBuffers, changeDetails, logChange, withHistory, pick, same, revertEvent, savePrefs, gateConfigFrom, editOpts, sendFile, workingCopyDiff };
 }
 
 export type EditingModule = ReturnType<typeof createEditing>;

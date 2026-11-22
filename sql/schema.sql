@@ -87,6 +87,15 @@ CREATE TABLE IF NOT EXISTS emails (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMAR
   kind TEXT NOT NULL, body TEXT, status TEXT NOT NULL CHECK (status IN ('queued', 'sent', 'failed')), attempts INTEGER NOT NULL,
   next_try TIMESTAMPTZ NOT NULL, error TEXT, created_at TIMESTAMPTZ NOT NULL, sent_at TIMESTAMPTZ);
 CREATE INDEX IF NOT EXISTS emails_due ON emails (status, next_try);
+CREATE TABLE IF NOT EXISTS relay_timers (phone TEXT NOT NULL, relay INTEGER NOT NULL, release_at TIMESTAMPTZ NOT NULL,
+  set_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+  PRIMARY KEY (phone, relay));
+CREATE INDEX IF NOT EXISTS relay_timers_due ON relay_timers (release_at);
+CREATE TABLE IF NOT EXISTS gate_pull_archive (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  phone TEXT NOT NULL, pulled_at TIMESTAMPTZ NOT NULL, actor TEXT NOT NULL, hash TEXT NOT NULL,
+  residents_count INTEGER NOT NULL, cards_count INTEGER NOT NULL,
+  names_bin BYTEA NOT NULL, phone_bin BYTEA NOT NULL, cards_bin BYTEA NOT NULL);
+CREATE INDEX IF NOT EXISTS gate_pull_archive_phone ON gate_pull_archive (phone, id DESC);
 
 -- Upgrades of databases made before these columns existed.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS webauthn_id TEXT;

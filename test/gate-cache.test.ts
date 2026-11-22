@@ -1940,9 +1940,21 @@ const freePort = () => new Promise((resolve) => {
 // host: the Host header (localhost:<port> is the name passkeys work on), else 127.0.0.1:<port>.
 function withServer(fn) {
   return withDir(async (dir) => {
-    const dks = { holdMs: 0 };
+    const dks = { holdMs: 0, relays: '0000000000000000000', setRelaysCalls: [] };
     const fake = http.createServer((req, res) => {
-      if (/\/CheckLogin"$/.test(req.headers.soapaction || '')) return res.end('<CheckLoginResult>OK</CheckLoginResult>');
+      const action = req.headers.soapaction || '';
+      if (/\/CheckLogin"$/.test(action)) return res.end('<CheckLoginResult>OK</CheckLoginResult>');
+      if (/\/GetRelays"$/.test(action)) return res.end(`<GetRelaysResult>${dks.relays}</GetRelaysResult>`);
+      if (/\/SetRelays"$/.test(action)) {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          const match = /<Settings>([^<]+)<\/Settings>/.exec(body);
+          if (match) { dks.setRelaysCalls.push(match[1]); dks.relays = match[1].slice(1); }
+          res.end('<SetRelaysResult>OK</SetRelaysResult>');
+        });
+        return;
+      }
       setTimeout(() => { res.statusCode = 500; res.end('fake DKS Cloud: no'); }, dks.holdMs);
     });
     await new Promise((r) => fake.listen(0, '127.0.0.1', r));
@@ -1971,7 +1983,7 @@ function withServer(fn) {
       req.end(body === undefined ? undefined : JSON.stringify(body));
     });
     try {
-      await fn({ app, store, call, media: path.join(dir, 'media'), dks: { hold: (ms) => { dks.holdMs = ms; } } });
+      await fn({ app, store, call, media: path.join(dir, 'media'), dks: { hold: (ms) => { dks.holdMs = ms; }, relays: () => dks.relays, setRelaysCalls: dks.setRelaysCalls } });
     } finally {
       await app.stop('test');
       await dropStore(await dk.openStore(storeOptions));
@@ -2035,6 +2047,52 @@ test('server: GET /send returns human-readable From -> To changes for unsent edi
   assert.ok(resChange && resChange.fields.some((f) => f.field === 'Name' && f.from === 'Smith, J' && f.to === 'Smith, Jane'));
   const talkChange = preview.body.changes.find((c) => c.key === 'talkTime');
   assert.ok(talkChange && talkChange.fields.some((f) => f.to === '2:00'));
+}));
+
+test('server: timed Safe Hold-Open saves a relay timer, cancels cleanly, and auto-releases when due', withServer(async ({ app, store, call, dks }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  const cookie = await signIn(call, 'alice', PW);
+  const held = await call('PUT', `/api/gates/${GATE_A.phoneNumber}/relays`, { cookie, body: { '1': true, holdMinutes: 30 } });
+  assert.strictEqual(held.status, 200);
+  assert.strictEqual(held.body.timers.length, 1);
+  assert.strictEqual(held.body.timers[0].relay, 1);
+  assert.strictEqual(dks.relays()[1], '1');
+  // Move timer into the past and trigger checkRelayTimers -> relay auto-releases and timer clears.
+  await dk.setRelayTimer(store, GATE_A.phoneNumber, 1, new Date(Date.now() - 1000), 'alice');
+  await app.modules.jobs.checkRelayTimers();
+  assert.strictEqual(dks.relays()[1], '0');
+  assert.deepStrictEqual(await dk.listRelayTimers(store, GATE_A.phoneNumber), []);
+  // Hold again and cancel timer without changing physical relay.
+  assert.strictEqual((await call('PUT', `/api/gates/${GATE_A.phoneNumber}/relays`, { cookie, body: { '2': true, holdMinutes: 15 } })).status, 200);
+  const cancelled = await call('DELETE', `/api/gates/${GATE_A.phoneNumber}/relays/2/timer`, { cookie });
+  assert.strictEqual(cancelled.status, 200);
+  assert.deepStrictEqual(cancelled.body.timers, []);
+  assert.strictEqual(dks.relays()[2], '1');
+}));
+
+test('server: pull archive dedupes identical pulls, diffs against working copy, and restores with History', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  const gate = syntheticGate();
+  await dk.applyPull(store, GATE_A.phoneNumber, { 'names.bin': gate.names, 'phone.bin': gate.phone, 'cards.bin': gate.cards });
+  await dk.ensureCache(store, GATE_A.phoneNumber);
+  const first = await dk.archivePull(store, GATE_A.phoneNumber, gate, { actor: 'alice' });
+  assert.ok(first && first.residentsCount === 2 && first.cardsCount === 2);
+  // Identical bytes are skipped.
+  assert.strictEqual(await dk.archivePull(store, GATE_A.phoneNumber, gate, { actor: 'alice' }), null);
+  const cookie = await signIn(call, 'alice', PW);
+  assert.strictEqual((await call('PUT', `/api/gates/${GATE_A.phoneNumber}/residents/101`, { cookie, body: { name: 'Smith, Edited' } })).status, 200);
+  const list = await call('GET', `/api/gates/${GATE_A.phoneNumber}/pull-archive`, { cookie });
+  assert.strictEqual(list.status, 200);
+  assert.strictEqual(list.body.pulls.length, 1);
+  const diff = await call('GET', `/api/gates/${GATE_A.phoneNumber}/pull-archive/${first.id}/diff`, { cookie });
+  assert.strictEqual(diff.status, 200);
+  assert.ok(diff.body.changes.some((c) => c.key === '101' && c.fields.some((f) => f.from === 'Smith, Edited' && f.to === 'Smith, J')));
+  const restored = await call('POST', `/api/gates/${GATE_A.phoneNumber}/pull-archive/${first.id}/restore`, { cookie, body: {} });
+  assert.strictEqual(restored.status, 200);
+  const after = await call('GET', `/api/gates/${GATE_A.phoneNumber}/residents/101`, { cookie });
+  assert.strictEqual(after.body.name, 'Smith, J');
 }));
 
 test('server: sign-in, wrong passwords limited, and pages need a session', withServer(async ({ store, call }) => {

@@ -3,7 +3,7 @@
   "info": {
     "title": "DoorKing Gate Manager API",
     "version": "1.0.0",
-    "description": "The routes a **gate API key** can use. A gate admin creates keys in the web page (System Settings → API keys); each key belongs to one gate and has a role: **read only** (view, pull, cameras) or **admin** (also changes, sends and relays).\n\nSend the key as `Authorization: Bearer <key>` (click **Authorize**). `{phone}` must be the key's gate. Changes to residents and settings go to the **working copy**; nothing reaches the gate until `POST /send`. Only `POST /send` and `PUT /relays` change the gate itself.\n\nGate login, gate users, API keys, deleting the gate's data and accounts are web-page only. Full reference: `docs/API.md` in the repository."
+    "description": "The routes a **gate API key** can use. A gate admin creates keys in the web page (System Settings \u2192 API keys); each key belongs to one gate and has a role: **read only** (view, pull, cameras) or **admin** (also changes, sends and relays).\n\nSend the key as `Authorization: Bearer <key>` (click **Authorize**). `{phone}` must be the key's gate. Changes to residents and settings go to the **working copy**; nothing reaches the gate until `POST /send`. Only `POST /send` and `PUT /relays` change the gate itself.\n\nGate login, gate users, API keys, deleting the gate's data and accounts are web-page only. Full reference: `docs/API.md` in the repository."
   },
   "servers": [
     {
@@ -2386,6 +2386,95 @@
           }
         }
       }
+    },
+    "/api/gates/{phone}/relays/{relay}/timer": {
+      "delete": {
+        "tags": [
+          "Relays"
+        ],
+        "summary": "Cancel a relay auto-release timer",
+        "x-role": "admin",
+        "description": "Cancels an active timed hold-open auto-release timer without changing the physical relay state.\n\n**Admin key only.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/relay"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Remaining active timers."
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/pull-archive": {
+      "get": {
+        "tags": [
+          "Working copy"
+        ],
+        "summary": "List archived residents pulls",
+        "x-role": "readonly",
+        "description": "Lists up to 50 distinct archived residents pulls for point-in-time comparison or rollback.\n\n**Read-only or admin key.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archived pulls, newest first."
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/pull-archive/{id}/diff": {
+      "get": {
+        "tags": [
+          "Working copy"
+        ],
+        "summary": "Diff working copy against an archived pull",
+        "x-role": "readonly",
+        "description": "Returns the From -> To changes needed to restore the working copy to the archived pull.\n\n**Read-only or admin key.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/archiveId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Diff summary."
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/pull-archive/{id}/restore": {
+      "post": {
+        "tags": [
+          "Working copy"
+        ],
+        "summary": "Restore an archived pull into the working copy",
+        "x-role": "admin",
+        "description": "Replaces the working copy with an archived pull (recorded in History; does not touch the gate until Send).\n\n**Admin key only.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/archiveId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Restored working copy status."
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2394,7 +2483,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "dkg_<id>_<secret>",
-        "description": "A gate API key from System Settings → API keys."
+        "description": "A gate API key from System Settings \u2192 API keys."
       }
     },
     "parameters": {
@@ -2497,6 +2586,27 @@
           "type": "integer"
         },
         "description": "The previous reply's `transactions.next`."
+      },
+      "relay": {
+        "name": "relay",
+        "in": "path",
+        "required": true,
+        "description": "Relay number (0-18).",
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18
+        }
+      },
+      "archiveId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Archived residents pull id.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "responses": {
@@ -2541,7 +2651,7 @@
         }
       },
       "Conflict": {
-        "description": "Conflict: a gate connection or snapshot run is running, duplicates, a revert refused, …",
+        "description": "Conflict: a gate connection or snapshot run is running, duplicates, a revert refused, \u2026",
         "content": {
           "application/json": {
             "schema": {
@@ -2671,17 +2781,34 @@
             "items": {
               "type": "object",
               "properties": {
-                "key": { "type": "string" },
-                "label": { "type": "string" },
-                "change": { "type": "string", "enum": ["added", "removed", "changed"] },
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "change": {
+                  "type": "string",
+                  "enum": [
+                    "added",
+                    "removed",
+                    "changed"
+                  ]
+                },
                 "fields": {
                   "type": "array",
                   "items": {
                     "type": "object",
                     "properties": {
-                      "field": { "type": "string" },
-                      "from": { "type": "string" },
-                      "to": { "type": "string" }
+                      "field": {
+                        "type": "string"
+                      },
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
                     }
                   }
                 }

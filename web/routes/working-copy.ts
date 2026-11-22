@@ -19,7 +19,7 @@ import { logger } from '../../src/logging.ts';
 export function workingCopyRoutes(modules: Modules): Route[] {
   const { prefsOf, serial, store } = modules.context;
   const {
-    commandRelays, gateSettings, logChange, pick, PREF_LABELS, revertEvent, same, savePrefs, saveSettings,
+    changeDetails, commandRelays, gateSettings, logChange, pick, PREF_LABELS, revertEvent, same, savePrefs, saveSettings,
     sendFile, withHistory, workingBuffers
   } = modules.editing;
   const { forgetSnapRun, snapRunOf, snapshotWorkFor } = modules.snapshots;
@@ -64,6 +64,32 @@ export function workingCopyRoutes(modules: Modules): Route[] {
       events: await dk.listHistory(store, gate.phoneNumber), users: await dk.gateUsers(store, gate.phoneNumber),
     }]),
     route('POST', `${G}/history/:id/revert`, 'gate-admin', ({ session, gate, params }) => serial(gate.phoneNumber, () => revertEvent(session, gate, params.id))),
+
+    // Point-in-time pull archive: list archived residents pulls, preview diff against working copy, or restore one.
+    route('GET', `${G}/pull-archive`, 'gate', async ({ gate }) => [200, { pulls: await dk.listPullArchive(store, gate.phoneNumber) }]),
+    route('GET', `${G}/pull-archive/:id/diff`, 'gate', async ({ gate, params }) => {
+      const archived = await dk.readPullArchive(store, gate.phoneNumber, Number(params.id));
+      if (!archived) return [404, { error: 'Archived pull not found' }];
+      const current = await workingBuffers(gate.phoneNumber);
+      if (!current) return [409, { error: 'There is no working copy. Pull residents from the gate.' }];
+      return [200, { pull: archived.entry, changes: changeDetails(current, archived.files) }];
+    }),
+    route('POST', `${G}/pull-archive/:id/restore`, 'gate-admin', ({ session, gate, params }) => withHistory(session, gate,
+      { summary: `Restored working copy from pull #${params.id}` }, async (ctx) => {
+        const archived = await dk.readPullArchive(store, gate.phoneNumber, Number(params.id));
+        if (!archived) return [404, { error: 'Archived pull not found' }];
+        const work = await dk.readCacheFiles(store, gate.phoneNumber);
+        const built = dk.buildFiles(
+          { names: work['names.bin'].base, phone: work['phone.bin'].base, cards: work['cards.bin'].base },
+          dk.decodeWorking(archived.files),
+          { masterCode: gate.masterCode },
+        );
+        const saved = await dk.writeCacheFiles(store, gate.phoneNumber, {
+          'names.bin': built.names, 'phone.bin': built.phone, 'cards.bin': built.cards,
+        });
+        ctx.after = built;
+        return [200, { pull: archived.entry, status: await dk.cacheStatus(store, gate.phoneNumber), ...saved }];
+      })),
 
     // Deletes everything stored about the gate: its database rows (every user's gate-list entry, prefs, history,
     // schedules, camera settings, snapshot log, notes, transaction history) and its folder (pulled files, working

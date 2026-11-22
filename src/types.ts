@@ -303,5 +303,25 @@ export interface SnapshotsReply { snapshots: Record<string, SnapshotMinute>; run
 
 export interface Relay { relay: number; code: string; state: string; name: string }
 
+/** Active auto-release timer for a held-open relay (Safe Hold-Open). */
+export interface RelayTimer {
+  phone: string;
+  relay: number;
+  releaseAt: string;
+  setBy: string;
+  createdAt: string;
+  attempts: number;
+  lastError: string | null;
+}
+
+/** One archived residents pull available for diffing and rollback. */
+export interface PullArchiveEntry {
+  id: number;
+  pulledAt: string;
+  actor: string;
+  residentsCount: number;
+  cardsCount: number;
+}
+
 
 export interface ApiError { error: string }

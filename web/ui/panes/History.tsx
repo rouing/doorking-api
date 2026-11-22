@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { Button, Card, Flex, Heading, Table, Text } from '@radix-ui/themes';
-import type { HistoryEvent, HistoryReply } from '../../../src/types.ts';
+import { Badge, Box, Button, Card, Dialog, Flex, Heading, IconButton, Table, Text } from '@radix-ui/themes';
+import type { HistoryEvent, HistoryReply, PullArchiveEntry, SendChange } from '../../../src/types.ts';
 import { errorText, useReadOnly, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { fmtTime } from '../format.ts';
@@ -25,6 +25,8 @@ interface HistoryProps {
 export function History({ gapi, onReverted }: HistoryProps) {
   const readOnly = useReadOnly();
   const [history, setHistory] = useState<HistoryReply | null>(null);
+  const [pulls, setPulls] = useState<PullArchiveEntry[]>([]);
+  const [diffView, setDiffView] = useState<{ pull: PullArchiveEntry; changes: SendChange[] } | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [info, setInfo] = useState('Loading…');
   const [dialog, confirm] = useConfirm();
@@ -32,12 +34,35 @@ export function History({ gapi, onReverted }: HistoryProps) {
   const load = useCallback(async () => {
     setInfo('Loading…');
     try {
-      const reply = await gapi<HistoryReply>('GET', '/history');
+      const [reply, archive] = await Promise.all([
+        gapi<HistoryReply>('GET', '/history'),
+        gapi<{ pulls: PullArchiveEntry[] }>('GET', '/pull-archive').catch(() => ({ pulls: [] })),
+      ]);
       setHistory(reply);
+      setPulls(archive.pulls);
       setInfo(`${reply.events.length} events, most recent first`);
     } catch (err) { setInfo(errorText(err)); }
   }, [gapi]);
   useEffect(() => { load(); }, [load]);
+
+  async function previewPull(pull: PullArchiveEntry) {
+    try {
+      const reply = await gapi<{ pull: PullArchiveEntry; changes: SendChange[] }>('GET', `/pull-archive/${pull.id}/diff`);
+      setDiffView(reply);
+    } catch (err) { setInfo(errorText(err)); }
+  }
+
+  async function restorePull(pull: PullArchiveEntry) {
+    if (!await confirm({ title: `Restore pull from ${fmtTime(pull.pulledAt)}?`, action: 'Restore to working copy', color: 'red',
+      body: 'This replaces the working copy with this archived pull. The physical gate is not changed until you Send to gate, and this restore can be reverted in History.' })) return;
+    try {
+      await gapi('POST', `/pull-archive/${pull.id}/restore`, {});
+      setDiffView(null);
+      await load();
+      setInfo(`Restored pull #${pull.id} into the working copy. Review it, then Send to gate.`);
+      onReverted();
+    } catch (err) { setInfo(errorText(err)); }
+  }
 
   async function revert(event: HistoryEvent) {
     if (!await confirm({ title: `Revert "${event.summary}"?`, action: 'Revert',
@@ -138,6 +163,91 @@ export function History({ gapi, onReverted }: HistoryProps) {
           </Table.Body>
         </Table.Root>
       </Card>
+      {pulls.length > 0 && (
+        <Card>
+          <Heading size="3" mb="2">Past pulls (point-in-time rollback)</Heading>
+          <Text size="2" color="gray" as="p" mb="2">
+            Up to 50 distinct residents pulls are archived per gate. Compare any past pull against your current working
+            copy, or restore it to the working copy (nothing touches the gate until Send to gate).
+          </Text>
+          <Table.Root size="1">
+            <Table.Header>
+              <Table.Row>
+                <Table.ColumnHeaderCell>Pulled</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>By</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Entries</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Cards</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell />
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {pulls.map((pull) => (
+                <Table.Row key={pull.id}>
+                  <Table.Cell style={{ whiteSpace: 'nowrap' }}>{fmtTime(pull.pulledAt)}</Table.Cell>
+                  <Table.Cell>{pull.actor}</Table.Cell>
+                  <Table.Cell>{pull.residentsCount}</Table.Cell>
+                  <Table.Cell>{pull.cardsCount}</Table.Cell>
+                  <Table.Cell>
+                    <Flex gap="2">
+                      <Button size="1" variant="soft" color="gray" onClick={() => previewPull(pull)}>Compare</Button>
+                      {!readOnly && <Button size="1" variant="soft" onClick={() => restorePull(pull)}>Restore</Button>}
+                    </Flex>
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Root>
+        </Card>
+      )}
+      <Dialog.Root open={diffView !== null} onOpenChange={(isOpen) => { if (!isOpen) setDiffView(null); }}>
+        <Dialog.Content maxWidth="720px" aria-describedby={undefined}>
+          <Flex align="center" mb="3">
+            <Dialog.Title mb="0">
+              {diffView ? `Changes to restore pull from ${fmtTime(diffView.pull.pulledAt)}` : ''}
+            </Dialog.Title>
+            <Flex flexGrow="1" />
+            <Dialog.Close><IconButton variant="ghost" color="gray" title="Close">✕</IconButton></Dialog.Close>
+          </Flex>
+          {diffView && (diffView.changes.length === 0 ? (
+            <Text size="2" color="gray">The working copy already matches this pull.</Text>
+          ) : (
+            <Box style={{ maxHeight: 380, overflowY: 'auto' }}>
+              <Table.Root size="1">
+                <Table.Header>
+                  <Table.Row>
+                    <Table.ColumnHeaderCell>Item</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Field</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Current</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Archived</Table.ColumnHeaderCell>
+                  </Table.Row>
+                </Table.Header>
+                <Table.Body>
+                  {diffView.changes.flatMap((item) => (item.fields.length ? item.fields : [{ field: '', from: '', to: '' }]).map((field, index) => (
+                    <Table.Row key={`${item.key}-${field.field}-${index}`}>
+                      <Table.Cell>
+                        {index === 0 && (
+                          <Flex align="center" gap="1" wrap="wrap">
+                            <Text weight="medium">{item.label}</Text>
+                            {item.change !== 'changed' && <Badge size="1" color={item.change === 'added' ? 'green' : 'red'}>{item.change}</Badge>}
+                          </Flex>
+                        )}
+                      </Table.Cell>
+                      <Table.Cell>{field.field}</Table.Cell>
+                      <Table.Cell><Text color="gray">{field.from || '—'}</Text></Table.Cell>
+                      <Table.Cell>{field.to || '—'}</Table.Cell>
+                    </Table.Row>
+                  )))}
+                </Table.Body>
+              </Table.Root>
+            </Box>
+          ))}
+          {diffView && !readOnly && diffView.changes.length > 0 && (
+            <Flex justify="end" gap="2" mt="3">
+              <Button color="red" onClick={() => restorePull(diffView.pull)}>Restore to working copy</Button>
+            </Flex>
+          )}
+        </Dialog.Content>
+      </Dialog.Root>
     </Flex>
   );
 }
