@@ -14,6 +14,16 @@ gate transaction from a Dahua/Amcrest recorder, and show the cameras live.
 > **Sending and relay control change the physical gate.** A relay set to Active holds the gate open until it
 > is set back to Inactive.
 
+## Screenshots
+
+The screenshots use made-up sample data (a demo gate "Maple Court HOA", fictional names and 555-01xx numbers).
+
+| Residents | Transactions |
+|---|---|
+| ![Residents page](docs/screenshots/residents.png) | ![Transactions page](docs/screenshots/transactions.png) |
+
+![Sign-in page](docs/screenshots/login.png)
+
 ## Documentation
 
 | File | For | Contents |
