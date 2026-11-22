@@ -43,7 +43,7 @@ command line):
 Web UI and REST API: node web/server.ts [--config config.json] [--check-config] [--port 8080] [--public-host <name>]
                            [--media media] [--logs logs]
                            [--site-name <tag>] [--memory 1000|2000|3000] [--area-codes "255 Area Codes"|"10 Area Codes"]
-                           [--anti-passback Y|N] [--interface-1816 Y|N] [--model 1834]   (see README.md)`;
+                           [--anti-passback Y|N] [--interface-1816 Y|N] [--model 1834]   (see docs/INSTALL.md)`;
 
 const csvCell = (value: unknown): string => {
   const text = value == null ? '' : String(value);
