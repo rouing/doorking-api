@@ -6,7 +6,8 @@ residents and transactions from the gate, edit residents, vendors and gate setti
 and control relays live.
 
 It is a local Node.js app with a web page and a REST API, written in TypeScript. The server runs directly on
-Node 24; its data is in a PostgreSQL database (through the `pg` driver, its one runtime npm package); the web page (React +
+Node 24; its data is in a PostgreSQL database (through the `pg` driver; `dependencies` in `package.json` lists what the
+server needs at run time, `devDependencies` the build, tests and browser libraries); the web page (React +
 Radix Themes) is built once with `npm run build`. It can also save camera pictures or video clips for each
 gate transaction from a Dahua/Amcrest recorder, and show the cameras live.
 
@@ -38,6 +39,7 @@ This README is the technical overview.
 10. [Tests](#tests)
 11. [Security](#security)
 12. [Project layout](#project-layout)
+13. [To do](#to-do)
 
 Installing, the server's settings (`config.json`, every setting listed in INSTALL §4; `config.example.json` has the
 defaults), public HTTPS access and updating are in [`INSTALL.md`](docs/INSTALL.md).
@@ -59,7 +61,29 @@ Sign in (local account, passkey or SSO) ──> Your gates (admin / read only) �
    Added under User Settings after re-entering the password; discoverable (no username at sign-in), user verification
    required. Each is tied to the site name it was made on: `server.publicHost` (over HTTPS) or `localhost` on the
    server; 127.0.0.1 can't use passkeys. Challenges are kept in memory for 5 minutes and used once; the signature
-   counter must rise. Only public keys are stored.
+   counter must rise. Only public keys are stored. The page also uses the browser's own passkey features
+   (`web/ui/Login.tsx`, `web/ui/account/passkeyAutofill.ts`, `web/ui/account/Passkeys.tsx`):
+   - **Suggestions:** the username box (`autocomplete="username webauthn"`) offers the device's passkeys in its
+     autofill list; the waiting request gets a new challenge every 4 minutes, and only while the page is visible (a
+     sign-in page left open in the background asks for none, so it does not use up the per-address limit).
+   - **Saved after a password sign-in:** Chrome 136+ (where `getClientCapabilities()` reports `conditionalCreate`) may
+     save a passkey in the password manager that filled in the password, without a prompt (`{ auto: true }`). Only for
+     the account's first passkey within 2 minutes of signing in (`FRESH_SIGN_IN_MS`, `reauthNeeded`), else 409 without
+     checking a password; the device may skip checking the user then (user verification preferred, its own challenge
+     kind), but signing in with the passkey still requires it. It's named "Saved after sign-in" and the usual security
+     email goes out.
+   - **Another device:** the step-up confirmation lists the account's passkeys without their transports, so the
+     browser also offers a passkey on a phone or tablet nearby (its QR code). For a passkey that only a laptop holds,
+     User Settings → Passkeys → **Approve another device** (after a passkey confirmation) gives a one-time code and its
+     QR code (`#approve=<code>`, `web/ui/account/ApproveDevice.tsx`, drawn with `qrcode` on a canvas); another session of
+     the account enters it (or opens the QR link) to add a passkey without confirming with one. Codes are kept in memory
+     (`src/passkey-approvals.ts`): one per account, 10 minutes, dropped after 5 wrong tries or once a passkey is added;
+     creating one sends the security email.
+   - **Kept in sync:** after User Settings lists, adds, renames or removes passkeys, the page tells the browser which
+     ones still work on this site (`signalAllAcceptedCredentials`, with the account's user handle from
+     `GET /api/me/passkeys`), and a sign-in with a passkey the server doesn't know (401 `{ unknownCredential }`) is
+     reported (`signalUnknownCredential`), so phones and password managers stop offering removed passkeys (Chrome
+     132+; other browsers skip it).
 3. **Single sign-on** (`src/sso.ts`, table `user_identities`, `openid-client`; `config.json` → `sso.providers`, see
    INSTALL.md section 6b): "Sign in with Microsoft/Google/…" for any OpenID Connect provider. The browser goes to the
    provider (authorization code flow with state, nonce and PKCE; the attempt lives 10 minutes in memory and is tied to
@@ -90,7 +114,8 @@ Sign in (local account, passkey or SSO) ──> Your gates (admin / read only) �
 6. **Step-up** (`STEP_UP` in `web/requests.ts`). Sensitive actions need a passkey confirmation in the session within
    `security.stepUpMinutes` (180): Send to gate, scheduled transfers (add, change, run now), gate users (add,
    invite, share, role, remove), API keys (create, revoke), the gate's DKS login and master code, deleting the gate's
-   data, and linking or unlinking single sign-on. Otherwise 403 `{ stepUp: true, hasPasskey }`; the page asks
+   data, linking or unlinking single sign-on, and approving another device to add a passkey. Otherwise 403
+   `{ stepUp: true, hasPasskey }`; the page asks
    **Confirm it's you** (`POST /api/me/step-up/options`, then `POST /api/me/step-up` with the browser's answer,
    `confirmWithPasskey`: one of the signed-in user's own passkeys, one-use challenge kept apart from sign-in ones)
    and retries the request. A passkey sign-in counts as a confirmation. Accounts without a passkey (password-only or
@@ -125,9 +150,48 @@ Every page works on the open gate. Edits to gate data go to the **working copy**
 page, green = saved to the working copy but not on the gate yet; hover a value to see the gate's value), and reach
 the gate only with **Send to gate**. Anything that changes the gate asks for confirmation first.
 
-**Sidebar.** Gate name and **All gates**; the pages below; pinned at the bottom: History, Scheduled Transfers,
+**Sidebar.** Gate name (click it for a list of your gates to switch to, with **All gates…**; `GateSwitcher` in
+`web/ui/nav/GateSwitcher.tsx`; also in the phone's More menu); the pages below; pinned at the bottom: History, Scheduled Transfers,
 System Settings, **Gate connection** and your user name and role with **User settings** and **Sign out**. Read-only users
 see every page with the edit controls hidden or disabled.
+
+**Phones.** Below 760 px wide, or on a phone turned sideways (under 500 px tall with a touch screen; `PHONE` in
+`web/ui/phone.ts`), a bottom tab bar replaces the sidebar: **Residents**, **Vendors**, **Transactions**, **Gate** (a sheet with
+Pull residents, Pull transactions, Show progress and Live relays; a dot while a connection runs) and **More** (the
+sidebar as a drawer, a dialog so focus stays in it and screen readers ignore the page behind; it leaves out what the
+tabs cover: Residents, Vendors, Transactions, Relays and the Gate connection buttons). A top bar shows the
+gate name with the working copy's state under it (matches the gate / changes not sent / conflicts; tap it for the
+Gate sheet) and the running connection (tap it for the progress window). On phones **Send to gate** and **Reset to
+gate** are in the Gate sheet; on larger screens they are in the sidebar's gate connection, with the working copy's
+state under the gate's name (admins; `useWorkingCopyActions` in `web/ui/panes/WorkingCopyBar.tsx`). The Residents,
+Vendors and settings pages keep only their conflict list (settings pages also Save / Discard); **Export CSV** is left out. Every table shows each row as a card, each value with its column's name in front
+(`stackTables.ts` copies the header names, two-row headers included, into the cells' `data-label` for the tables
+that change; `styles.css` does the layout); sortable tables keep their headers as **Sort by** buttons, and checkbox
+grids (Hold Open, Security Levels, Elevator) put a row's boxes side by side. Residents/vendors (`.dir-table`) and
+transactions (`.tx-table`) cards have the name as their title (or "No name"; a transaction without one shows its
+event type) and a summary line (Directory and phone, plus Hidden; date, time, access and the camera button); tapping a
+card shows its other values (`data-open`, by `data-col`), with a resident's details joined below it. Duplicate
+values always show. Residents, vendors and transactions
+show 100 cards at a time with **Show more** (larger screens: 2,000 rows; `useShownRows` in `web/ui/table.tsx`), and
+**Load older transactions** also shows one step more. The page stays clear of notches
+and rounded corners at every width. On touch screens buttons, fields and tap areas are at least 44 px, fields use
+16 px text (so phones don't zoom in), and the "?" tips open with a tap.
+
+**Back.** The phone's Back button or gesture (and the browser's Back) closes what is open, topmost first: a dialog,
+the Gate sheet or the drawer, the camera or progress window, an add or edit form (after **Leave this form?**), then a page other than
+Residents, then the gate (back to the gate list); with nothing open it leaves the app (`web/ui/back.ts`: each open
+layer adds a history entry, and a layer closed on the page takes its entry back off).
+
+**Install as an app (PWA).** The page can be installed (Chrome/Edge/Android: **Install app**; iPhone Safari: Share →
+**Add to Home Screen**) and then opens in its own window with the gate icon. `vite-plugin-pwa` (Workbox) builds the
+manifest and a service worker (`web/dist/sw.js`) that keeps only the page itself (HTML, scripts, styles, icons) for a
+fast start; `/api`, `/help` and camera files always go to the server, so nothing about gates is stored on the device,
+and without a connection the page says the server isn't reachable. After `npm run build` an open page offers
+**Reload** for the new version (`UpdateNotice`, checked every minute and when the page comes back into view). The
+status bar takes the page's panel colour, light or dark (`App.tsx`; `index.html` has system-based colours until
+then), the page starts in the remembered light or dark mode (no white flash), and the start screen is the icon on
+its blue (`background_color`). The icons in `web/ui/public/` were made from `icon.svg` with `@vite-pwa/assets-generator` (maskable and Apple icons on
+the blue background). An installed app on an iPhone keeps its own sign-in, separate from Safari.
 
 **Gate connection.** **Pull residents** / **Pull transactions** start a DKS Cloud session with the gate; the
 progress window (bottom right; minimize or close it, **Show progress** reopens it) shows the log. One gate
@@ -497,11 +561,12 @@ against changes observed on the gate. The database tests use the `doorking_test`
   src/
     config.ts            server settings: config.json + environment + flags, checked at startup
     types.ts             shapes shared by the server and the web page (types only)
+    shared.ts            limits and rules shared with the web page (password length, note length, cards per code, …)
     board-files.ts       parsers for names.bin / phone.bin / cards.bin / rcv_out.bin
     residents-edit.ts    resident/vendor edits on the board buffers (pure functions)
     gate-settings.ts     gate settings field table (offsets, encodings and text limits in names.bin)
     gate-cache.ts        board files in the database (gate_files): working copy, change maps, send preparation and verification
-      gate-state.ts        plain gate tables decoded from each pull, and the round-trip check
+    gate-state.ts        plain gate tables decoded from each pull, and the round-trip check
     gate-pull.ts         DKS Cloud pull/send sessions, relay read/control
     dks-cloud.ts         DKS Cloud SOAP client
     db.ts                PostgreSQL connection (pg), loads sql/schema.sql, query helpers, AES-256-GCM encryption,
@@ -519,7 +584,9 @@ against changes observed on the gate. The database tests use the `doorking_test`
     schedules.ts         scheduled transfers (run with the gate's DKS login)
     cameras.ts           snapshot runs: pictures and videos per transaction minute, refreshing one picture
     camera-settings.ts   camera settings: validation and the cameras table
-    camera-log.ts        the snapshot log: which minutes need footage, frame names, tidying saved files
+    camera-log.ts        the snapshot log: which minutes need footage, tidying saved files
+    snapshot-files.ts    snapshot frame names and no-footage events, shared with the web page
+    passkey-approvals.ts one-time codes from a signed-in device that let another device add a passkey
     camera-runner.ts     the dahua-p2p bridge and ffmpeg: frames, videos and live view
     errors.ts            httpError: an Error with the HTTP status the server answers with
     holidays.ts          fixed-date holiday names
@@ -530,25 +597,30 @@ against changes observed on the gate. The database tests use the `doorking_test`
   web/
     server.ts            entry point: loads the settings, builds the log, camera runner and mailer, starts the Application
     app.ts               Application: start() (database, migrations, listen, background timers) and stop() (graceful)
-    modules.ts           builds the modules below from those services, and the route list
+    modules.ts           builds the modules below from those services ({ context, auth, mail, editing, snapshots, jobs }), and the route list
     requests.ts          the request handler: host, origin, session or API key, role and step-up checks; the built page
     migrations.ts        one-time data migrations run by start()
     context.ts           shared state: settings, database, log, replies, gate access
     auth.ts              sign-in helpers: rate limits, sessions, step-up, passkey relying party, single sign-on
     mail.ts              account emails and gate alerts (through the outbox)
-    jobs.ts              gate connections (pulls, sends, login checks) and scheduled transfers
-    editing.ts           the working copy: edits with History, reverts, settings, relays, preferences
+    jobs.ts              gate connections (one per DKS login), pulls, sends, login checks, and scheduled transfers
+    editing.ts           relay rules, the working copy (data, settings, edits), History and reverts, preferences
     snapshots.ts         camera snapshot runs and clean-ups, picture/video replies
     routing.ts           route table types and route()
     routes/              the REST API routes, one file per area (auth, account, gates, connections, residents,
                          working-copy, relays, schedules, cameras, docs)
     data.ts              shapes board files into UI rows (residents, transactions, schedules)
-    ui/                  web page (React + Radix Themes, TypeScript), built by Vite: App, GateApp (sidebar),
-                         account/ (sign-in pages, User Settings, passkeys, single sign-on),
+    ui/                  web page (React + Radix Themes, TypeScript), built by Vite: App, GateApp (pages and
+                         sidebar; gateData.ts: its data, connection polling and sidebar spacing), nav/ (pages.ts: the page list; SidebarItems; GateSwitcher; PhoneNav: top
+                         bar, tab bar, Gate sheet, More drawer),
+                         account/ (sign-in pages, User Settings, passkeys, passkeyAutofill.ts, single sign-on),
                          panes/ (residents, transactions, history, schedules), settings/ (System pages),
                          camera/ (snapshots, viewer, live view), HelpTip.tsx + help.ts ("?" hover tips and
-                         their texts)
-    dist/                build output of ui/ (npm run build), served at /
+                         their texts), stackTables.ts (table cards on phones), phone.ts (the phone layout
+                         query, usePhone), back.ts (Back closes what is open), public/ (app icons, copied to
+                         the top of dist/)
+    dist/                build output of ui/ (npm run build), served at / (with the service worker, manifest and
+                         icons at the top level)
   test/                  node --test suites
   tools/                 bin/ (optionally ffmpeg.exe / ffmpeg-linux-<x64|arm64>) and licenses/ (ffmpeg's; keep
                          with the binaries); neither is in git
@@ -557,3 +629,8 @@ against changes observed on the gate. The database tests use the `doorking_test`
                          DoorKing32 (DoorKing32.exe.c / .h), the 1835 manual PDF
 ```
 
+## To do
+- **Push notifications** to installed apps for failed sends and scheduled transfers (next to the email alerts): web
+  push needs VAPID keys in `config.json`, a table of each device's subscription, a `push` handler in the service
+  worker (switching `vite-plugin-pwa` to its `injectManifest` mode) and a switch in User Settings. iPhones receive
+  them only in the installed app (iOS 16.4 or later).

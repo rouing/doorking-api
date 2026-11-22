@@ -202,14 +202,6 @@ Primary key (`username`, `phone`); index `gates_phone` on `phone`.
 | `phone` | TEXT, primary key | gate |
 | `data` | JSONB | `{ gateConfig?, relayLabels?, deviceAssociation?, features?, tracker? }` (see `PUT /prefs` in [API.md](API.md)) |
 
-### `sign_ins`: last sign-in per DKS user (until 2026-11-13; kept, no longer used)
-
-| Column | Type | Meaning |
-|---|---|---|
-| `username` | TEXT, primary key | DKS user as typed |
-| `last` | TIMESTAMPTZ | time of the last sign-in |
-| `count` | INTEGER | number of sign-ins |
-
 ### `history`: what happened on each gate (`src/audit.ts`)
 
 | Column | Type | Meaning |
@@ -404,7 +396,8 @@ deletes `media/<phone>/` (camera pictures). Accounts and `meta` are not about on
 `node cli.ts db-setup` uses it for a new database (INSTALL.md section 2a). Every statement is `… IF NOT EXISTS`, so
 running it again only adds what's missing. A new column goes in its `CREATE TABLE` (new databases) and in an
 `ALTER TABLE … ADD COLUMN IF NOT EXISTS` at the end of the file (existing ones). Nothing is ever dropped; the
-`gates`, `sign_ins` and `credentials` tables from before local accounts stay for older databases' migration.
+`gates` and `credentials` tables from before local accounts stay for older databases' migration (older databases also
+keep an unused `sign_ins` table; new ones don't create it).
 A test checks that the tables made match the file's `CREATE TABLE`s.
 
 ## Looking inside

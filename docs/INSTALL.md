@@ -245,6 +245,9 @@ setup code from the server's console, so create it before (or right after) makin
 **Passkeys** (sign-in with fingerprint, face or PIN) need this HTTPS name: they are tied to `server.publicHost`, and
 also work at `http://localhost:<port>` on the server itself, but not at `http://127.0.0.1` or another name.
 
+**Installing the page as an app** (Add to Home Screen / Install app) needs HTTPS too: browsers run its service
+worker only on HTTPS or `localhost`. Nothing to set up; `npm run build` makes the manifest, icons and worker.
+
 With **Caddy** (Ubuntu: `sudo apt install caddy`), which gets and renews Let's Encrypt certificates itself:
 1. Create a DNS **A record** for the name pointing to the machine's public IP. Open ports **80 and 443** to the
    internet (cloud firewall / security group). Let's Encrypt checks the name over them.

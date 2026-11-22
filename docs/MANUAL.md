@@ -32,9 +32,25 @@ Throughout the app, a small **?** next to a setting explains it in more detail: 
 
 1. **Sign in** with the username and password a gate admin gave you. The first time, choose your own password.
 2. Your gates are listed. **Open** one. (To add a new gate, see [Your gates](#3-your-gates).)
-3. Click **Pull transactions** (bottom of the left-hand menu) to fetch the latest visits.
+3. Click **Pull transactions** (bottom of the left-hand menu; on a phone, the **Gate** tab) to fetch the latest visits.
 4. Make your changes, for example add a resident (gate admins only).
 5. Click **Send to gate** to put your changes on the gate.
+
+**On a phone** the tabs along the bottom take you to **Residents**, **Vendors** and **Transactions**; **Gate** has **Send to gate**,
+**Reset to gate**, **Pull residents**, **Pull transactions** and **Live relays**, and **More** opens the full menu (the System pages, History,
+Scheduled Transfers, System Settings). The top bar shows the gate's name with whether your changes have been sent (for
+example "matches the gate" or "changes not sent to the gate"; tap it to open **Gate**) and, while the gate is being
+reached, its progress (tap it to see the details). Export CSV is only on a computer. If the app can't reach the server, tap **Try again**; it also retries by
+itself when your connection comes back. Tables show one card per row;
+Residents and transactions show the name with a short summary; tap a card to see everything (and, for a
+resident, **Edit** and its recent visits). **Sort by** above a list sorts it, and **Show more** at the bottom shows
+the next 100. Tap a **?** to read its tip.
+**Back** closes what's open (the menu, a dialog, a form: it asks first if you were editing), then returns to
+Residents, then to your gates.
+
+**Install it as an app:** on Android or in Chrome/Edge, choose **Install app** in the browser menu; on an iPhone, open
+the page in Safari and choose Share → **Add to Home Screen**. It then opens from its own icon, like an app. It still
+needs the internet: nothing about your gates is kept on the phone. On an iPhone you sign in once more in the app.
 
 ## 2. Signing in
 
@@ -44,7 +60,11 @@ Open the app in your browser at the address you were given (for example **https:
 - **The first time** you sign in with a password someone else set, the app asks you to choose your own (at least
   12 characters). Nobody else can see or change it.
 - **Sign in with a passkey:** once you've added a passkey (see [User Settings](#user-settings)), click it and use your
-  fingerprint, face or device PIN. No username or password needed. Your password keeps working too.
+  fingerprint, face or device PIN. No username or password needed. Your password keeps working too. On many phones
+  and computers your passkey is also offered as soon as you tap the **Username** box: pick it there.
+- **After you sign in with a password**, some browsers (such as Chrome on Android) quietly save a passkey for you in
+  the password manager that filled in your password, the first time only. It shows in **User Settings → Passkeys** as
+  "Saved after sign-in", and you get the usual email that a passkey was added. Remove it there if you don't want it.
 - **Sign in with your work account** (for example **Sign in with Microsoft** or **Sign in with Google**), if the server
   is set up for it: click the button and sign in at Microsoft or Google; you come straight back, signed in. It works
   once your work account is linked to your account here: through an invitation, by your work email if your
@@ -66,7 +86,8 @@ Open the app in your browser at the address you were given (for example **https:
 ## 3. Your gates
 
 After signing in you see **your gates**: the gates you have access to, each marked **Admin** or **Read only**.
-- **Open** a gate to work on it. **All gates** (top of the left-hand menu) takes you back to the list.
+- **Open** a gate to work on it. To go to another gate, click the gate's name at the top of the left-hand menu (on
+  a phone: **More**, then the name) and pick it from the list; **All gates…** there takes you back to this list.
 - **Leave** takes you off a gate. Its data stays for its other users. (A gate's last admin can't leave.)
 - **Add a gate:** its system phone number, 4-digit master code, the **DKS user and password** that manage it, and
   its **gate configuration** (site name, memory, area codes, model, anti-passback, interface 1816; they must match
@@ -131,10 +152,19 @@ number, or `+` and the country code for other countries; it's saved in internati
 **Passkeys** let you sign in with your fingerprint, face or device PIN instead of your password:
 - **Add a passkey:** give it a name (such as "iPhone"), type your current password, click **Add a passkey** and follow
   your browser's prompt. Phones and password managers often sync passkeys to your other devices ("synced").
+- When you remove a passkey here, newer browsers also stop offering it on your device; on others, delete it in the
+  device's or password manager's settings too.
 - A passkey works on the address you added it on (for example **https://gate.yourdomain.com**). Add another one if
   you also use a different address.
 - **Rename** or **Remove** a passkey here. If you lose a device, remove its passkey (see below for how to confirm it's you).
 - Once you have a passkey, adding or removing one asks you to **Confirm it's you** with a passkey you already have.
+  **Adding one on a new device that has no passkey yet:**
+  - If your passkey is on a **phone** (or synced, for example in Google Password Manager, iCloud or Bitwarden): in the
+    browser's prompt choose to use a phone or tablet, and scan the QR code with that phone.
+  - If your passkey is on a **computer** (it can't scan a QR code): on that computer open **User Settings →
+    Passkeys** and click **Approve another device**. After you confirm with its passkey you get a code and a QR code,
+    valid for 10 minutes. On the new device, scan the QR code with its camera (or sign in and type the code under
+    **Passkeys → Approval code**), then click **Add a passkey**. You get an email when a code is created.
   Lost your only passkey? Use **Forgot your password?** on the sign-in page, sign in with the new password, and you
   can remove the old passkey and add a new one for the next few hours.
 - Accounts that only sign in with a work account (no password) must have signed in, or confirmed with a passkey,
@@ -168,12 +198,14 @@ your working copy matches the gate again.
 
 ## 5. Getting data from the gate and sending changes
 
-The buttons at the bottom of the left-hand menu talk to the gate:
+Under the gate's name at the top of the left-hand menu you can see whether your working copy **matches the gate**,
+has **changes not sent to the gate**, or has conflicts to decide. The buttons at the bottom of the menu talk to the gate:
+- **Send to gate** and **Reset to gate** (admins) send or throw away your working copy, for every page at once.
 - **Pull residents** fetches residents, vendors, cards and all gate settings.
 - **Pull transactions** fetches the list of who came and went.
 
-**Send to gate** (on the Residents page, and on the settings pages) first shows what will change and asks you to
-confirm. After sending, the app fetches the residents again to check the gate really has your changes.
+**Send to gate** first shows what will change and asks you to confirm. Only changes saved to the working copy are
+sent: on a settings page, click **Save to working copy** first. After sending, the app fetches the residents again to check the gate really has your changes.
 
 Talking to the gate takes a minute or more. A progress window in the bottom-right corner shows each step; you can
 make it smaller, and **Show progress** brings it back. Only one gate can be contacted at a time; if someone else is
@@ -236,7 +268,9 @@ When adding or editing:
 The list of everything that happened at the gate, newest first: who came in, who was refused, and gate events. The
 app keeps every transaction it has ever pulled, so old ones stay here even after the gate itself has forgotten them.
 - Choose the last 24 hours, 7 days, 30 days or everything; filter; sort; **Download CSV**.
-- The newest 2,000 transactions are loaded; **Load older transactions** adds the 2,000 before them. Filters, the
+- The newest 2,000 transactions are loaded; **Load older transactions** adds the 2,000 before them to the bottom of
+  the list. Long lists show 2,000 rows at a time (100 on a phone); **Show more**, and Load older itself, show the
+  next ones. Filters, the
   CSV and a resident's last visits cover what is loaded.
 - **Green** rows were let in, **red** rows were refused, **amber** rows are gate events (for example a gate held open
   by its schedule).

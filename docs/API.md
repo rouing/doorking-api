@@ -44,7 +44,7 @@ role); update `docs/openapi.json` with any change to those routes.
 | 413 | request body over 10,000 bytes |
 | 415 | `POST`/`PUT` without a JSON content type |
 | 429 | too many failed sign-ins within 15 minutes: 5 for a user name from one client address, 20 from one address, or 50 for a user name from any address; 30 passkey or single sign-on sign-in starts from one address |
-| 500 | unexpected server error |
+| 500 | unexpected server error (a fixed message; the details are only in the server log) |
 | 502 | DKS Cloud or the camera recorder failed |
 
 ### Access levels
@@ -82,15 +82,16 @@ A user whose password was set by someone else (a new account, or the CLI's `rese
 | POST | `/api/invite/check` | public | `{ token }` | `{ username }` of an invitation link (`#invite=`), without using it up |
 | POST | `/api/invite` | public | `{ token, password }` | accepts the invitation: sets the password, confirms the email, signs in (`sid` cookie) |
 | PUT | `/api/me/password` | user | `{ current, password }` | change your own password (12+ characters); ends your other sessions; 403 wrong current password, or password sign-in is off for the account (linked to a provider with `passwords: false`); wrong current passwords count like sign-ins (5 per 15 minutes, then 429) |
-| GET | `/api/me/passkeys` | user | | `{ passkeys: [{ id, name, site, synced, createdAt, lastUsedAt }] }` |
-| POST | `/api/me/passkeys/options` | user | `{ password }` (your current one; not asked when the account has none) | WebAuthn creation options for `startRegistration()`; with a passkey already, 403 `{ stepUp }` unless you confirmed with one, or signed in after a password reset by email link, within `security.stepUpMinutes` (the way back for a lost passkey); for an account with no password, 403 unless it signed in or confirmed with a passkey within that time; 403 wrong password (5 tries per 15 minutes, then 429); 400 when the page isn't on the public name or `localhost` |
-| POST | `/api/me/passkeys` | user | `{ name?, response }` (the browser's registration answer) | 201 `{ passkeys }`; 400 when the check fails; 409 already registered |
+| GET | `/api/me/passkeys` | user | | `{ passkeys: [{ id, name, site, synced, createdAt, lastUsedAt }], userHandle }` (userHandle: the account's WebAuthn user handle, base64url, null before its first passkey; the same reply comes from POST, PUT and DELETE) |
+| POST | `/api/me/passkeys/options` | user | `{ password }` (your current one; not asked when the account has none, or for its first passkey within 2 minutes of signing in), or `{ auto: true }` (the browser saving one without a prompt right after a password sign-in: 409 unless it's the first passkey within 2 minutes of signing in; the password isn't checked) | WebAuthn creation options for `startRegistration()` (with `auto`: user verification preferred); with a passkey already, 403 `{ stepUp }` unless you confirmed with one, or signed in after a password reset by email link, within `security.stepUpMinutes` (the way back for a lost passkey); for an account with no password, 403 unless it signed in or confirmed with a passkey within that time; 403 wrong password (5 tries per 15 minutes, then 429); 400 when the page isn't on the public name or `localhost` |
+| POST | `/api/me/passkeys` | user | `{ name?, response, auto? }` (the browser's registration answer; `auto: true` for an answer to auto options) | 201 `{ passkeys }`; 400 when the check fails; 409 already registered |
+| POST | `/api/me/passkeys/approval` | user | | needs a passkey confirmation (step-up): a one-time code that lets another session of your account add a passkey without confirming with one, for 10 minutes: 201 `{ code, expiresAt }` (a new code replaces the old one). That session sends it as `{ approval }` to `POST /api/me/passkeys/options` (case and dashes ignored; 403 when wrong or expired, and 5 wrong codes drop it); adding a passkey uses it up |
 | PUT | `/api/me/passkeys/{id}` | user | `{ name }` | rename: `{ passkeys }` |
-| DELETE | `/api/me/passkeys/{id}` | user | | remove: `{ passkeys }`; 403 `{ stepUp }` unless you confirmed with a passkey, or signed in after a password reset by email link, within `security.stepUpMinutes` |
+| DELETE | `/api/me/passkeys/{id}` | user | | remove: `{ passkeys }`; 409 when it is your only way to sign in (no password, other passkey or linked sign-in); 403 `{ stepUp }` unless you confirmed with a passkey, or signed in after a password reset by email link, within `security.stepUpMinutes` |
 | POST | `/api/me/step-up/options` | user | | WebAuthn request options for `startAuthentication()`, limited to your passkeys for this site; 409 when you have none; 400 when the page isn't on the public name or `localhost` |
 | POST | `/api/me/step-up` | user | `{ response }` (the browser's answer) | confirms the session for `security.stepUpMinutes`: `{ strongUntil }`; 401 another account's passkey, bad signature, used or expired challenge |
 | POST | `/api/passkey/options` | public | | WebAuthn request options for `startAuthentication()` (no username: any passkey for this site) |
-| POST | `/api/passkey/session` | public | `{ response }` (the browser's answer) | signs in like `POST /api/session`: 200 and the `sid` cookie; 401 unknown passkey, bad signature, used or expired challenge, or a counter that went back |
+| POST | `/api/passkey/session` | public | `{ response }` (the browser's answer) | signs in like `POST /api/session`: 200 and the `sid` cookie; 401 unknown passkey (with `unknownCredential: true`), bad signature, used or expired challenge, or a counter that went back |
 | POST | `/api/sso/start` | public | `{ provider, invite? }` (`invite`: an invitation link's token, to accept it with the provider) | single sign-on: `{ url }` to open (the provider's sign-in page) and the `dk_sso` cookie tying the attempt to this browser (10 minutes); 404 unknown provider; 400 when the page isn't on the public name or `localhost` |
 | POST | `/api/me/sso/start` | user | `{ provider, password? }` (your current password; not asked when the account has none) | like `/api/sso/start`, to link the provider account to yours; 403 wrong password (5 tries per 15 minutes, then 429) |
 | GET | `/api/sso/{provider}/callback` | public | (the provider's redirect) | finishes the sign-in and redirects: to `/` with the `sid` cookie, to `/#sso=linked` after linking, or to `/#sso-error=<message>` (no account for that work account, a domain that isn't allowed, an expired or reused attempt, …) |
@@ -154,8 +155,8 @@ dropped. The pull's job log says which happened.
 | POST | `/residents` | gate-admin | `{ directoryCode, name, vendor?, …fields }` | 201; fills a vacant code or inserts a new one |
 | PUT | `/residents/{code}` | gate-admin | any of `name, vendor, areaCode, phone, entryCode, securityLevel, elevatorRef, floor, cards[]` | only the given fields change |
 | PUT | `/residents/{code}/note` | gate-admin | `{ note }` | local note, at most 500 characters (blank clears it): `{ note }` |
-| DELETE | `/residents/{code}` | gate-admin | | blanks the slot; the code stays as an empty unit |
-| DELETE | `/directory-codes/{code}` | gate-admin | | removes the code from the gate entirely |
+| DELETE | `/residents/{code}` | gate-admin | | blanks the slot; the code stays as an empty unit (the code may omit its leading zeros) |
+| DELETE | `/directory-codes/{code}` | gate-admin | | removes the code from the gate entirely (the code may omit its leading zeros) |
 | PUT | `/dir-digits` | gate-admin | `{ digits: 1-4, confirm? }` | Num of digits in dir code; decreasing wipes all residents and needs `confirm: true` |
 
 Edits return `{ changed: { "<file>.bin": [blocks] }, cache }`. An entry code or card number already held by
@@ -179,7 +180,7 @@ card numbers are 00001–65407.
 | POST | `/history/{id}/revert` | gate-admin | | undoes that change in the working copy (and prefs); 409 if already reverted or a later change touched the same data |
 | GET | `/relays` | gate | | live relay state (DKS `GetRelays`): `{ checkedAt, relays }`, all 19 relays |
 | PUT | `/relays` | gate-admin | `{ "<relay>": true\|false, … }` | **changes the gate now** (DKS `SetRelays`); `true` = Active (held open). Allowed: relays 0–2 except a Tracker command relay, plus 3–10 with Tracker 2 and 11–18 with Tracker 1 (400 otherwise) |
-| POST | `/delete-data` | gate-admin (web only) | `{ confirm: true }` | **deletes everything stored about the gate**: its rows in every table keyed by phone (the gate itself with its DKS login, everyone's access to it, prefs, history, schedules, camera settings, snapshot log, notes, transaction history) and its `media/<phone>/` folder: `{ removed: { <table>: rows }, filesError? }`. Nothing on the gate changes. 409 while a gate connection, snapshot run or scheduled transfer for the gate is running |
+| POST | `/delete-data` | gate-admin (web only) | `{ confirm: true }` | **deletes everything stored about the gate**: its rows in every table keyed by phone (the gate itself with its DKS login, everyone's access to it, prefs, history, schedules, camera settings, snapshot log, notes, transaction history) and its `media/<phone>/` folder: `{ removed: { <table>: rows }, filesError? }`. Nothing on the gate changes. Runs after the gate's queued edits. 409 while a gate connection or relay call on its DKS login, a snapshot run, picture refresh or clean-up, or a scheduled transfer for the gate is running |
 
 **Preferences** (`PUT /prefs`, any of these keys; they are kept in the local database, never sent to the gate):
 
