@@ -376,7 +376,7 @@
           "Residents"
         ],
         "summary": "Add a resident or vendor",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Fills a vacant code or inserts a new one in the working copy (sent with `POST /send`).\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -488,7 +488,7 @@
           "Residents"
         ],
         "summary": "Change a resident or vendor",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Only the fields given change (working copy). An entry code or card held by another code is refused (409).\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -545,7 +545,7 @@
           "Residents"
         ],
         "summary": "Blank a resident's slot",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "The code stays as an empty unit.\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -698,7 +698,7 @@
           "Residents"
         ],
         "summary": "Set the local note",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Up to 500 characters, kept in this app only (never on the gate). Blank clears it.\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -764,7 +764,7 @@
           "Residents"
         ],
         "summary": "Remove a directory code",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Takes the code off the gate entirely (working copy).\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -806,7 +806,7 @@
           "Residents"
         ],
         "summary": "Change the number of digits in directory codes",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Decreasing **wipes all residents** and needs `confirm: true`.\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -905,7 +905,7 @@
           "Settings"
         ],
         "summary": "Change gate settings",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Saves editable fields to the working copy (sent with `POST /send`). Keys as in `GET /settings`.\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -1039,7 +1039,7 @@
           "Settings"
         ],
         "summary": "Reset to gate",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Throws away unsent changes and conflicts: the working copy becomes what the gate holds (the last pull).\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -1149,7 +1149,7 @@
           "Settings"
         ],
         "summary": "Change preferences",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Any of the keys; `relayLabels` changes only the relays given. Changing `gateConfig.areaCodes` converts the working copy (409 when it can't).\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -1256,7 +1256,7 @@
           "History"
         ],
         "summary": "Revert a change",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Undoes that change in the working copy; refused (409) when a later change touched the same data or it was reverted already.\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -2290,7 +2290,7 @@
           "Settings"
         ],
         "summary": "Decide a conflict",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Keeps the working copy's value (`mine`) or takes the gate's (`gate`, saved like an edit; recorded in History).\n\n**Admin key only** (403 for a read-only key).",
         "parameters": [
           {
@@ -2459,7 +2459,7 @@
           "Working copy"
         ],
         "summary": "Restore an archived pull into the working copy",
-        "x-role": "admin",
+        "x-role": "editor",
         "description": "Replaces the working copy with an archived pull (recorded in History; does not touch the gate until Send).\n\n**Admin key only.**",
         "parameters": [
           {
@@ -2495,6 +2495,46 @@
         "responses": {
           "200": {
             "description": "Access audit summary."
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/residents/bulk": {
+      "post": {
+        "tags": [
+          "Residents"
+        ],
+        "summary": "Bulk edit or delete directory entries",
+        "x-role": "editor",
+        "description": "Applies setSecurityLevel, delete, or removeCode to up to 500 directory codes in one working-copy History entry.\n\n**Editor or admin key.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bulk update result."
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/residents/import": {
+      "post": {
+        "tags": [
+          "Residents"
+        ],
+        "summary": "Bulk import residents/vendors (with dry-run preview)",
+        "x-role": "editor",
+        "description": "Imports up to 500 resident/vendor rows into the working copy. Set `dryRun: true` to preview added/updated counts, validation errors, and From -> To changes without saving.\n\n**Editor or admin key.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Preview or applied import result."
           }
         }
       }

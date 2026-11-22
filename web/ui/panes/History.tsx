@@ -4,6 +4,7 @@ import type { HistoryEvent, HistoryReply, PullArchiveEntry, SendChange } from '.
 import { errorText, useReadOnly, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { fmtTime } from '../format.ts';
+import { roleLabel } from '../Gates.tsx';
 
 export const ACTIONS: Record<string, string> = { change: 'Change', revert: 'Revert', pull: 'Pull', send: 'Send', relay: 'Relay', camera: 'Camera',
   access: 'Users', login: 'Gate login', apikey: 'API key', webhook: 'Webhook', note: 'Note' };
@@ -93,7 +94,7 @@ export function History({ gapi, onReverted }: HistoryProps) {
           </Table.Header>
           <Table.Body>
             {(history?.users || []).map((user) => (
-              <Table.Row key={user.username}><Table.Cell>{user.username}</Table.Cell><Table.Cell>{user.role === 'admin' ? 'Admin' : 'Read only'}</Table.Cell>
+              <Table.Row key={user.username}><Table.Cell>{user.username}</Table.Cell><Table.Cell>{roleLabel(user.role)}</Table.Cell>
                 <Table.Cell>{user.lastSignIn ? fmtTime(user.lastSignIn) : 'never'}</Table.Cell></Table.Row>
             ))}
           </Table.Body>

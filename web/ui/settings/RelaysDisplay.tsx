@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Callout, Card, Checkbox, Flex, Heading, RadioGroup, Select, Text } from '@radix-ui/themes';
 import type { GatePrefs, Relay, RelayTimer } from '../../../src/types.ts';
-import { errorText, type GateApi } from '../api.ts';
+import { errorText, useIsAdmin, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { trackerOf, trackerRelays } from '../format.ts';
 import { GateSettingsEditor } from './GateSettingsEditor.tsx';
@@ -55,6 +55,7 @@ function countdownText(releaseAt: string, nowMs: number): string {
 }
 
 function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
+  const isAdmin = useIsAdmin();
   const [state, setState] = useState<Record<number, string> | null>(null);
   const [timers, setTimers] = useState<RelayTimer[]>([]);
   const [holdMinutes, setHoldMinutes] = useState('30');
@@ -145,7 +146,7 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
                     {new Date(timer.releaseAt).toLocaleTimeString()} ({countdownText(timer.releaseAt, nowMs)})
                     {timer.lastError ? ` — retry failed: ${timer.lastError}` : ''}
                   </Text>
-                  <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => cancelTimer(timer.relay)}>Cancel timer</Button>
+                  <Button size="1" variant="soft" color="gray" disabled={busy || !isAdmin} onClick={() => cancelTimer(timer.relay)}>Cancel timer</Button>
                 </Flex>
               ))}
             </Flex>
@@ -157,9 +158,9 @@ function LiveRelays({ gapi, labels, relays, commandRelays }: LiveRelaysProps) {
             const code = state && !command ? state[i] : null;
             const timer = timers.find((entry) => entry.relay === i);
             return (
-              <Button key={i} size="4" color={code === '1' ? 'green' : code === '0' ? 'red' : 'gray'} disabled={busy || code === null}
+              <Button key={i} size="4" color={code === '1' ? 'green' : code === '0' ? 'red' : 'gray'} disabled={busy || !isAdmin || code === null}
                 variant={command ? 'soft' : undefined}
-                title={command ? `Tracker command relay: it commands relays ${i === 1 ? '11-18' : '3-10'}, so it can't be held open here` : undefined}
+                title={!isAdmin ? 'Only a gate admin can control live relays' : command ? `Tracker command relay: it commands relays ${i === 1 ? '11-18' : '3-10'}, so it can't be held open here` : undefined}
                 onClick={() => toggle(i)} style={{ minWidth: 180, height: 'auto', padding: '12px 16px', flexDirection: 'column', alignItems: 'flex-start' }}>
                 <Flex align="center" gap="2">
                   <Text weight="bold">{labels[i] || `Relay ${i}`}</Text>

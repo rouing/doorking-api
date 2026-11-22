@@ -74,7 +74,7 @@ interface RoleSelectProps {
 
 function RoleSelect({ value, onChange }: RoleSelectProps) {
   return (
-    <Choice value={value} onChange={(value) => onChange(value as GateRole)} options={[['readonly', 'Read only'], ['admin', 'Admin']]} />
+    <Choice value={value} onChange={(value) => onChange(value as GateRole)} options={[['readonly', 'Read only'], ['editor', 'Editor'], ['admin', 'Admin']]} />
   );
 }
 

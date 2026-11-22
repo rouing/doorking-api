@@ -10,7 +10,7 @@ Open work, unverified hardware tests, planned 10x features, and backlog items.
 - [x] **#15 Point-in-time pull archive & rollback:** keep the last N residents pulls in `gate_pull_archive` with compare and one-click restore to the working copy from History.
 - [x] **#8 Access hygiene & "Ghost Card / Leaked Code" audit dashboard:** Insights/Audit page mining `tx_history` + `gate_residents` + `gate_cards` for dormant credentials (90/180/365d), active unassigned cards (with camera snapshots), high-frequency/leaked entry codes, and gate traffic/cycle counts.
 - [x] **#9 Outbound webhooks & automation bridge:** per-gate HMAC-SHA256 signed webhooks backed by a retry outbox (`webhooks`, `webhook_deliveries`) firing on gate/transaction/relay/send/snapshot events.
-- [ ] **#10 Maker-checker (`editor` role) & bulk operations:** multi-select bulk actions on Residents/Vendors (bulk security level, disable, delete, CSV import preview) plus an `editor` role that can modify the working copy while `gate-admin` approves and sends to the gate.
+- [x] **#10 Maker-checker (`editor` role) & bulk operations:** multi-select bulk actions on Residents/Vendors (bulk security level, disable, delete, CSV import preview) plus an `editor` role that can modify the working copy while `gate-admin` approves and sends to the gate.
 
 ## Later / Backlog (10x ideas for after the planned set)
 - [ ] **#1 Auto-expiring visitor & contractor passes:** time-boxed guest/vendor entry codes auto-sent before start and auto-removed at expiry (requires live Send validation first).

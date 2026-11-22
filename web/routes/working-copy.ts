@@ -27,15 +27,15 @@ export function workingCopyRoutes(modules: Modules): Route[] {
   return [
     // Gate settings in the working copy's names.bin. PUT body: { <field key>: value, ... }.
     route('GET', `${G}/settings`, 'gate', ({ gate }) => gateSettings(gate.phoneNumber)),
-    route('PUT', `${G}/settings`, 'gate-admin', ({ session, gate, body }) => withHistory(session, gate,
+    route('PUT', `${G}/settings`, 'gate-editor', ({ session, gate, body }) => withHistory(session, gate,
       { summary: 'Changed gate settings' }, async () => saveSettings(gate, body, await commandRelays(gate.phoneNumber)))),
 
     // The working copy: status (with the conflicts to decide), reset to the gate (drops unsent changes), deciding a
     // conflict ({ kind: resident|card|setting, key, choice: mine|gate }), and file downloads (.bin / .map).
     route('GET', `${G}/working-copy`, 'gate', async ({ gate }) => [200, await dk.cacheStatus(store, gate.phoneNumber)]),
-    route('DELETE', `${G}/working-copy`, 'gate-admin', ({ session, gate }) => withHistory(session, gate,
+    route('DELETE', `${G}/working-copy`, 'gate-editor', ({ session, gate }) => withHistory(session, gate,
       { summary: 'Reset the working copy to the gate (unsent changes dropped)' }, async () => [200, await dk.resetCache(store, gate.phoneNumber)])),
-    route('POST', `${G}/working-copy/conflicts`, 'gate-admin', ({ session, gate, body }) => withHistory(session, gate,
+    route('POST', `${G}/working-copy/conflicts`, 'gate-editor', ({ session, gate, body }) => withHistory(session, gate,
       { summary: `${body.choice === 'gate' ? 'Took the gate\'s value' : 'Kept my change'} for a conflict (${String(body.kind)} ${String(body.key)})` },
       async () => [200, await dk.resolveConflict(store, gate.phoneNumber, { kind: body.kind, key: body.key, choice: body.choice })])),
     route('GET', `${G}/files/:name`, 'gate-admin', ({ gate, params, reply }) => sendFile(reply, gate.phoneNumber, params.name)),
@@ -44,7 +44,7 @@ export function workingCopyRoutes(modules: Modules): Route[] {
     route('GET', `${G}/prefs`, 'gate', async ({ gate }) => [200, await prefsOf(gate.phoneNumber)]),
 
     // Changing the area-code setting also converts the working copy; both are one history entry.
-    route('PUT', `${G}/prefs`, 'gate-admin', ({ session, gate, body }) => serial(gate.phoneNumber, async () => {
+    route('PUT', `${G}/prefs`, 'gate-editor', ({ session, gate, body }) => serial(gate.phoneNumber, async () => {
       const saved = await prefsOf(gate.phoneNumber);
       const before = await workingBuffers(gate.phoneNumber);
       const was: Record<string, unknown> = { ...saved };
@@ -63,7 +63,7 @@ export function workingCopyRoutes(modules: Modules): Route[] {
     route('GET', `${G}/history`, 'gate', async ({ gate }) => [200, {
       events: await dk.listHistory(store, gate.phoneNumber), users: await dk.gateUsers(store, gate.phoneNumber),
     }]),
-    route('POST', `${G}/history/:id/revert`, 'gate-admin', ({ session, gate, params }) => serial(gate.phoneNumber, () => revertEvent(session, gate, params.id))),
+    route('POST', `${G}/history/:id/revert`, 'gate-editor', ({ session, gate, params }) => serial(gate.phoneNumber, () => revertEvent(session, gate, params.id))),
 
     // Point-in-time pull archive: list archived residents pulls, preview diff against working copy, or restore one.
     route('GET', `${G}/pull-archive`, 'gate', async ({ gate }) => [200, { pulls: await dk.listPullArchive(store, gate.phoneNumber) }]),
@@ -74,7 +74,7 @@ export function workingCopyRoutes(modules: Modules): Route[] {
       if (!current) return [409, { error: 'There is no working copy. Pull residents from the gate.' }];
       return [200, { pull: archived.entry, changes: changeDetails(current, archived.files) }];
     }),
-    route('POST', `${G}/pull-archive/:id/restore`, 'gate-admin', ({ session, gate, params }) => withHistory(session, gate,
+    route('POST', `${G}/pull-archive/:id/restore`, 'gate-editor', ({ session, gate, params }) => withHistory(session, gate,
       { summary: `Restored working copy from pull #${params.id}` }, async (ctx) => {
         const archived = await dk.readPullArchive(store, gate.phoneNumber, Number(params.id));
         if (!archived) return [404, { error: 'Archived pull not found' }];

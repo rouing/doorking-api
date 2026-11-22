@@ -4,6 +4,7 @@
  * Calls to the server's REST API (see web/server.ts). Errors carry the server's { error } message.
  */
 import { createContext, useContext } from 'react';
+import type { GateRole } from '../../src/types.ts';
 
 export class ApiError extends Error {
   status: number;
@@ -86,6 +87,13 @@ export const gateApi = (phone: string): GateApi => (method, sub, body) => api(me
  * @returns Computed result.
  */
 export const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** The signed-in user's role on the open gate (`admin`, `editor`, or `readonly`). */
+export const GateRoleContext = createContext<GateRole>('readonly');
+/** Returns the signed-in user's role on the open gate. */
+export const useGateRole = () => useContext(GateRoleContext);
+/** True when the signed-in user is a gate admin (may send to gate, control live relays, manage users/login/webhooks). */
+export const useIsAdmin = () => useContext(GateRoleContext) === 'admin';
 
 /**
  * True on a gate the signed-in user may only view (role readonly): edit controls are hidden or disabled. The server

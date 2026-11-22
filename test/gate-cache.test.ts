@@ -1104,7 +1104,7 @@ test('gates: added once, roles, sharing, and a gate always keeps an admin', with
   assert.strictEqual(await dk.accessOf(store, '5550100', 'bob'), null);
   // Sharing: existing users only, once.
   await assert.rejects(() => dk.grantAccess(store, '5550100', 'nobody', 'readonly', 'ann'), (e) => e.status === 404);
-  await assert.rejects(() => dk.grantAccess(store, '5550100', 'bob', 'owner', 'ann'), /admin or readonly/);
+  await assert.rejects(() => dk.grantAccess(store, '5550100', 'bob', 'owner', 'ann'), /admin, editor or readonly/);
   await dk.grantAccess(store, '5550100', 'BOB', 'readonly', 'ann');
   await assert.rejects(() => dk.grantAccess(store, '5550100', 'bob', 'admin', 'ann'), (e) => e.status === 409 && /already has access/.test(e.message));
   assert.deepStrictEqual((await dk.userGates(store, 'bob')).map((g) => [g.phoneNumber, g.role]), [['5550100', 'readonly']]);
@@ -1128,7 +1128,7 @@ test('API keys: per gate, shown once, stored hashed, role and expiry, revoked at
   await dk.registerGate(store, GATE_A, 'ann');
   await dk.registerGate(store, { ...GATE_A, phoneNumber: '5550111' }, 'ann');
   await assert.rejects(() => dk.createApiKey(store, '5550100', { name: '', role: 'readonly' }, 'ann'), /name/);
-  await assert.rejects(() => dk.createApiKey(store, '5550100', { name: 'x', role: 'owner' }, 'ann'), /admin or readonly/);
+  await assert.rejects(() => dk.createApiKey(store, '5550100', { name: 'x', role: 'owner' }, 'ann'), /admin, editor or readonly/);
   await assert.rejects(() => dk.createApiKey(store, '5550100', { name: 'x', role: 'readonly', expiresDays: 7 }, 'ann'), /Expiry/);
   const { key, apiKey } = await dk.createApiKey(store, '555-0100', { name: 'Home Assistant', role: 'readonly' }, 'ANN');
   assert.match(key, /^dkg_[0-9a-f]{12}_[A-Za-z0-9_-]{43}$/);
@@ -1291,7 +1291,7 @@ test('docs/openapi.json matches the routes an API key can use (paths, methods, r
     const [, webOnly, method, raw, scope] = m;
     if (webOnly || !scope.startsWith('gate')) continue;
     const sub = raw === 'G' ? '' : raw.replace(/^[`']|[`']$/g, '').replace('${G}', '');
-    fromRoutes.set(`${method.toLowerCase()} /api/gates/{phone}${sub.replace(/:(\w+)/g, '{$1}')}`, scope === 'gate' ? 'readonly' : 'admin');
+    fromRoutes.set(`${method.toLowerCase()} /api/gates/{phone}${sub.replace(/:(\w+)/g, '{$1}')}`, scope === 'gate' ? 'readonly' : scope === 'gate-editor' ? 'editor' : 'admin');
   }
   const fromSpec = new Map();
   for (const [p, ops] of Object.entries(spec.paths)) for (const [method, o] of Object.entries(ops)) fromSpec.set(`${method} ${p}`, o['x-role']);
@@ -2159,6 +2159,40 @@ test('webhooks: SSRF URL blocking, HMAC-SHA256 signing, delivery, retry backoff,
   } finally {
     await new Promise((r) => receiver.close(r));
   }
+}));
+
+test('server: editor role edits working copy + bulk/import, but cannot send, control relays, or manage users', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.createUser(store, { username: 'eddie', password: PW, createdBy: 'alice', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  await dk.grantAccess(store, GATE_A.phoneNumber, 'eddie', 'editor', 'alice');
+  await pullInto(store);
+  await dk.ensureCache(store, GATE_A.phoneNumber);
+  const edCookie = await signIn(call, 'eddie', PW);
+  // Editor can edit working copy, run bulk updates, and preview/apply CSV import.
+  assert.strictEqual((await call('PUT', `/api/gates/${GATE_A.phoneNumber}/residents/101`, { cookie: edCookie, body: { name: 'Smith, Ed' } })).status, 200);
+  const bulk = await call('POST', `/api/gates/${GATE_A.phoneNumber}/residents/bulk`, { cookie: edCookie, body: { action: 'setSecurityLevel', codes: ['101', '102'], securityLevel: 5 } });
+  assert.strictEqual(bulk.status, 200);
+  assert.strictEqual(bulk.body.count, 2);
+  const preview = await call('POST', `/api/gates/${GATE_A.phoneNumber}/residents/import`, {
+    cookie: edCookie,
+    body: { dryRun: true, rows: [{ directoryCode: '101', name: 'Smith, Imported' }, { directoryCode: '104', name: 'New Person', phone: '5550104', areaCode: '214' }] },
+  });
+  assert.strictEqual(preview.status, 200);
+  assert.deepStrictEqual([preview.body.added, preview.body.updated, preview.body.errors.length], [1, 1, 0]);
+  // dryRun did not save.
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/residents/101`, { cookie: edCookie })).body.name, 'Smith, Ed');
+  // Apply import saves both in one History entry.
+  const applied = await call('POST', `/api/gates/${GATE_A.phoneNumber}/residents/import`, {
+    cookie: edCookie,
+    body: { rows: [{ directoryCode: '101', name: 'Smith, Imported' }, { directoryCode: '104', name: 'New Person', phone: '5550104', areaCode: '214' }] },
+  });
+  assert.strictEqual(applied.status, 200);
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/residents/104`, { cookie: edCookie })).body.name, 'New Person');
+  // Editor CANNOT send to gate, control live relays, download raw files, or manage gate users.
+  assert.strictEqual((await call('POST', `/api/gates/${GATE_A.phoneNumber}/send`, { cookie: edCookie, body: { confirm: true } })).status, 403);
+  assert.strictEqual((await call('PUT', `/api/gates/${GATE_A.phoneNumber}/relays`, { cookie: edCookie, body: { '1': true } })).status, 403);
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/users`, { cookie: edCookie })).status, 403);
 }));
 
 test('server: sign-in, wrong passwords limited, and pages need a session', withServer(async ({ store, call }) => {

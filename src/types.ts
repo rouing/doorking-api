@@ -135,9 +135,9 @@ export interface SendPreview {
 
 /**
  * GET /api/gates (master codes are never sent). siteName is '' until the user has connected to the gate.
- * admin: everything, including the gate's users and DKS login; readonly: view, pull and cameras.
+ * admin: everything including sends, relays, users and DKS login; editor: working-copy edits only; readonly: view, pull and cameras.
  */
-export type GateRole = 'admin' | 'readonly';
+export type GateRole = 'admin' | 'editor' | 'readonly';
 export interface GateInfo { phoneNumber: string; siteName: string; addedAt: string; role: GateRole }
 /**
  * Someone with access to a gate (G/users, History).

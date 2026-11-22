@@ -22,7 +22,7 @@ export const gateLabel = (gate: GateInfo) => gate.siteName || `Gate ${gate.phone
  * @param role - Gate access role (`admin` or `readonly`).
  * @returns Rendered React element.
  */
-export const roleLabel = (role: GateInfo['role']) => (role === 'admin' ? 'Admin' : 'Read only');
+export const roleLabel = (role: GateInfo['role']) => (role === 'admin' ? 'Admin' : role === 'editor' ? 'Editor' : 'Read only');
 
 interface AddGateProps {
   session: SignedIn;
@@ -190,7 +190,7 @@ export function Gates({ session, onChange }: GatesProps) {
                     <Text weight="medium">{gateLabel(gate)}</Text>
                     <Text size="1" color="gray">{gate.phoneNumber}</Text>
                   </Flex>
-                  <Badge color={gate.role === 'admin' ? 'blue' : 'gray'}>{roleLabel(gate.role)}</Badge>
+                  <Badge color={gate.role === 'admin' ? 'blue' : gate.role === 'editor' ? 'amber' : 'gray'}>{roleLabel(gate.role)}</Badge>
                   <Button onClick={() => open(gate)}>Open</Button>
                   <Button variant="soft" color="gray" onClick={() => leave(gate)}>Leave</Button>
                 </Flex>

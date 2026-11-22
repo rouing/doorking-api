@@ -63,11 +63,11 @@ CREATE INDEX IF NOT EXISTS sessions_username ON sessions (username);
 CREATE TABLE IF NOT EXISTS managed_gates (phone TEXT PRIMARY KEY, master_code TEXT NOT NULL, dks_user TEXT NOT NULL,
   dks_password TEXT NOT NULL, added_by TEXT NOT NULL, added_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS gate_access (phone TEXT NOT NULL REFERENCES managed_gates ON DELETE CASCADE,
-  username TEXT NOT NULL REFERENCES users ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('admin', 'readonly')),
+  username TEXT NOT NULL REFERENCES users ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'readonly')),
   granted_by TEXT NOT NULL, granted_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (phone, username));
 CREATE INDEX IF NOT EXISTS gate_access_username ON gate_access (username);
 CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, phone TEXT NOT NULL REFERENCES managed_gates ON DELETE CASCADE,
-  name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin', 'readonly')), secret_hash TEXT NOT NULL,
+  name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'readonly')), secret_hash TEXT NOT NULL,
   created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ, last_used_at TIMESTAMPTZ);
 CREATE INDEX IF NOT EXISTS api_keys_phone ON api_keys (phone);
 CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
@@ -122,3 +122,9 @@ ALTER TABLE gate_working ADD COLUMN IF NOT EXISTS conflicts JSONB NOT NULL DEFAU
 ALTER TABLE gate_state ADD COLUMN IF NOT EXISTS rebuild_ok BOOLEAN;
 ALTER TABLE gate_state ADD COLUMN IF NOT EXISTS rebuild_problems JSONB;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS strong_at TIMESTAMPTZ;
+DO $$ BEGIN
+  ALTER TABLE gate_access DROP CONSTRAINT IF EXISTS gate_access_role_check;
+  ALTER TABLE gate_access ADD CONSTRAINT gate_access_role_check CHECK (role IN ('admin', 'editor', 'readonly'));
+  ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_role_check;
+  ALTER TABLE api_keys ADD CONSTRAINT api_keys_role_check CHECK (role IN ('admin', 'editor', 'readonly'));
+END $$;

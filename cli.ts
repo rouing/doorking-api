@@ -146,7 +146,7 @@ program.command('reset-password <username>')
   }));
 
 program.command('grant <username> <gatePhone> <role>')
-  .description('Give an account access to a gate (admin or readonly), or change its role')
+  .description('Give an account access to a gate (admin, editor or readonly), or change its role')
   .action((username: string, phone: string, role: string) => withDatabase(async (store) => {
     const checked = dk.checkRole(role);
     if (!await dk.getGate(store, phone)) throw new Error(`Gate ${phone} is not managed here`);

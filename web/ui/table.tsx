@@ -44,6 +44,7 @@ interface SortHeadProps {
   sort: Sort | null;
   onSort: (key: string) => void;
   title?: (key: string) => string;
+  leading?: ReactNode;
 }
 
 /**
@@ -53,14 +54,16 @@ interface SortHeadProps {
  * @param props.cols - Table column definitions.
  * @param props.sort - Active table sort specification.
  * @param props.onSort - Callback invoked when a sortable column header is clicked.
- * @param props.title - Title.
+ * @param [props.title] - Optional tooltip callback.
+ * @param [props.leading] - Optional leading header cell (e.g., select-all checkbox).
  * @returns Rendered React element.
  */
-export function SortHead({ cols, sort, onSort, title }: SortHeadProps) {
+export function SortHead({ cols, sort, onSort, title, leading }: SortHeadProps) {
   const arrow = (dir: number) => (dir > 0 ? ' ▲' : ' ▼');
   return (
     <Table.Header className="sort-head">
       <Table.Row>
+        {leading}
         {cols.map(([label, key]) => (
           <Table.ColumnHeaderCell key={key} onClick={() => onSort(key)} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
             title={title ? title(key) : 'Click to sort'}>

@@ -1,11 +1,12 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { Badge, Box, Button, Callout, Card, Dialog, Flex, Heading, IconButton, Link, Table, Text, TextField } from '@radix-ui/themes';
+import { Badge, Box, Button, Callout, Card, Checkbox, Dialog, Flex, Heading, IconButton, Link, Table, Text, TextField } from '@radix-ui/themes';
 import type { DeviceRange, EntryChange, GateFeatures, ResidentRow, ResidentsReply, TransactionRow } from '../../../src/types.ts';
 import { dirCell, doorKingCsv, downloadText, fieldOf, fmtTime, isEmptySlot, txTone } from '../format.ts';
 import { nextSort, SortHead, sortRows, useShownRows, type Column, type Sort } from '../table.tsx';
 import { CardList } from './fields.tsx';
 import { SnapCell } from '../camera/SnapViews.tsx';
 import type { Snaps } from '../camera/snapshots.ts';
+import { ImportCsvDialog } from './ImportCsvDialog.tsx';
 import { ResidentForm } from './ResidentForm.tsx';
 import { TX_COLUMNS } from './Transactions.tsx';
 import { ACTIONS } from './History.tsx';
@@ -64,6 +65,11 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
   const [open, setOpen] = useState<string | null>(highlight);
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [bulkLevel, setBulkLevel] = useState('1');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState('');
   const [dialog, confirm] = useConfirm();
   /**
    * Back closes an open add or edit form, after asking (its typing would be lost).
@@ -109,10 +115,40 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
    * @returns Computed result.
    */
   const csv = () => list && downloadText('ResidentsExport.csv', doorKingCsv(account, list.rows || [], list.unassignedCards));
+  const toggleSelected = (code: string) => {
+    setSelected((cur) => { const next = new Set(cur); if (next.has(code)) next.delete(code); else next.add(code); return next; });
+  };
+  const visibleRows = rows.slice(0, end);
+  const allVisibleSelected = visibleRows.length > 0 && visibleRows.every((r) => selected.has(r.directoryCode));
+  const toggleAllVisible = () => {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (allVisibleSelected) visibleRows.forEach((r) => next.delete(r.directoryCode));
+      else visibleRows.forEach((r) => next.add(r.directoryCode));
+      return next;
+    });
+  };
+  async function runBulk(action: 'setSecurityLevel' | 'delete') {
+    const codes = [...selected];
+    if (!codes.length) return;
+    const label = action === 'setSecurityLevel' ? `set security level to ${bulkLevel} on` : 'delete';
+    if (!await confirm({ title: `Bulk ${label} ${codes.length} ${kind}?`, action: action === 'delete' ? 'Delete selected' : 'Apply',
+      color: action === 'delete' ? 'red' : 'blue',
+      body: 'This updates the working copy in one History entry. The gate is not changed until Send to gate.' })) return;
+    setBulkBusy(true);
+    setBulkError('');
+    try {
+      await gapi('POST', '/residents/bulk', { action, codes, ...(action === 'setSecurityLevel' ? { securityLevel: Number(bulkLevel) } : {}) });
+      setSelected(new Set());
+      await onReload();
+    } catch (err) { setBulkError(errorText(err)); }
+    setBulkBusy(false);
+  }
 
   return (
     <Flex direction="column" gap="3">
       {dialog}
+      <ImportCsvDialog open={importing} onOpenChange={setImporting} vendor={vendor} gapi={gapi} onImported={onReload} />
       <Heading>{kind === 'vendors' ? 'Vendors' : 'Residents'}</Heading>
       <WorkingCopyBar cache={list ? list.cache : null} gapi={gapi} onReload={onReload} />
       {list && list.duplicates.length > 0 && (
@@ -132,6 +168,7 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
       )}
       <Flex gap="3" align="center" wrap="wrap">
         {!readOnly && <Button onClick={() => setAdding(!adding)} disabled={!list}>{vendor ? 'Add vendor' : 'Add resident'}</Button>}
+        {!readOnly && !phone && <Button variant="soft" onClick={() => setImporting(true)} disabled={!list}>Import CSV</Button>}
         <TextField.Root type="search" placeholder="Filter rows" value={filter} onChange={(event) => setFilter(event.target.value)} />
         {!phone && <Button variant="soft" onClick={csv} disabled={!list} title="Every directory code (residents, vendors and empty units), in the format DoorKing's cloud exports">Export CSV</Button>}
         <Text size="2" color="gray">
@@ -140,15 +177,41 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
               + (kind === 'residents' && list.unassignedCards.length ? ` · ${list.unassignedCards.length} cards without a directory code` : '')}
         </Text>
       </Flex>
+      {!readOnly && selected.size > 0 && (
+        <Callout.Root color="blue">
+          <Flex align="center" gap="3" wrap="wrap">
+            <Text size="2" weight="medium">{selected.size} selected</Text>
+            <Flex align="center" gap="1">
+              <Text size="1" color="gray">Security level:</Text>
+              <TextField.Root size="1" type="number" min={0} max={30} style={{ width: '7ch' }} value={bulkLevel} onChange={(e) => setBulkLevel(e.target.value)} />
+              <Button size="1" variant="soft" disabled={bulkBusy} onClick={() => runBulk('setSecurityLevel')}>Set level</Button>
+            </Flex>
+            <Button size="1" variant="soft" color="red" disabled={bulkBusy} onClick={() => runBulk('delete')}>Delete selected</Button>
+            <Button size="1" variant="ghost" color="gray" onClick={() => setSelected(new Set())}>Clear</Button>
+            {bulkError && <Text size="1" color="red">{bulkError}</Text>}
+          </Flex>
+        </Callout.Root>
+      )}
       <Table.Root size="1" variant="surface" className="dir-table">
-        <SortHead cols={cols} sort={sort} onSort={(column) => setSort(nextSort(sort, column))} />
+        <SortHead cols={cols} sort={sort} onSort={(column) => setSort(nextSort(sort, column))}
+          leading={!readOnly && !phone ? (
+            <Table.ColumnHeaderCell style={{ width: 28 }}>
+              <Checkbox checked={allVisibleSelected} onCheckedChange={toggleAllVisible} aria-label="Select all visible" />
+            </Table.ColumnHeaderCell>
+          ) : undefined} />
         <Table.Body>
-          {rows.slice(0, end).map((resident) => (
+          {visibleRows.map((resident) => (
             <Fragment key={resident.directoryCode}>
               <Table.Row className="card-row" data-code={resident.directoryCode} data-open={open === resident.directoryCode || undefined}
                 onClick={() => { setOpen(open === resident.directoryCode ? null : resident.directoryCode); setEditing(false); }}
                 style={{ cursor: 'pointer', background: resident.directoryCode === highlight ? 'var(--accent-a4)' : undefined,
                   color: resident.hidden && kind === 'residents' ? 'var(--gray-10)' : undefined }}>
+                {!readOnly && !phone && (
+                  <Table.Cell onClick={(event) => event.stopPropagation()}>
+                    <Checkbox checked={selected.has(resident.directoryCode)} onCheckedChange={() => toggleSelected(resident.directoryCode)}
+                      aria-label={`Select ${resident.directoryCode}`} />
+                  </Table.Cell>
+                )}
                 {cols.map(([, k]) => (
                   <Table.Cell key={k} data-col={k} style={dupCell(resident, k) ? { background: 'var(--red-a5)', color: 'var(--red-11)', fontWeight: 600 } : undefined}
                     title={dupCell(resident, k) ? 'Also used by another entry' : undefined}>
@@ -160,7 +223,7 @@ export function Directory({ kind, account, list, tx, devices, features, snaps, o
               </Table.Row>
               {open === resident.directoryCode && (
                 <Table.Row className="detail-row">
-                  <Table.Cell colSpan={cols.length} style={{ background: 'var(--gray-a2)' }}>
+                  <Table.Cell colSpan={cols.length + (!readOnly && !phone ? 1 : 0)} style={{ background: 'var(--gray-a2)' }}>
                     {editing && list ? (
                       <ResidentForm resident={resident} vendor={vendor} dirDigits={list.dirDigits} emptyCodes={list.emptyCodes} devices={devices}
                         features={features} gapi={gapi} onDone={async () => { setEditing(false); await onReload(); }} onCancel={() => setEditing(false)} />

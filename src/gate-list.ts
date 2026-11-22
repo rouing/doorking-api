@@ -14,7 +14,7 @@ import type { GateRole, GateUser } from './types.ts';
 import { httpError } from './errors.ts';
 
 export type { GateRole, GateUser };
-export const GATE_ROLES: GateRole[] = ['admin', 'readonly'];
+export const GATE_ROLES: GateRole[] = ['admin', 'editor', 'readonly'];
 
 export interface GateRecord {
   phoneNumber: string; masterCode: string; dksUser: string; dksPassword: string; addedBy: string; addedAt: string;
@@ -63,7 +63,7 @@ export function checkMasterCode(code: unknown): string {
  * @throws HTTP 400 error on invalid input or conflict.
  */
 export function checkRole(role: unknown): GateRole {
-  if (!GATE_ROLES.includes(role as GateRole)) throw httpError('Role must be admin or readonly');
+  if (!GATE_ROLES.includes(role as GateRole)) throw httpError('Role must be admin, editor or readonly');
   return role as GateRole;
 }
 const checkDksLogin = (user: unknown, password: unknown) => {

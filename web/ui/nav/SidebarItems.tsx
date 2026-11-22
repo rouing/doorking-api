@@ -19,6 +19,7 @@ interface SidebarItemsProps {
   progressShown: boolean; // the progress window is open or minimized
   gapi: GateApi;
   readOnly: boolean;
+  isAdmin: boolean;
   workingCopy: WorkingCopyState;
   hasWorkingCopy: boolean;
   onGo: (page: NavKey) => void;
@@ -57,6 +58,7 @@ interface GateConnectionProps {
   progressShown: boolean;
   gapi: GateApi;
   readOnly: boolean;
+  isAdmin: boolean;
   workingCopy: WorkingCopyState;
   hasWorkingCopy: boolean;
   onPull: (what: 'residents' | 'transactions') => void;
@@ -84,7 +86,7 @@ interface GateConnectionProps {
  * @param props.onNotify - On notify.
  * @returns Rendered React element.
  */
-function GateConnection({ job, progressShown, gapi, readOnly, workingCopy, hasWorkingCopy, onPull, onShowProgress, onReset, onJobStarted,
+function GateConnection({ job, progressShown, gapi, readOnly, isAdmin, workingCopy, hasWorkingCopy, onPull, onShowProgress, onReset, onJobStarted,
   onNotify }: GateConnectionProps) {
   const running = job?.state === 'running';
   const actions = useGateActions({ gapi, workingCopy, hasWorkingCopy, running, onReset, onJobStarted, onNotify });
@@ -95,7 +97,8 @@ function GateConnection({ job, progressShown, gapi, readOnly, workingCopy, hasWo
       <Text size="1" color="gray" weight="bold">Gate connection</Text>
       {!readOnly && (
         <>
-          <Button className="nav-action" disabled={!actions.canSend} onClick={() => { onNotify(''); actions.send(); }} title={actions.sendHint}>
+          <Button className="nav-action" disabled={!isAdmin || !actions.canSend} onClick={() => { onNotify(''); actions.send(); }}
+            title={!isAdmin ? 'Ask a gate admin to review and Send to gate' : actions.sendHint}>
             Send to gate
           </Button>
           <Button variant="soft" color="gray" className="nav-action" disabled={!actions.canReset}
@@ -141,7 +144,7 @@ function GateConnection({ job, progressShown, gapi, readOnly, workingCopy, hasWo
  * @param props.onSignOut - On sign out.
  * @returns Rendered React element.
  */
-export function SidebarItems({ gate, user, page, phone, elevators, job, progressShown, gapi, readOnly, workingCopy, hasWorkingCopy, onGo,
+export function SidebarItems({ gate, user, page, phone, elevators, job, progressShown, gapi, readOnly, isAdmin, workingCopy, hasWorkingCopy, onGo,
   onOpenSearch, onSwitchGate, onAllGates, onPull, onShowProgress, onReset, onJobStarted, onNotify, onSignOut }: SidebarItemsProps) {
   const listed = (key: NavKey) => pageShown(key, elevators) && !(phone && TAB_PAGES.includes(key));
   return (
@@ -166,7 +169,7 @@ export function SidebarItems({ gate, user, page, phone, elevators, job, progress
         <Button asChild className="nav-item" variant="ghost" color="gray">
           <a href="/help" target="_blank" rel="noopener" title="Open the user guide in a new tab">Help ↗</a>
         </Button>
-        {!phone && <GateConnection job={job} progressShown={progressShown} gapi={gapi} readOnly={readOnly} workingCopy={workingCopy}
+        {!phone && <GateConnection job={job} progressShown={progressShown} gapi={gapi} readOnly={readOnly} isAdmin={isAdmin} workingCopy={workingCopy}
           hasWorkingCopy={hasWorkingCopy} onPull={onPull} onShowProgress={onShowProgress} onReset={onReset} onJobStarted={onJobStarted}
           onNotify={onNotify} />}
         <Separator size="4" />

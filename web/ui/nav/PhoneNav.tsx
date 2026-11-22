@@ -138,6 +138,7 @@ interface GateSheetProps {
   gapi: GateApi;
   job: Job | null;
   readOnly: boolean;
+  isAdmin: boolean;
   workingCopy: WorkingCopyState;
   hasWorkingCopy: boolean;
   onPull: (what: 'residents' | 'transactions') => void;
@@ -168,7 +169,7 @@ interface GateSheetProps {
  * @param props.onNotify - On notify.
  * @returns Rendered React element.
  */
-export function GateSheet({ open, onOpenChange, gapi, job, readOnly, workingCopy, hasWorkingCopy, onPull, onShowProgress, onLiveRelays, onReset,
+export function GateSheet({ open, onOpenChange, gapi, job, readOnly, isAdmin, workingCopy, hasWorkingCopy, onPull, onShowProgress, onLiveRelays, onReset,
   onJobStarted, onNotify }: GateSheetProps) {
   const running = job?.state === 'running';
   const actions = useGateActions({ gapi, workingCopy, hasWorkingCopy, running, onReset, onJobStarted, onNotify });
@@ -186,9 +187,10 @@ export function GateSheet({ open, onOpenChange, gapi, job, readOnly, workingCopy
             <Text as="div" size="2" color={workingCopy.color}><span className="status-dot" />Working copy: {workingCopy.label}</Text>
             {!readOnly && (
               <>
-                <Button size="3" disabled={!actions.canSend} onClick={closeThen(actions.send)}>
+                <Button size="3" disabled={!isAdmin || !actions.canSend} onClick={closeThen(actions.send)}>
                   Send to gate
                 </Button>
+                {!isAdmin && <Text size="2" color="gray">Ask a gate admin to Send to gate.</Text>}
                 {workingCopy.conflicts.length > 0 && <Text size="2" color="red">Decide the conflicts on the Residents page first.</Text>}
                 <Button size="3" variant="soft" color="gray" disabled={!actions.canReset} onClick={closeThen(actions.reset)}>Reset to gate</Button>
               </>

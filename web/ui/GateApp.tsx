@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button, Callout, Flex } from '@radix-ui/themes';
 import type { GateInfo, ResidentRow, TransactionRow } from '../../src/types.ts';
-import { api, errorText, gateApi, ReadOnlyContext, WorkingCopySavedContext } from './api.ts';
+import { api, errorText, gateApi, GateRoleContext, ReadOnlyContext, WorkingCopySavedContext } from './api.ts';
 import { useGateData, useGateJob, useSidebarDensity } from './gateData.ts';
 import { useBackLayer } from './back.ts';
 import { usePhone } from './phone.ts';
@@ -32,6 +32,7 @@ import { Transactions } from './panes/Transactions.tsx';
 import type { SignedIn } from './App.tsx';
 
 const EDIT_PAGES: NavKey[] = ['display', 'relays', 'holdOpen', 'holidays', 'security', 'facility', 'elevator', 'relayElevator', 'apb', 'schedules'];
+const ADMIN_ONLY_PAGES: NavKey[] = ['schedules'];
 
 const PULL_WARNING = {
   residents: 'This reads the gate\'s current data. Changes you haven\'t sent stay on top of it; anything changed both at the gate and here is listed for you to decide.',
@@ -58,7 +59,8 @@ interface GateAppProps {
  */
 export function GateApp({ session, gate, onChange }: GateAppProps) {
   const gapi = useMemo(() => gateApi(gate.phoneNumber), [gate.phoneNumber]);
-  const readOnly = gate.role !== 'admin';
+  const readOnly = gate.role === 'readonly';
+  const isAdmin = gate.role === 'admin';
   const [nav, setNav] = useState<NavKey>('residents');
   const [highlight, setHighlight] = useState<string | null>(null);
   const [viewing, setViewing] = useState<TransactionRow | null>(null);
@@ -164,7 +166,7 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
 
   const sidebarItems = (
     <SidebarItems gate={gate} user={session.user} page={nav} phone={phone} elevators={features.elevators} job={job}
-      progressShown={dock !== 'closed'} gapi={gapi} readOnly={readOnly} workingCopy={workingCopy} hasWorkingCopy={Boolean(residents)} onGo={go}
+      progressShown={dock !== 'closed'} gapi={gapi} readOnly={readOnly} isAdmin={isAdmin} workingCopy={workingCopy} hasWorkingCopy={Boolean(residents)} onGo={go}
       onOpenSearch={() => { setMenu(false); setQuickJump(true); }}
       onSwitchGate={switchGate} onAllGates={allGates} onPull={pull} onShowProgress={() => setDock('open')} onReset={afterReset}
       onJobStarted={jobStarted} onNotify={setActionInfo} onSignOut={signOut} />
@@ -184,6 +186,11 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
             <Callout.Text>Read only: you can look at everything, pull from the gate and use the cameras. Ask a gate admin to make changes.</Callout.Text>
           </Callout.Root>
         )}
+        {gate.role === 'editor' && nav !== 'user' && (
+          <Callout.Root color="blue" mb="4">
+            <Callout.Text>Editor access: your edits save to the working copy. Ask a gate admin to review and click <strong>Send to gate</strong>.</Callout.Text>
+          </Callout.Root>
+        )}
         {[error, loadError].filter(Boolean).map((text) => <Callout.Root key={text} color="red" mb="4"><Callout.Text>{text}</Callout.Text></Callout.Root>)}
         {actionInfo && (
           <Callout.Root color="blue" mb="4">
@@ -191,17 +198,20 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
               <Button size="1" variant="ghost" color="gray" aria-label="Dismiss" onClick={() => setActionInfo('')}>✕</Button></Flex>
           </Callout.Root>
         )}
-        <ReadOnlyContext.Provider value={readOnly}>
-          <WorkingCopySavedContext.Provider value={loadData}>
-            {readOnly && EDIT_PAGES.includes(nav) ? <fieldset disabled className="readonly-page">{page}</fieldset> : page}
-          </WorkingCopySavedContext.Provider>
-        </ReadOnlyContext.Provider>
+        <GateRoleContext.Provider value={gate.role}>
+          <ReadOnlyContext.Provider value={readOnly}>
+            <WorkingCopySavedContext.Provider value={loadData}>
+              {((readOnly && EDIT_PAGES.includes(nav)) || (!isAdmin && ADMIN_ONLY_PAGES.includes(nav)))
+                ? <fieldset disabled className="readonly-page">{page}</fieldset> : page}
+            </WorkingCopySavedContext.Provider>
+          </ReadOnlyContext.Provider>
+        </GateRoleContext.Provider>
       </main>
       {phone && (
         <>
           <PhoneTabBar page={nav} menuOpen={menu} gateOpen={gateSheet} running={running} onGo={go} onOpenGate={openGateSheet}
             onOpenMore={() => { setGateSheet(false); setMenu(true); }} />
-          <GateSheet open={gateSheet} onOpenChange={setGateSheet} gapi={gapi} job={job} readOnly={readOnly} workingCopy={workingCopy}
+          <GateSheet open={gateSheet} onOpenChange={setGateSheet} gapi={gapi} job={job} readOnly={readOnly} isAdmin={isAdmin} workingCopy={workingCopy}
             hasWorkingCopy={Boolean(residents)} onPull={pull} onShowProgress={() => setDock('open')} onLiveRelays={() => go('relays')}
             onReset={afterReset} onJobStarted={jobStarted} onNotify={setActionInfo} />
         </>

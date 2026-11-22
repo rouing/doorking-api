@@ -317,6 +317,7 @@ export async function createFastifyServer(modules: Modules, routes: Route[], isS
         try {
           const gate = route.scope.startsWith('gate') ? await routeGate(session!, params.phone) : null;
           if (gate && route.scope === 'gate-admin' && gate.role !== 'admin') return sendReply(reply, [403, { error: ADMIN_ONLY }], req, pathname);
+          if (gate && route.scope === 'gate-editor' && gate.role === 'readonly') return sendReply(reply, [403, { error: 'Editor or admin access is required for this change.' }], req, pathname);
           if (route.stepUp && !session!.apiKey && !strongUntil(session!)) return sendReply(reply, await stepUpRefusal(session!), req, pathname);
           const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Body;
           const out = await route.handler({ session, gate, params, body, req, reply });
@@ -329,7 +330,12 @@ export async function createFastifyServer(modules: Modules, routes: Route[], isS
   }
 
   for (const route of routes) {
-    fastify.route({ method: route.method, url: route.pattern, handler: (req, reply) => dispatchRoute(route, req, reply) });
+    fastify.route({
+      method: route.method,
+      url: route.pattern,
+      ...(route.bodyLimit && { bodyLimit: route.bodyLimit }),
+      handler: (req, reply) => dispatchRoute(route, req, reply),
+    });
   }
   registerNotFound(fastify, routes);
   return fastify;

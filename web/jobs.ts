@@ -209,7 +209,7 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
         return job;
       }));
   }
-  const roleText = (role: GateRole) => (role === 'admin' ? 'admin' : 'read only');
+  const roleText = (role: GateRole) => (role === 'admin' ? 'admin' : role === 'editor' ? 'editor' : 'read only');
   /**
    * A new master code (with the DKS login): checked by a residents pull with it, and saved only when that succeeds.
    *

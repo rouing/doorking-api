@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Card, Flex, Heading, Link, Text } from '@radix-ui/themes';
 import type { CameraSettings, GateConfig as Config, GatePrefs, ResidentsReply } from '../../../src/types.ts';
-import { errorText, gateUrl, useReadOnly, type GateApi } from '../api.ts';
+import { errorText, gateUrl, useIsAdmin, useReadOnly, type GateApi } from '../api.ts';
 import { useConfirm } from '../Confirm.tsx';
 import { HelpTip } from '../HelpTip.tsx';
 import { CameraForm } from './CameraForm.tsx';
@@ -129,6 +129,7 @@ interface SystemSettingsProps {
 export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, user, emailEnabled, onReload, onSessionChange, onJobStarted }: SystemSettingsProps) {
   const settings = useGateSettings(gapi);
   const readOnly = useReadOnly();
+  const isAdmin = useIsAdmin();
   const reloadAll = async () => { await onReload(); await settings.load(); };
   const shared = (
     <>
@@ -151,6 +152,15 @@ export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, us
           {shared}
           <DeviceAssociation key={JSON.stringify(prefs.deviceAssociation)} prefs={prefs} gapi={gapi} onSaved={onReload} />
         </Flex></fieldset>
+      </Flex>
+    );
+  }
+  if (!isAdmin) {
+    return (
+      <Flex direction="column" gap="4">
+        <Heading>System Settings</Heading>
+        {shared}
+        <DeviceAssociation key={JSON.stringify(prefs.deviceAssociation)} prefs={prefs} gapi={gapi} onSaved={onReload} />
       </Flex>
     );
   }
