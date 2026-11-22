@@ -2095,6 +2095,72 @@ test('server: pull archive dedupes identical pulls, diffs against working copy, 
   assert.strictEqual(after.body.name, 'Smith, J');
 }));
 
+test('buildAccessAudit finds dormant credentials, unknown cards, entry-code frequency, and traffic stats', withStore(async (store) => {
+  await pullInto(store);
+  await dk.ensureCache(store, PHONE);
+  // Seed two transactions: card 00504 (belongs to 101 Smith, J) admitted, and unknown card 20000 admitted; 102 stays dormant.
+  const bcd = (n) => parseInt(String(n), 16);
+  const now = new Date();
+  const makeRec = (type, cardNum, admit) => {
+    const h = now.getHours() % 12 || 12;
+    const b = Buffer.from([bcd(now.getMonth() + 1), bcd(now.getDate()), bcd(h) | (now.getHours() >= 12 ? 0x20 : 0) | (admit ? 0x40 : 0), bcd(now.getMinutes()), type, 0, 0, 0, 0xff, 0xff]);
+    b.writeUInt16BE(cardNum, 5);
+    return b;
+  };
+  await dk.mergeTransactions(store, PHONE, Buffer.concat([makeRec(2, 504, true), makeRec(2, 20000, true), makeRec(2, 20000, false)]), now);
+  const audit = await dk.buildAccessAudit(store, PHONE, { days: 90, now: now.getTime() + 60000 });
+  assert.ok(audit.dormant.some((d) => d.directoryCode === '102'), '102 has an entry code with no recent use');
+  assert.ok(!audit.dormant.some((d) => d.directoryCode === '101'), '101 used card 00504 recently');
+  assert.strictEqual(audit.unknownCards.length, 1);
+  assert.deepStrictEqual([audit.unknownCards[0].cardNumber, audit.unknownCards[0].uses, audit.unknownCards[0].admits, audit.unknownCards[0].denies], ['20000', 2, 1, 1]);
+  assert.strictEqual(audit.traffic.admits, 2);
+  assert.strictEqual(audit.traffic.denies, 1);
+}));
+
+test('webhooks: SSRF URL blocking, HMAC-SHA256 signing, delivery, retry backoff, and cascade delete', withStore(async (store) => {
+  assert.throws(() => dk.checkWebhookUrl('http://example.com/hook'), /https/);
+  assert.throws(() => dk.checkWebhookUrl('https://127.0.0.1/hook'), /loopback/);
+  assert.throws(() => dk.checkWebhookUrl('https://169.254.169.254/latest/meta-data'), /loopback/);
+  const received = [];
+  let failNext = true;
+  const receiver = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      received.push({ headers: req.headers, body });
+      res.statusCode = failNext ? 500 : 200;
+      res.end('ok');
+    });
+  });
+  await new Promise((r) => receiver.listen(0, '127.0.0.1', r));
+  try {
+    const url = `http://127.0.0.1:${receiver.address().port}/hook`;
+    const { webhook, secret } = await dk.createWebhook(store, PHONE, { name: 'HA', url, events: ['relay.changed'] }, 'alice', true);
+    assert.ok(secret.startsWith('whsec_'));
+    assert.strictEqual(await dk.queueWebhookEvent(store, PHONE, 'pull.completed', {}), 0);
+    assert.strictEqual(await dk.queueWebhookEvent(store, PHONE, 'relay.changed', { relay: 1 }), 1);
+    // First delivery fails (500) -> stays queued for retry.
+    assert.deepStrictEqual(await dk.deliverQueuedWebhooks(store), { sent: 0, failed: 1 });
+    let deliveries = await dk.listWebhookDeliveries(store, PHONE);
+    assert.deepStrictEqual([deliveries[0].status, deliveries[0].attempts, deliveries[0].lastStatus], ['queued', 1, 500]);
+    // Second delivery succeeds (200) -> marked sent, valid HMAC signature.
+    failNext = false;
+    await dk.run(store, 'UPDATE webhook_deliveries SET next_try = now() - interval \'1 minute\'');
+    assert.deepStrictEqual(await dk.deliverQueuedWebhooks(store), { sent: 1, failed: 0 });
+    deliveries = await dk.listWebhookDeliveries(store, PHONE);
+    assert.strictEqual(deliveries[0].status, 'sent');
+    const last = received[received.length - 1];
+    assert.strictEqual(last.headers['x-doorking-event'], 'relay.changed');
+    assert.strictEqual(last.headers['x-doorking-signature'], dk.signWebhookPayload(secret, String(last.headers['x-doorking-timestamp']), last.body));
+    // Test ping works synchronously and delete cascades deliveries.
+    assert.strictEqual((await dk.sendTestWebhook(store, PHONE, webhook.id)).ok, true);
+    await dk.deleteWebhook(store, PHONE, webhook.id);
+    assert.deepStrictEqual(await dk.listWebhookDeliveries(store, PHONE), []);
+  } finally {
+    await new Promise((r) => receiver.close(r));
+  }
+}));
+
 test('server: sign-in, wrong passwords limited, and pages need a session', withServer(async ({ store, call }) => {
   await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
   assert.strictEqual((await call('GET', '/api/me')).status, 401);

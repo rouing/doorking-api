@@ -10,6 +10,7 @@ import { GateSettingsEditor } from './GateSettingsEditor.tsx';
 import { DeviceAssociation } from './LocalPrefs.tsx';
 import { useGateSettings } from './useGateSettings.ts';
 import { GateLoginCard, GateUsersCard, ApiKeysCard } from './GateAccess.tsx';
+import { WebhooksCard } from './Webhooks.tsx';
 
 interface DeleteGateDataProps {
   phone: string;
@@ -159,6 +160,7 @@ export function SystemSettings({ phone, gapi, prefs, defaults, list, cameras, us
       <GateLoginCard gapi={gapi} onJobStarted={onJobStarted} />
       <GateUsersCard gapi={gapi} me={user} emailEnabled={emailEnabled} onSessionChange={onSessionChange} />
       <ApiKeysCard phone={phone} gapi={gapi} />
+      <WebhooksCard gapi={gapi} />
       {shared}
       <WorkingCopyFiles phone={phone} available={Boolean(settings.reply)} />
       <DeviceAssociation key={JSON.stringify(prefs.deviceAssociation)} prefs={prefs} gapi={gapi} onSaved={onReload} />

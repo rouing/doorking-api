@@ -10,6 +10,7 @@ import { createEditing } from './editing.ts';
 import { createJobs } from './jobs.ts';
 import { createMail } from './mail.ts';
 import { createSnapshots } from './snapshots.ts';
+import { createWebhooks } from './webhooks.ts';
 import { accountRoutes } from './routes/account.ts';
 import { authRoutes } from './routes/auth.ts';
 import { camerasRoutes } from './routes/cameras.ts';
@@ -19,6 +20,7 @@ import { gatesRoutes } from './routes/gates.ts';
 import { relaysRoutes } from './routes/relays.ts';
 import { residentsRoutes } from './routes/residents.ts';
 import { schedulesRoutes } from './routes/schedules.ts';
+import { webhooksRoutes } from './routes/webhooks.ts';
 import { workingCopyRoutes } from './routes/working-copy.ts';
 import type { Route } from './routing.ts';
 
@@ -32,10 +34,11 @@ export function createModules(services: Services) {
   const context = createContext(services);
   const auth = createAuth(context);
   const mail = createMail(context);
+  const webhooks = createWebhooks(context);
   const editing = createEditing(context);
   const snapshots = createSnapshots({ ...context, ...editing });
-  const jobs = createJobs({ ...context, ...editing, ...mail, ...snapshots });
-  return { context, auth, mail, editing, snapshots, jobs };
+  const jobs = createJobs({ ...context, ...editing, ...mail, ...snapshots, ...webhooks });
+  return { context, auth, mail, webhooks, editing, snapshots, jobs };
 }
 
 export type Modules = ReturnType<typeof createModules>;
@@ -57,6 +60,7 @@ export function createRoutes(modules: Modules): Route[] {
     ...workingCopyRoutes(modules),
     ...relaysRoutes(modules),
     ...schedulesRoutes(modules),
+    ...webhooksRoutes(modules),
     ...camerasRoutes(modules),
   ];
 }

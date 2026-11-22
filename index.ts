@@ -25,6 +25,8 @@ export * from './src/audit.ts';
 export * from './src/schedules.ts';
 export * from './src/relay-timers.ts';
 export * from './src/pull-archive.ts';
+export * from './src/tx-audit.ts';
+export * from './src/webhooks.ts';
 export * from './src/camera-settings.ts';
 export * from './src/camera-log.ts';
 export * from './src/camera-runner.ts';

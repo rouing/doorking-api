@@ -8,8 +8,8 @@ Open work, unverified hardware tests, planned 10x features, and backlog items.
 - [x] **#12 Global quick-jump search (`Cmd/Ctrl+K`):** instant search modal across residents, vendors, cards, entry codes, phone numbers, notes, and recent transactions from anywhere inside an open gate.
 - [x] **#6 Timed "Safe Hold-Open" relay auto-release:** "Hold open for 15m / 30m / 1h / Until time" option with persisted PostgreSQL timer (`relay_timers`), live countdown, automatic `SetRelays` release with retries, and failure alert.
 - [x] **#15 Point-in-time pull archive & rollback:** keep the last N residents pulls in `gate_pull_archive` with compare and one-click restore to the working copy from History.
-- [ ] **#8 Access hygiene & "Ghost Card / Leaked Code" audit dashboard:** Insights/Audit page mining `tx_history` + `gate_residents` + `gate_cards` for dormant credentials (90/180/365d), active unassigned cards (with camera snapshots), high-frequency/leaked entry codes, and gate traffic/cycle counts.
-- [ ] **#9 Outbound webhooks & automation bridge:** per-gate HMAC-SHA256 signed webhooks backed by a retry outbox (`webhooks`, `webhook_deliveries`) firing on gate/transaction/relay/send/snapshot events.
+- [x] **#8 Access hygiene & "Ghost Card / Leaked Code" audit dashboard:** Insights/Audit page mining `tx_history` + `gate_residents` + `gate_cards` for dormant credentials (90/180/365d), active unassigned cards (with camera snapshots), high-frequency/leaked entry codes, and gate traffic/cycle counts.
+- [x] **#9 Outbound webhooks & automation bridge:** per-gate HMAC-SHA256 signed webhooks backed by a retry outbox (`webhooks`, `webhook_deliveries`) firing on gate/transaction/relay/send/snapshot events.
 - [ ] **#10 Maker-checker (`editor` role) & bulk operations:** multi-select bulk actions on Residents/Vendors (bulk security level, disable, delete, CSV import preview) plus an `editor` role that can modify the working copy while `gate-admin` approves and sends to the gate.
 
 ## Later / Backlog (10x ideas for after the planned set)

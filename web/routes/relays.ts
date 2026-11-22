@@ -19,6 +19,7 @@ export function relaysRoutes(modules: Modules): Route[] {
   const { client, prefsOf, store } = modules.context;
   const { commandRelays, liveRelays } = modules.editing;
   const { withAccount } = modules.jobs;
+  const { emitWebhook } = modules.webhooks;
   return [
     // Live relays: GET reads the current state (GetRelays) plus active auto-release timers.
     // PUT { '0'|'1'|'2': boolean, holdMinutes?: 1-1440, releaseAt?: ISO } sets relays Active/Inactive (SetRelays).
@@ -66,6 +67,7 @@ export function relaysRoutes(modules: Modules): Route[] {
           else await dk.clearRelayTimer(store, gate.phoneNumber, relayNum);
         }
         await record('done');
+        emitWebhook(gate.phoneNumber, 'relay.changed', { actor: session.user, desired, releaseAt: releaseAt?.toISOString() || null });
         return [200, { checkedAt: new Date(), ...out, timers: await dk.listRelayTimers(store, gate.phoneNumber) }];
       });
     }),

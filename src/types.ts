@@ -323,5 +323,91 @@ export interface PullArchiveEntry {
   cardsCount: number;
 }
 
+/** Dormant resident/vendor credential from the access audit dashboard. */
+export interface DormantEntry {
+  directoryCode: string;
+  name: string;
+  type: string;
+  entryCode: string;
+  cards: string[];
+  lastSeen: string | null;
+  totalEvents: number;
+}
+
+/** Unassigned card observed in `tx_history`. */
+export interface UnknownCardActivity {
+  cardNumber: string;
+  uses: number;
+  admits: number;
+  denies: number;
+  lastSeen: string;
+  lastMinute: string;
+  hasSnapshot: boolean;
+}
+
+/** Entry code usage stats (high-frequency / off-hours detection). */
+export interface EntryCodeUsage {
+  entryCode: string;
+  directoryCode: string;
+  name: string;
+  type: string;
+  uses: number;
+  distinctDays: number;
+  offHoursUses: number;
+  lastSeen: string;
+  flagged: boolean;
+}
+
+/** Response from `GET /api/gates/:phone/audit`. */
+export interface AccessAuditReply {
+  days: number;
+  dormant: DormantEntry[];
+  unknownCards: UnknownCardActivity[];
+  entryCodes: EntryCodeUsage[];
+  traffic: {
+    totalEvents: number;
+    admits: number;
+    denies: number;
+    holds: number;
+    openCycles: number;
+    byHour: number[];
+    byDay: { date: string; admits: number; denies: number }[];
+  };
+}
+
+export type WebhookEvent =
+  | 'pull.completed'
+  | 'send.completed'
+  | 'send.failed'
+  | 'relay.changed'
+  | 'snapshot.saved'
+  | 'transaction.admit'
+  | 'transaction.deny'
+  | 'gate.hold';
+
+/** Configured outbound webhook (signing secret never returned after creation). */
+export interface WebhookInfo {
+  id: string;
+  name: string;
+  url: string;
+  events: WebhookEvent[];
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** One outbound webhook delivery log entry. */
+export interface WebhookDelivery {
+  id: number;
+  webhookId: string;
+  event: string;
+  status: 'queued' | 'sent' | 'failed';
+  attempts: number;
+  lastStatus: number | null;
+  lastError: string | null;
+  createdAt: string;
+  sentAt: string | null;
+}
+
 
 export interface ApiError { error: string }

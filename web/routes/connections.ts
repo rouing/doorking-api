@@ -14,6 +14,7 @@ import { G, type Route, route } from '../routing.ts';
  * @returns Registered route definitions for this area.
  */
 export function connectionsRoutes(modules: Modules): Route[] {
+  const { store } = modules.context;
   const { gateData, TX_PAGE, TX_PAGE_MAX, workingCopyDiff } = modules.editing;
   const { accountBusy, busy, currentJob, prepareGateSend, startPull, startSend } = modules.jobs;
   return [
@@ -51,6 +52,14 @@ export function connectionsRoutes(modules: Modules): Route[] {
         return [400, { error: `limit must be 1-${TX_PAGE_MAX} and before a positive whole number` }];
       }
       return [200, await gateData(gate.phoneNumber, { before, limit })];
+    }),
+
+    // Access hygiene & traffic audit over the last ?days= (30-730, default 90).
+    route('GET', `${G}/audit`, 'gate', async ({ gate, req }) => {
+      const query = req.query as Record<string, string | undefined>;
+      const days = query.days !== undefined ? Number(query.days) : 90;
+      if (!Number.isInteger(days) || days < 1 || days > 730) return [400, { error: 'days must be 1-730' }];
+      return [200, await dk.buildAccessAudit(store, gate.phoneNumber, { days })];
     }),
   ];
 }

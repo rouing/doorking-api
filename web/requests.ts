@@ -54,6 +54,7 @@ const STEP_UP = [
   `POST ${G}/send`, `POST ${G}/schedules`, `PUT ${G}/schedules/:id`, `POST ${G}/schedules/:id/run`,
   `PUT ${G}/login`, `POST ${G}/users`, `POST ${G}/users/:username/invite`, `POST ${G}/share`, `PUT ${G}/users/:username`,
   `DELETE ${G}/users/:username`, `POST ${G}/api-keys`, `DELETE ${G}/api-keys/:id`, `POST ${G}/delete-data`,
+  `POST ${G}/webhooks`, `PUT ${G}/webhooks/:id`, `DELETE ${G}/webhooks/:id`,
   'POST /api/me/sso/start', 'DELETE /api/me/sso/:provider/:subject', 'POST /api/me/passkeys/approval',
 ];
 

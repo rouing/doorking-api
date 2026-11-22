@@ -60,7 +60,7 @@ export class Application {
    */
   async stop(reason = 'stop'): Promise<void> {
     if (!this.modules || this.stopping) return;
-    const { context, jobs, mail, snapshots } = this.modules;
+    const { context, jobs, mail, snapshots, webhooks } = this.modules;
     this.stopping = true;
     const running = jobs.runningJobs().map((job) => `${job.what} of gate ${job.phoneNumber}`).join(', ');
     logger('server').info`${reason}: shutting down${running ? `, waiting for the running ${running}` : ''}`;
@@ -76,7 +76,7 @@ export class Application {
       logger('server').warn`Stopped without waiting longer for the ${still || 'scheduled transfer'}`;
     }
     context.cameras.stopAll();
-    await Promise.race([mail.mailIdle(), new Promise((resolve) => { setTimeout(resolve, Math.max(0, until - Date.now())).unref(); })]);
+    await Promise.race([Promise.all([mail.mailIdle(), webhooks.webhooksIdle()]), new Promise((resolve) => { setTimeout(resolve, Math.max(0, until - Date.now())).unref(); })]);
     this.fastify?.server.closeAllConnections();
     await this.fastify?.close().catch(() => {});
     await dk.closeStore(this.store!).catch(context.logged('server', 'Database not closed'));
@@ -121,16 +121,19 @@ export class Application {
     const { logged, store } = modules.context;
     const { checkSchedules, SCHEDULE_TICK_MS } = modules.jobs;
     const { sendEmails } = modules.mail;
+    const { deliverWebhooks } = modules.webhooks;
     const { SNAPSHOT_TIDY_MS, tidyAllSnapshots } = modules.snapshots;
     const { sweepSessions } = modules.auth;
     const tidy = () => { tidyAllSnapshots().catch(logged('camera', 'Snapshot clean-up failed')); };
     checkSchedules();
     sendEmails();
+    deliverWebhooks();
     tidy();
     this.timers = [
       setInterval(checkSchedules, SCHEDULE_TICK_MS),
       setInterval(sweepSessions, 60000),
       setInterval(sendEmails, 30000),
+      setInterval(deliverWebhooks, 30000),
       setInterval(() => { dk.deleteExpiredTokens(store).catch(logged('session', 'Expired link clean-up failed')); }, 3600000),
       setInterval(tidy, SNAPSHOT_TIDY_MS),
     ];

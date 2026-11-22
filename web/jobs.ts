@@ -15,6 +15,7 @@ import type { ContextModule } from './context.ts';
 import type { EditingModule } from './editing.ts';
 import type { MailModule } from './mail.ts';
 import type { SnapshotsModule } from './snapshots.ts';
+import type { WebhooksModule } from './webhooks.ts';
 import { logger } from '../src/logging.ts';
 
 type PreparedSend = Awaited<ReturnType<typeof dk.prepareSend>> & { counts: number[] };
@@ -126,8 +127,8 @@ type Connections = ReturnType<typeof createConnections>;
  * @param connections - `Connections` value.
  * @returns Operation result.
  */
-function createTransfers(deps: ContextModule & EditingModule & MailModule & SnapshotsModule, connections: Connections) {
-  const { client, defaults, GATE_CONFIG_KEYS, gateAlert, logged, prefsOf, queueSnapshots, refuseDuplicates, serial, store } = deps;
+function createTransfers(deps: ContextModule & EditingModule & MailModule & SnapshotsModule & WebhooksModule, connections: Connections) {
+  const { client, defaults, emitWebhook, GATE_CONFIG_KEYS, gateAlert, logged, prefsOf, queueSnapshots, refuseDuplicates, serial, store } = deps;
   const { jobs, accountOf, isStopping } = connections;
   /**
    * The gate-match config lives in the gate-scoped prefs (keyed by phone number), set under System Settings.
@@ -197,6 +198,8 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
         if (what === 'send' && job.state === 'failed' && !info.scheduled) {
           await gateAlert(gate.phoneNumber, 'Send to gate failed', `Started by ${gate.actor}. Error: ${job.error}`).catch(logged('email', 'Gate alert not sent'));
         }
+        if (what === 'send') emitWebhook(gate.phoneNumber, job.state === 'done' ? 'send.completed' : 'send.failed', { actor: gate.actor, scheduled: Boolean(info.scheduled), error: job.error || null });
+        else if (job.state === 'done') emitWebhook(gate.phoneNumber, 'pull.completed', { what, actor: gate.actor, scheduled: Boolean(info.scheduled) });
         const { adding, ...rest } = info;
         const action = what === 'send' ? 'send' : 'pull';
         const summary = `${what === 'send' ? 'Sent working copy to gate' : `Pulled ${what}`}${info.scheduled ? ' (scheduled)' : ''}${adding ? ' (gate added)' : ''}`;
@@ -597,7 +600,7 @@ function createScheduler(deps: ContextModule & SnapshotsModule & MailModule, con
  * @param deps - Injected module dependencies.
  * @returns Operation result.
  */
-export function createJobs(deps: ContextModule & EditingModule & MailModule & SnapshotsModule) {
+export function createJobs(deps: ContextModule & EditingModule & MailModule & SnapshotsModule & WebhooksModule) {
   const connections = createConnections(deps);
   const transfers = createTransfers(deps, connections);
   const scheduler = createScheduler(deps, connections, transfers);

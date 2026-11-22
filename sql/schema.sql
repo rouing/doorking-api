@@ -96,6 +96,15 @@ CREATE TABLE IF NOT EXISTS gate_pull_archive (id BIGINT GENERATED ALWAYS AS IDEN
   residents_count INTEGER NOT NULL, cards_count INTEGER NOT NULL,
   names_bin BYTEA NOT NULL, phone_bin BYTEA NOT NULL, cards_bin BYTEA NOT NULL);
 CREATE INDEX IF NOT EXISTS gate_pull_archive_phone ON gate_pull_archive (phone, id DESC);
+CREATE TABLE IF NOT EXISTS webhooks (id TEXT PRIMARY KEY, phone TEXT NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL,
+  secret TEXT NOT NULL, events JSONB NOT NULL, enabled BOOLEAN NOT NULL DEFAULT true, created_by TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL);
+CREATE INDEX IF NOT EXISTS webhooks_phone ON webhooks (phone);
+CREATE TABLE IF NOT EXISTS webhook_deliveries (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  webhook_id TEXT NOT NULL REFERENCES webhooks ON DELETE CASCADE, phone TEXT NOT NULL, event TEXT NOT NULL,
+  payload TEXT, status TEXT NOT NULL CHECK (status IN ('queued', 'sent', 'failed')), attempts INTEGER NOT NULL,
+  next_try TIMESTAMPTZ NOT NULL, last_status INTEGER, last_error TEXT, created_at TIMESTAMPTZ NOT NULL, sent_at TIMESTAMPTZ);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_due ON webhook_deliveries (status, next_try);
 
 -- Upgrades of databases made before these columns existed.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS webauthn_id TEXT;

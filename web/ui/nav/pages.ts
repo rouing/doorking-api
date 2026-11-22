@@ -1,6 +1,7 @@
 /** The gate's pages, in sidebar order. */
 export const NAV = [
   { key: 'residents', label: 'Residents' }, { key: 'vendors', label: 'Vendors' }, { key: 'transactions', label: 'Transactions' },
+  { key: 'audit', label: 'Insights' },
   { section: 'System' },
   { key: 'display', label: 'Display' }, { key: 'relays', label: 'Relays' }, { key: 'holdOpen', label: 'Hold Open' },
   { key: 'holidays', label: 'Holidays' }, { key: 'security', label: 'Security Levels' }, { key: 'facility', label: 'Facility Codes' },

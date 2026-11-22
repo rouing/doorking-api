@@ -2475,6 +2475,29 @@
           }
         }
       }
+    },
+    "/api/gates/{phone}/audit": {
+      "get": {
+        "tags": [
+          "Transactions"
+        ],
+        "summary": "Access hygiene and traffic audit",
+        "x-role": "readonly",
+        "description": "Returns dormant credentials, active unknown cards, high-frequency entry codes, and traffic statistics over the last `days` (1-730, default 90).\n\n**Read-only or admin key.**",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/auditDays"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Access audit summary."
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2606,6 +2629,18 @@
         "schema": {
           "type": "integer",
           "minimum": 1
+        }
+      },
+      "auditDays": {
+        "name": "days",
+        "in": "query",
+        "required": false,
+        "description": "Look-back window in days (1-730, default 90).",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 730,
+          "default": 90
         }
       }
     },

@@ -20,6 +20,7 @@ import { pageShown, type NavKey } from './nav/pages.ts';
 import { GateSheet, PhoneMenu, PhoneTabBar, PhoneTopBar } from './nav/PhoneNav.tsx';
 import { QuickJump } from './nav/QuickJump.tsx';
 import { SidebarItems } from './nav/SidebarItems.tsx';
+import { Audit } from './panes/Audit.tsx';
 import { History } from './panes/History.tsx';
 import { Schedules } from './panes/Schedules.tsx';
 import { ApbPage } from './settings/ApbPage.tsx';
@@ -135,6 +136,8 @@ export function GateApp({ session, gate, onChange }: GateAppProps) {
     vendors: () => directory('vendors'),
     transactions: () => <Transactions tx={data?.transactions ?? null} onLoadOlder={loadOlder} residents={residents?.rows ?? []}
       onOpenResident={openResident} snaps={snaps} onOpenSnap={setViewing} />,
+    audit: () => <Audit gapi={gapi} residents={residents?.rows ?? []} transactions={data?.transactions?.rows ?? []}
+      onOpenResident={openResident} onOpenSnap={setViewing} />,
     history: () => <History gapi={gapi} onReverted={loadData} />,
     schedules: () => <Schedules gapi={gapi} video={snaps.video} />,
     prefs: () => <SystemSettings phone={gate.phoneNumber} gapi={gapi} prefs={prefs} defaults={session.defaults} list={residents}

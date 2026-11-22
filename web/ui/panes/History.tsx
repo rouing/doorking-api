@@ -6,7 +6,7 @@ import { useConfirm } from '../Confirm.tsx';
 import { fmtTime } from '../format.ts';
 
 export const ACTIONS: Record<string, string> = { change: 'Change', revert: 'Revert', pull: 'Pull', send: 'Send', relay: 'Relay', camera: 'Camera',
-  access: 'Users', login: 'Gate login', apikey: 'API key', note: 'Note' };
+  access: 'Users', login: 'Gate login', apikey: 'API key', webhook: 'Webhook', note: 'Note' };
 
 interface HistoryProps {
   gapi: GateApi;
