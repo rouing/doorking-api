@@ -7,6 +7,7 @@
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import ipaddr from 'ipaddr.js';
 import { all, decrypt, encrypt, one, phoneDigits, run, type Store } from './db.ts';
 import { httpError } from './errors.ts';
 import type { WebhookDelivery, WebhookEvent, WebhookInfo } from './types.ts';
@@ -56,32 +57,13 @@ const fromDeliveryRow = (row: DeliveryRow): WebhookDelivery => ({
 });
 
 /**
- * Returns true if `ip` is a loopback, link-local, RFC 1918 private LAN, CGNAT, ULA, multicast, or unspecified address
- * (including IPv4-mapped IPv6 addresses like `::ffff:127.0.0.1` or `::ffff:7f00:1`).
+ * Returns true if `raw` is a non-unicast IPv4/IPv6 address (loopback, link-local, RFC 1918 private LAN, CGNAT,
+ * ULA, multicast, unspecified, reserved, or IPv4-mapped IPv6 targeting any of the above), via `ipaddr.js`.
  */
 export function isBlockedIp(raw: string): boolean {
-  const ip = raw.trim().replace(/^\[|\]$/g, '').toLowerCase();
-  const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
-  if (mappedHex) {
-    const hi = parseInt(mappedHex[1], 16);
-    const lo = parseInt(mappedHex[2], 16);
-    return isBlockedIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-  }
-  const mappedV4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
-  if (mappedV4) return isBlockedIp(mappedV4[1]);
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
-    return a === 0 || a === 10 || a === 127
-      || (a === 100 && b >= 64 && b <= 127)
-      || (a === 169 && b === 254)
-      || (a === 172 && b >= 16 && b <= 31)
-      || (a === 192 && b === 168)
-      || a >= 224;
-  }
-  if (net.isIPv6(ip)) {
-    return ip === '::' || ip === '::1' || /^(fc|fd|fe[89ab]|ff)/.test(ip);
-  }
-  return false;
+  const ip = raw.trim().replace(/^\[|\]$/g, '');
+  if (!ipaddr.isValid(ip)) return false;
+  return ipaddr.process(ip).range() !== 'unicast';
 }
 
 const BLOCKED_HOSTNAME_RE = /^(localhost|.*\.localhost|.*\.local|.*\.internal)$/i;

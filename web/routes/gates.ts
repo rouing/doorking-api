@@ -182,9 +182,10 @@ export function gatesRoutes(modules: Modules): Route[] {
     // 30, 90, 365) } creates one and returns it once as `key`; DELETE revokes one at once.
     webOnly(route('GET', `${G}/api-keys`, 'gate-admin', async ({ gate }) => [200, { apiKeys: await dk.listApiKeys(store, gate.phoneNumber) }])),
     webOnly(route('POST', `${G}/api-keys`, 'gate-admin', async ({ session, gate, body }) => {
-      const out = await dk.createApiKey(store, gate.phoneNumber, { name: body.name, role: body.role || 'readonly', expiresDays: body.expiresDays }, session.user);
-      await dk.addEvent(store, gate.phoneNumber, { user: session.user, action: 'apikey', summary: `Created API key "${out.apiKey.name}" (${roleText(out.apiKey.role)})` });
-      logger('api').info`Gate ${gate.phoneNumber}: API key ${out.apiKey.id} "${out.apiKey.name}" (${out.apiKey.role}) created by ${session.user}`;
+      const out = await dk.createApiKey(store, gate.phoneNumber, { name: body.name, role: body.role || 'readonly', expiresDays: body.expiresDays, scopes: body.scopes }, session.user);
+      const scopeSuffix = out.apiKey.scopes ? `, scopes: ${out.apiKey.scopes.join(', ')}` : '';
+      await dk.addEvent(store, gate.phoneNumber, { user: session.user, action: 'apikey', summary: `Created API key "${out.apiKey.name}" (${roleText(out.apiKey.role)}${scopeSuffix})` });
+      logger('api').info`Gate ${gate.phoneNumber}: API key ${out.apiKey.id} "${out.apiKey.name}" (${out.apiKey.role}${scopeSuffix}) created by ${session.user}`;
       return [201, out];
     })),
     webOnly(route('DELETE', `${G}/api-keys/:id`, 'gate-admin', async ({ session, gate, params }) => {

@@ -262,6 +262,13 @@ test('applyShownRule: residents are shown only with a name and a phone number; v
   assert.strictEqual(pointer(shown.names), 0xf80 + 2 * 20);
   assert.strictEqual(flag(applyShownRule(start, '300'), '300'), 0x00); // Adams has no phone
   assert.strictEqual(applyShownRule(start, '777'), start); // unknown code: unchanged
+  // Explicit hidden toggle (preserveHidden: true) lets a resident with a name & phone stay hidden, while missing phone still forces hidden.
+  const explicitHidden = applyShownRule(applyResidentEdit(back, { directoryCode: '701', hidden: true }), '701', { preserveHidden: true });
+  assert.strictEqual(flag(explicitHidden, '701'), 0x00);
+  const explicitShown = applyShownRule(applyResidentEdit(explicitHidden, { directoryCode: '701', hidden: false }), '701', { preserveHidden: true });
+  assert.strictEqual(flag(explicitShown, '701'), 0x20);
+  const cannotShowWithoutPhone = applyShownRule(applyResidentEdit(noPhone, { directoryCode: '701', hidden: false }), '701', { preserveHidden: true });
+  assert.strictEqual(flag(cannotShowWithoutPhone, '701'), 0x00);
 });
 
 test('tidyBoard: directory in DoorKing order (stable for ties), cards sorted and packed, unused area codes cleared', () => {

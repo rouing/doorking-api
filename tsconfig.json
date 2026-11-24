@@ -13,7 +13,6 @@
     "checkJs": false,
     "skipLibCheck": true
   },
-  "files": ["web/ui/vite.config.mts"],
-  "include": ["src", "web/*.ts", "*.ts"],
-  "exclude": ["node_modules", "web/ui", "web/dist"]
+  "include": ["src", "web/*.ts", "web/routes/*.ts", "*.ts"],
+  "exclude": ["node_modules"]
 }

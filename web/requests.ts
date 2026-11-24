@@ -1,11 +1,10 @@
 /**
  * @module web/requests
  *
- * Fastify HTTP server: registers `@fastify/cookie`, `@fastify/helmet`, `@fastify/static`, the built SPA and the
- * REST API routes (`web/routes/`), checking host, origin, session or API key, role and step-up on every request.
+ * Headless Fastify REST API server: registers `@fastify/cookie`, `@fastify/helmet`, `@fastify/static` (for file
+ * downloads/docs/snapshots via `reply.sendFile`), and the REST API routes (`web/routes/`), checking host, origin,
+ * session or API key, role, granular API key scopes, and step-up on every request.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
@@ -18,33 +17,7 @@ import { G, type Route } from './routing.ts';
 import type { Modules } from './modules.ts';
 import { logger } from '../src/logging.ts';
 
-/** Built web UI directory (produced by `npm run build`). */
-const DIST = path.join(import.meta.dirname, 'dist');
-const ASSET_TYPES: Record<string, string> = {
-  '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2',
-  '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.html': 'text/html',
-};
 const SERVER_FAULT = 'Something went wrong on the server. Try again; if it keeps happening, the server log has the details.';
-const NOT_BUILT = 'The web page is not built yet. Run `npm run build` in the project folder, then reload.';
-
-/**
- * Resolves a static web-UI URL path to `[filePath, mimeType]`, or `null` when disallowed or not built.
- *
- * @param pathname - URL pathname (e.g. `/` or `/assets/index-abc.js`).
- * @returns `[filePath, contentType]` tuple, or `null`.
- */
-export function staticFile(pathname: string): [string, string] | null {
-  if (pathname === '/') {
-    const built = path.join(DIST, 'index.html');
-    return fs.existsSync(built) ? [built, 'text/html'] : null;
-  }
-  // /assets/<file>, or a file at the top of the build (the app's service worker, manifest and icons, from web/ui/public).
-  const match = /^\/((?:assets\/)?[\w-][\w.-]*)$/.exec(pathname);
-  const type = match && ASSET_TYPES[path.extname(match[1])];
-  if (!match || !type) return null;
-  const file = path.join(DIST, match[1]);
-  return fs.existsSync(file) ? [file, type] : null;
-}
 
 /**
  * Routes requiring a recent passkey confirmation (`security.stepUpMinutes`) for browser sessions.
@@ -166,15 +139,6 @@ function registerNotFound(fastify: FastifyInstance, routes: Route[]): void {
   }));
   fastify.setNotFoundHandler((req, reply) => {
     const pathname = req.url.split('?')[0];
-    if (req.method === 'GET' || req.method === 'HEAD') {
-      const page = staticFile(pathname);
-      if (page) {
-        const relativePath = path.relative(DIST, page[0]);
-        return reply.type(page[1]).sendFile(relativePath, DIST, pathname.startsWith('/assets/')
-          ? { maxAge: 31536000000, immutable: true } : { cacheControl: false });
-      }
-      if (pathname === '/') return reply.code(503).type('text/plain').send(NOT_BUILT);
-    }
     const allow = routeMatchers.filter((matcher) => matcher.re.test(pathname)).map((matcher) => matcher.method);
     if (allow.length && !allow.includes(req.method as Route['method'])) {
       return reply.header('Allow', allow.join(', ')).code(405).send({ error: 'Method not allowed' });
@@ -257,10 +221,17 @@ export async function createFastifyServer(modules: Modules, routes: Route[], isS
       logger('api').warn`${req.method} ${pathname}: refused, ${bearer ? 'invalid or expired API key' : 'not a Bearer token'}`;
       return [401, { error: bearer ? 'Invalid or expired API key' : 'Use the header Authorization: Bearer <API key>' }];
     }
-    if (!route.scope.startsWith('gate') || route.webOnly || String(params.phone || '').replace(/\D/g, '') !== apiKey.phone) {
+    const isKeyInfo = route.method === 'GET' && route.pattern === '/api/key-info';
+    if (!isKeyInfo && (!route.scope.startsWith('gate') || route.webOnly || String(params.phone || '').replace(/\D/g, '') !== apiKey.phone)) {
       return [403, { error: `This API key works only on /api/gates/${apiKey.phone}/… (gate login, users, API keys and deleting data are web-only)` }];
     }
-    return { tokenHash: '', user: `api:${apiKey.name}`, gate: null, mustChangePassword: false, strongAt: null, signedInAt: 0, apiKey: { phone: apiKey.phone, role: apiKey.role } };
+    if (!isKeyInfo && apiKey.scopes) {
+      const required = dk.requiredApiKeyScope(route.method, route.pattern);
+      if (required && !apiKey.scopes.includes(required)) {
+        return [403, { error: `This API key does not have the required "${required}" scope` }];
+      }
+    }
+    return { tokenHash: '', user: `api:${apiKey.name}`, gate: null, mustChangePassword: false, strongAt: null, signedInAt: 0, apiKey: { phone: apiKey.phone, role: apiKey.role, scopes: apiKey.scopes } };
   }
 
   /**

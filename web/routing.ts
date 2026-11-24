@@ -4,6 +4,8 @@
  * Route table types and helpers (registered on Fastify by web/requests.ts).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { z } from 'zod';
+import { httpError } from '../src/errors.ts';
 import type { Body, Gate, Reply, Session } from './context.ts';
 
 /**
@@ -49,3 +51,12 @@ export function route<S extends Scope>(method: HttpMethod, pattern: string, scop
 }
 
 export const G = '/api/gates/:phone';
+
+/** Validates a request body or query object with Zod, throwing HTTP 400 with the first issue message on failure. */
+export function parseInput<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const result = schema.safeParse(raw);
+  if (!result.success) {
+    throw httpError(result.error.issues[0]?.message || 'Invalid request payload', 400);
+  }
+  return result.data;
+}

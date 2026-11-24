@@ -24,10 +24,27 @@ gate.example.com {
 		-Server
 	}
 
-	# Use 127.0.0.1:8080 when Caddy runs on the host (bare-metal or Docker Compose port publish),
-	# or app:8080 if Caddy runs as a container on the same Docker network.
-	reverse_proxy 127.0.0.1:8080 {
-		# Required for live camera MJPEG streaming (disables response buffering).
-		flush_interval -1
+	@api path /api /api/* /.well-known/* /download /help
+	handle @api {
+		# Use 127.0.0.1:8080 when Caddy runs on the host (bare-metal or Docker Compose port publish),
+		# or api:8080 if Caddy runs as a container on the same Docker network.
+		reverse_proxy 127.0.0.1:8080 {
+			# Required for live camera MJPEG streaming (disables response buffering).
+			flush_interval -1
+		}
+	}
+
+	# Static web-ui bundle (built from web-ui/ into /var/www/doorking-web-ui).
+	handle {
+		root * /var/www/doorking-web-ui
+		header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+		@manifest path /manifest.webmanifest
+		header @manifest Content-Type "application/manifest+json; charset=utf-8"
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		@shell not path /assets/*
+		header @shell Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
 	}
 }

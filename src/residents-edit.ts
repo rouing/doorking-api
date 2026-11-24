@@ -501,14 +501,19 @@ function floorByteOf(value: unknown): number {
  * @param directoryCode - Directory code (with or without leading zeros).
  * @returns `BoardBuffers` result.
  */
-export function applyShownRule(buffers: BoardBuffers, directoryCode: string): BoardBuffers {
+export function applyShownRule(
+  buffers: BoardBuffers,
+  directoryCode: string,
+  { preserveHidden = false }: { preserveHidden?: boolean } = {},
+): BoardBuffers {
   const names = Buffer.from(buffers.names);
   const code = dirCode(names, directoryCode);
   const entry = findNamesEntry(names, code);
   const phoneOffset = findPhoneRecord(buffers.phone, code);
   if (entry === null || phoneOffset === null) return buffers;
   const { phone } = readPhoneFields(buffers.phone.subarray(phoneOffset, phoneOffset + PHONE_RECORD_SIZE), phoneMode(names));
-  const shown = !(names[entry + 15] & 0x01) && names.toString('latin1', entry, entry + 15).trim() !== '' && phone != null;
+  const canShow = !(names[entry + 15] & 0x01) && names.toString('latin1', entry, entry + 15).trim() !== '' && phone != null;
+  const shown = preserveHidden ? (canShow && Boolean(names[entry + 15] & 0x20)) : canShow;
   names[entry + 15] = shown ? names[entry + 15] | 0x20 : names[entry + 15] & ~0x20;
   return withPointer(buffers.names, { ...buffers, names });
 }

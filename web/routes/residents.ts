@@ -3,10 +3,11 @@
  *
  * Residents and vendors in the working copy: single CRUD, bulk actions, and CSV import with dry-run preview.
  */
+import { z } from 'zod';
 import * as dk from '../../index.ts';
 import type { BoardBuffers, ResidentEdit } from '../../src/residents-edit.ts';
 import type { Modules } from '../modules.ts';
-import { G, type Route, route, webOnly } from '../routing.ts';
+import { G, parseInput, type Route, route, webOnly } from '../routing.ts';
 
 const MAX_BULK = 500;
 
@@ -122,15 +123,19 @@ export function residentsRoutes(modules: Modules): Route[] {
     }),
 
     route('POST', `${G}/residents`, 'gate-editor', async ({ session, gate, body }) => {
+      const isVendor = body.vendor === true || String(body.type ?? '').toLowerCase() === 'vendor';
       const out = await withHistory(session, gate,
-        { summary: `Added ${body.vendor ? 'vendor' : 'resident'} ${body.directoryCode}` }, async (ctx) => {
+        { summary: `Added ${isVendor ? 'vendor' : 'resident'} ${body.directoryCode}` }, async (ctx) => {
           dk.checkName(body.name);
           const opts = await editOpts(gate);
-          const { hidden: _hidden, email: _email, portalEnabled: _portal, ...fields } = body;
-          const [, saved] = await applyToCache(gate.phoneNumber, (bufs) => dk.tidyBoard(dk.applyShownRule(dk.addEntry(bufs, fields, opts), String(body.directoryCode ?? ''))), ctx);
+          const { email: _email, portalEnabled: _portal, type: _type, ...fields } = body;
+          const preserveHidden = typeof body.hidden === 'boolean';
+          const [, saved] = await applyToCache(gate.phoneNumber, (bufs) => dk.tidyBoard(
+            dk.applyShownRule(dk.addEntry(bufs, { ...fields, vendor: isVendor }, opts), String(body.directoryCode ?? ''), { preserveHidden }),
+          ), ctx);
           return [201, saved];
         });
-      if (out[0] < 300 && !body.vendor) {
+      if (out[0] < 300 && !isVendor) {
         const portal = await applyPortalUpdate(gate.phoneNumber, String(body.directoryCode ?? ''), body, session.user);
         if (portal) return [out[0], { ...(out[1] as object), portal }];
       }
@@ -140,20 +145,31 @@ export function residentsRoutes(modules: Modules): Route[] {
     // Bulk action on selected directory codes in one History entry and one tidyBoard pass.
     // Body: { action: 'setSecurityLevel' | 'delete' | 'removeCode', codes: string[], securityLevel?: number }.
     route('POST', `${G}/residents/bulk`, 'gate-editor', async ({ session, gate, body }) => {
-      const rawAction = String(body.action || '');
-      if (rawAction !== 'setSecurityLevel' && rawAction !== 'delete' && rawAction !== 'removeCode') {
-        return [400, { error: 'action must be setSecurityLevel, delete or removeCode' }];
-      }
-      const action: BulkAction = rawAction;
-      if (!Array.isArray(body.codes) || !body.codes.length || body.codes.length > MAX_BULK) {
-        return [400, { error: `codes must be a list of 1-${MAX_BULK} directory codes` }];
-      }
+      const parsed = parseInput(
+        z.object({
+          action: z.enum(['setSecurityLevel', 'delete', 'removeCode'], { message: 'action must be setSecurityLevel, delete or removeCode' }),
+          codes: z.array(z.unknown(), { message: `codes must be a list of 1-${MAX_BULK} directory codes` })
+            .min(1, `codes must be a list of 1-${MAX_BULK} directory codes`)
+            .max(MAX_BULK, `codes must be a list of 1-${MAX_BULK} directory codes`),
+          securityLevel: z.unknown().optional(),
+        }),
+        body,
+      );
+      const action: BulkAction = parsed.action;
       const digits = dk.namesDirDigits((await dk.readCacheFile(store, gate.phoneNumber, 'names.bin')).data);
-      const codes = [...new Set(body.codes.map((c) => String(c ?? '').trim().padStart(digits, '0')))];
-      const level = action === 'setSecurityLevel' ? Number(body.securityLevel) : undefined;
-      if (action === 'setSecurityLevel' && (!Number.isInteger(level) || level! < 0 || level! > 30)) {
-        return [400, { error: 'securityLevel must be a whole number from 0 to 30' }];
-      }
+      const codes = [...new Set(parsed.codes.map((c) => String(c ?? '').trim().padStart(digits, '0')))];
+      const level = action === 'setSecurityLevel'
+        ? parseInput(
+            z.preprocess(
+              (v) => Number(v),
+              z.number({ message: 'securityLevel must be a whole number from 0 to 30' })
+                .int('securityLevel must be a whole number from 0 to 30')
+                .min(0, 'securityLevel must be a whole number from 0 to 30')
+                .max(30, 'securityLevel must be a whole number from 0 to 30'),
+            ),
+            parsed.securityLevel,
+          )
+        : undefined;
       const summary = action === 'setSecurityLevel'
         ? `Bulk set security level ${level} on ${codes.length} entries`
         : action === 'delete' ? `Bulk deleted ${codes.length} entries` : `Bulk removed ${codes.length} directory codes`;
@@ -183,12 +199,17 @@ export function residentsRoutes(modules: Modules): Route[] {
     // Bulk CSV / JSON import of residents/vendors: { rows: [...], dryRun?: boolean }.
     // dryRun previews added/updated/errors and From -> To changes without saving anything.
     route('POST', `${G}/residents/import`, 'gate-editor', async ({ session, gate, body }) => {
-      if (!Array.isArray(body.rows) || !body.rows.length || body.rows.length > MAX_BULK) {
-        return [400, { error: `rows must be a list of 1-${MAX_BULK} entries` }];
-      }
-      const rows: unknown[] = body.rows;
+      const { rows, dryRun } = parseInput(
+        z.object({
+          rows: z.array(z.unknown(), { message: `rows must be a list of 1-${MAX_BULK} entries` })
+            .min(1, `rows must be a list of 1-${MAX_BULK} entries`)
+            .max(MAX_BULK, `rows must be a list of 1-${MAX_BULK} entries`),
+          dryRun: z.boolean().optional(),
+        }),
+        body,
+      );
       const opts = await editOpts(gate);
-      if (body.dryRun === true) {
+      if (dryRun === true) {
         const before = await workingBuffers(gate.phoneNumber);
         if (!before) return [404, { error: 'There is no working copy. Pull residents from the gate.' }];
         const { simulated, added, updated, errors } = simulateResidentImport(before, rows, opts);
@@ -226,7 +247,7 @@ export function residentsRoutes(modules: Modules): Route[] {
         { summary: `Edited directory code ${params.code}` }, async (ctx) => {
           if ('name' in body) dk.checkName(body.name);
           const opts = await editOpts(gate);
-          const { hidden: _hidden, email: _email, portalEnabled: _portal, ...fields } = body;
+          const { email: _email, portalEnabled: _portal, ...fields } = body;
           return editResidentInCache(gate.phoneNumber, params.code, fields, opts, ctx);
         });
       if (out[0] < 300) {

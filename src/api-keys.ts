@@ -10,22 +10,73 @@ import crypto from 'node:crypto';
 import { all, one, run, type Store, phoneDigits } from './db.ts';
 import { checkRole, type GateRole } from './gate-list.ts';
 import { userKey } from './users.ts';
-import type { ApiKeyInfo } from './types.ts';
+import type { ApiKeyInfo, ApiKeyScope } from './types.ts';
 import { httpError } from './errors.ts';
 
-export type { ApiKeyInfo };
+export type { ApiKeyInfo, ApiKeyScope };
 export const API_KEY_EXPIRY_DAYS = [0, 30, 90, 365]; // 0 = never
+export const API_KEY_SCOPES: readonly ApiKeyScope[] = [
+  'gate:read',
+  'directory:read', 'directory:write',
+  'transactions:read', 'insights:read', 'history:read',
+  'settings:read', 'settings:write',
+  'gate:pull', 'gate:send',
+  'relays:read', 'relays:trigger',
+  'schedules:read', 'schedules:write',
+  'cameras:read', 'cameras:write',
+] as const;
+const API_KEY_SCOPE_SET = new Set<string>(API_KEY_SCOPES);
 const NAME_MAX = 40;
 const DAY_MS = 86400000;
 
+/** Maps a non-webOnly gate route (`method` + `pattern`) to the granular API key scope required when a key has explicit `scopes`. */
+export function requiredApiKeyScope(method: string, pattern: string): ApiKeyScope | null {
+  const m = method.toUpperCase();
+  const sub = pattern.replace(/^\/api\/gates\/:phone/, '');
+  if (sub === '' || sub === '/job') return 'gate:read';
+  if (sub === '/pull') return 'gate:pull';
+  if (sub === '/send') return m === 'GET' ? 'gate:read' : 'gate:send';
+  if (sub === '/data') return 'transactions:read';
+  if (sub === '/audit') return 'insights:read';
+  if (sub.startsWith('/residents') || sub.startsWith('/directory-codes') || sub === '/dir-digits') {
+    if (m === 'GET' || sub === '/residents/instructions.pdf') return 'directory:read';
+    return 'directory:write';
+  }
+  if (sub === '/settings' || sub === '/prefs') return m === 'GET' ? 'settings:read' : 'settings:write';
+  if (sub.startsWith('/working-copy')) return m === 'GET' ? 'gate:read' : 'directory:write';
+  if (sub.startsWith('/files/')) return 'gate:read';
+  if (sub.startsWith('/history') || sub.startsWith('/pull-archive')) return m === 'GET' ? 'history:read' : 'directory:write';
+  if (sub.startsWith('/relays')) return m === 'GET' ? 'relays:read' : 'relays:trigger';
+  if (sub.startsWith('/schedules')) return m === 'GET' ? 'schedules:read' : 'schedules:write';
+  if (sub.startsWith('/cameras') || sub.startsWith('/snapshots')) {
+    if (m === 'GET' || sub === '/snapshots/run' || sub === '/snapshots/stop' || sub.endsWith('/refresh')) return 'cameras:read';
+    return 'cameras:write';
+  }
+  return null;
+}
+
+function normalizeScopes(raw: unknown): ApiKeyScope[] | null {
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw)) throw httpError('scopes must be an array of scope strings');
+  const out: ApiKeyScope[] = [];
+  for (const item of raw) {
+    const s = String(item ?? '').trim();
+    if (!API_KEY_SCOPE_SET.has(s)) throw httpError(`Unknown API key scope "${s}"`);
+    if (!out.includes(s as ApiKeyScope)) out.push(s as ApiKeyScope);
+  }
+  if (!out.length) throw httpError('scopes must contain at least one scope (or omit for full role access)');
+  return out;
+}
+
 interface ApiKeyRow {
   id: string; phone: string; name: string; role: GateRole; secret_hash: string; created_by: string; created_at: string;
-  expires_at: string | null; last_used_at: string | null;
+  expires_at: string | null; last_used_at: string | null; scopes: ApiKeyScope[] | null;
 }
 
 const sha256 = (text: string) => crypto.createHash('sha256').update(text).digest();
 const fromRow = (row: ApiKeyRow): ApiKeyInfo => ({
-  id: row.id, name: row.name, role: row.role, createdBy: row.created_by, createdAt: row.created_at, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
+  id: row.id, name: row.name, role: row.role, scopes: Array.isArray(row.scopes) ? row.scopes : null,
+  createdBy: row.created_by, createdAt: row.created_at, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
 });
 
 /**
@@ -41,19 +92,20 @@ const fromRow = (row: ApiKeyRow): ApiKeyInfo => ({
  * @returns Promise resolving to `{ key: string; apiKey: ApiKeyInfo }`.
  * @throws HTTP 400 error on invalid input or conflict.
  */
-export async function createApiKey(store: Store, phone: string, { name, role, expiresDays = 0 }: { name: unknown; role: unknown; expiresDays?: unknown },
+export async function createApiKey(store: Store, phone: string, { name, role, expiresDays = 0, scopes }: { name: unknown; role: unknown; expiresDays?: unknown; scopes?: unknown },
   by: string): Promise<{ key: string; apiKey: ApiKeyInfo }> {
   const label = String(name ?? '').trim();
   if (!label || label.length > NAME_MAX) throw httpError(`Give the key a name of 1-${NAME_MAX} characters`);
   const checkedRole = checkRole(role);
   const days = Number(expiresDays || 0);
   if (!API_KEY_EXPIRY_DAYS.includes(days)) throw httpError('Expiry must be never, 30, 90 or 365 days');
+  const checkedScopes = normalizeScopes(scopes);
   const id = crypto.randomBytes(6).toString('hex');
   const key = `dkg_${id}_${crypto.randomBytes(32).toString('base64url')}`;
   const now = new Date();
-  await run(store, `INSERT INTO api_keys (id, phone, name, role, secret_hash, created_by, created_at, expires_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [id, phoneDigits(phone), label, checkedRole, sha256(key).toString('hex'), userKey(by),
-    now.toISOString(), days ? new Date(now.getTime() + days * DAY_MS).toISOString() : null]);
+  await run(store, `INSERT INTO api_keys (id, phone, name, role, secret_hash, created_by, created_at, expires_at, scopes)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [id, phoneDigits(phone), label, checkedRole, sha256(key).toString('hex'), userKey(by),
+    now.toISOString(), days ? new Date(now.getTime() + days * DAY_MS).toISOString() : null, checkedScopes ? JSON.stringify(checkedScopes) : null]);
   const row = (await one<ApiKeyRow>(store, 'SELECT * FROM api_keys WHERE id = $1', [id]))!;
   return { key, apiKey: fromRow(row) };
 }
@@ -92,7 +144,7 @@ export async function revokeApiKey(store: Store, phone: string, id: string): Pro
  * @param key - Lookup key, API key, or setting key.
  * @returns Promise resolving to `{ id: string; phone: string; name: string; role: GateRole } | null`.
  */
-export async function findApiKey(store: Store, key: unknown): Promise<{ id: string; phone: string; name: string; role: GateRole } | null> {
+export async function findApiKey(store: Store, key: unknown): Promise<{ id: string; phone: string; name: string; role: GateRole; scopes: ApiKeyScope[] | null } | null> {
   const match = /^dkg_([0-9a-f]{12})_[A-Za-z0-9_-]{43}$/.exec(String(key ?? ''));
   if (!match) return null;
   const row = await one<ApiKeyRow>(store, 'SELECT * FROM api_keys WHERE id = $1', [match[1]]);
@@ -102,5 +154,5 @@ export async function findApiKey(store: Store, key: unknown): Promise<{ id: stri
   if (!row.last_used_at || now - new Date(row.last_used_at).getTime() > 60000) {
     await run(store, 'UPDATE api_keys SET last_used_at = $2 WHERE id = $1', [row.id, new Date(now).toISOString()]);
   }
-  return { id: row.id, phone: row.phone, name: row.name, role: row.role };
+  return { id: row.id, phone: row.phone, name: row.name, role: row.role, scopes: Array.isArray(row.scopes) ? row.scopes : null };
 }

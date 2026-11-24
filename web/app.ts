@@ -113,7 +113,7 @@ export class Application {
 
   private announce(modules: Modules): void {
     const { config, PUBLIC_HOST, ROOT } = modules.context;
-    console.log(`DoorKing web UI: http://localhost:${this.port()}${PUBLIC_HOST ? ` and https://${PUBLIC_HOST}` : ''}  (config ${config.file || 'none, defaults'}, media in ${ROOT})`);
+    console.log(`DoorKing REST API: http://localhost:${this.port()}${PUBLIC_HOST ? ` and https://${PUBLIC_HOST}` : ''}  (config ${config.file || 'none, defaults'}, media in ${ROOT})`);
     logger('server').info`Started on port ${this.port()}: ${JSON.stringify(dk.maskedConfig(config))}`;
   }
 

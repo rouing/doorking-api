@@ -95,15 +95,16 @@ function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
     const [prefs, tx, pulledAt, working, portalEvents] = await Promise.all([
       prefsOf(phone), dk.readTransactionPage(store, phone, page),
       dk.txPulledAt(store, phone), dk.loadWorkingState(store, phone),
-      page.before ? Promise.resolve([]) : dk.listPortalEvents(store, phone, { limit: 200 }),
+      page.before ? Promise.resolve([]) : dk.listPortalEvents(store, phone, { limit: Math.min(200, page.limit) }),
     ]);
     const data = loadData(pulledAt, working && working.state, prefs.deviceAssociation, tx.records);
     const nameByCode = new Map((working?.state.residents || []).map((r) => [dk.noteKey(r.directoryCode), r.name]));
     const synthetic = portalEvents.map((ev) => dk.portalEventToTxRow(ev, nameByCode, prefs.relayLabels));
-    if (!data.transactions && !synthetic.length) return { transactions: null };
-    const rows = [...(data.transactions?.rows || []), ...synthetic].sort((a, b) => b.ts - a.ts);
+    const apbEnabled = Boolean(working?.state.settings?.apbMode && working.state.settings.apbMode !== 'Off');
+    if (!data.transactions && !synthetic.length) return { transactions: null, apbEnabled };
+    const rows = [...(data.transactions?.rows || []), ...synthetic].sort((a, b) => b.ts - a.ts).slice(0, page.limit);
     const updated = data.transactions?.updated || (synthetic[0] ? new Date(synthetic[0].ts).toISOString() : new Date().toISOString());
-    return { transactions: { updated, rows, next: tx.next } };
+    return { transactions: { updated, rows, next: tx.next }, apbEnabled };
   };
   /**
    * Every saved transaction, as the camera code needs it (time, event type, access).
@@ -656,9 +657,12 @@ export function createEditing(deps: ContextModule) {
     opts: Awaited<ReturnType<typeof editOpts>>,
     ctx: EditContext,
   ): Promise<Reply> {
+    const preserveHidden = typeof fields.hidden === 'boolean';
     return applyToCache(
       phone,
-      (bufs) => dk.tidyBoard(dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode }, opts), directoryCode)),
+      (bufs) => dk.tidyBoard(
+        dk.applyShownRule(dk.applyResidentEdit(bufs, { ...fields, directoryCode }, opts), directoryCode, { preserveHidden }),
+      ),
       ctx,
     );
   }

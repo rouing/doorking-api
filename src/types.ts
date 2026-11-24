@@ -115,7 +115,10 @@ export interface TransactionRow {
  * GET G/data: views of the pulled files (null where the file isn't there).
  * transactions.next: ask GET /data?before=<next> for the older page (null: none).
  */
-export interface DataReply { transactions: { updated: string; rows: TransactionRow[]; next?: number | null } | null }
+export interface DataReply {
+  transactions: { updated: string; rows: TransactionRow[]; next?: number | null } | null;
+  apbEnabled?: boolean;
+}
 
 /**
  * An item changed differently at the gate and in the working copy since the last pull: decided with Keep mine or
@@ -184,9 +187,19 @@ export interface GateUser {
   username: string; email: string; pendingEmail: string; phone: string; invited: boolean; role: GateRole; grantedBy: string; grantedAt: string; lastSignIn: string | null;
   ssoProviders?: string[];
 }
+export type ApiKeyScope =
+  | 'gate:read'
+  | 'directory:read' | 'directory:write'
+  | 'transactions:read' | 'insights:read' | 'history:read'
+  | 'settings:read' | 'settings:write'
+  | 'gate:pull' | 'gate:send'
+  | 'relays:read' | 'relays:trigger'
+  | 'schedules:read' | 'schedules:write'
+  | 'cameras:read' | 'cameras:write';
+
 /** G/api-keys: an API key of the gate (never the key itself, which is shown once when created). */
 export interface ApiKeyInfo {
-  id: string; name: string; role: GateRole; createdBy: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null;
+  id: string; name: string; role: GateRole; scopes: ApiKeyScope[] | null; createdBy: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null;
 }
 /**
  * /api/me/passkeys: one of the user's passkeys. site: the name it works on (the public name, or localhost); synced:

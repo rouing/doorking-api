@@ -5,10 +5,18 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import * as dk from '../../index.ts';
 import { helpPage } from '../../src/markdown.ts';
 import { logger } from '../../src/logging.ts';
 import { type Route, route } from '../routing.ts';
 import type { Modules } from '../modules.ts';
+
+const PKG_VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'package.json'), 'utf8')) as { version?: string };
+    return pkg.version || '1.0.0';
+  } catch { return '1.0.0'; }
+})();
 
 /**
  * Docs routes.
@@ -17,7 +25,7 @@ import type { Modules } from '../modules.ts';
  * @returns Registered route definitions for this area.
  */
 export function docsRoutes(modules: Modules): Route[] {
-  const { config, HERE } = modules.context;
+  const { config, HERE, store } = modules.context;
   const { clientIp, overLimit } = modules.auth;
   const MANUAL = path.join(HERE, '..', 'docs', 'MANUAL.md');
   /**
@@ -37,6 +45,28 @@ export function docsRoutes(modules: Modules): Route[] {
   const DOCS_INIT = `window.ui = SwaggerUIBundle({ url: '/api/openapi.json', dom_id: '#swagger-ui', deepLinking: true, persistAuthorization: false,
   tryItOutEnabled: false, displayRequestDuration: true, defaultModelsExpandDepth: 0 });`;
   return [
+    // Health & API version metadata (public, no gate data).
+    route('GET', '/api/health', 'public', async () => {
+      await store.db.query('SELECT 1');
+      return [200, { ok: true, service: 'doorking-api', version: PKG_VERSION }];
+    }),
+    route('GET', '/api/version', 'public', () => [200, {
+      service: 'doorking-api',
+      version: PKG_VERSION,
+      apiVersion: 'v1',
+      passwordMinLength: dk.PASSWORD_MIN,
+      noteMaxLength: dk.NOTE_MAX,
+      maxCardsPerEntry: dk.MAX_CARDS_PER_ENTRY,
+      apiKeyScopes: dk.API_KEY_SCOPES,
+    }]),
+    // Introspects a gate API key (`Authorization: Bearer dkg_...`) so remote MCP / clients discover the key's gate, role & scopes.
+    route('GET', '/api/key-info', 'public', async ({ req }) => {
+      const m = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization || '');
+      const keyInfo = m ? await dk.findApiKey(store, m[1]) : null;
+      if (!keyInfo) return [401, { error: 'Invalid or expired API key' }];
+      return [200, keyInfo];
+    }),
+
     // Android Digital Asset Links for App Links & Credential Manager passkey verification.
     route('GET', '/.well-known/assetlinks.json', 'public', ({ reply }) => {
       const { packageName, sha256CertFingerprints } = config.android;
@@ -86,7 +116,9 @@ export function docsRoutes(modules: Modules): Route[] {
     // The API-key routes as OpenAPI (public: it holds no data) and the browsable docs page.
     route('GET', '/api/openapi.json', 'public', ({ reply }) => reply.header('Cache-Control', 'no-cache').type('application/json; charset=utf-8').sendFile('openapi.json', DOCS_DIR, { cacheControl: false })),
     route('GET', '/api/docs', 'public', ({ reply }) => reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(DOCS_PAGE)),
+    route('GET', '/api/docs/', 'public', ({ reply }) => reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(DOCS_PAGE)),
     route('GET', '/api/docs/:file', 'public', ({ params, reply }) => {
+      if (params.file === 'openapi.json') return reply.header('Cache-Control', 'no-cache').type('application/json; charset=utf-8').sendFile('openapi.json', DOCS_DIR, { cacheControl: false });
       if (params.file === 'init.js') return reply.header('Cache-Control', 'no-cache').type('text/javascript; charset=utf-8').send(DOCS_INIT);
       const type = SWAGGER_FILES[params.file];
       if (!type) return [404, { error: 'Not found' }];

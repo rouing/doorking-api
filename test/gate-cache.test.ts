@@ -10,11 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import * as dk from '../index.ts';
 import { Application } from '../web/app.ts';
-import { staticFile } from '../web/requests.ts';
 import { withContext } from '@logtape/logtape';
 import { helpPage, inline, markdownToHtml } from '../src/markdown.ts';
 import { loadData } from '../web/data.ts';
-import { searchGate } from '../web/ui/nav/quickJumpSearch.ts';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
 
 // What the tests read back from the database.
@@ -1135,7 +1133,7 @@ test('API keys: per gate, shown once, stored hashed, role and expiry, revoked at
   assert.deepStrictEqual([apiKey.name, apiKey.role, apiKey.createdBy, apiKey.expiresAt, apiKey.lastUsedAt], ['Home Assistant', 'readonly', 'ann', null, null]);
   const row = (await store.db.query('SELECT * FROM api_keys')).rows[0];
   assert.ok(!JSON.stringify(row).includes(key.slice(17))); // the secret after dkg_<id>_
-  assert.deepStrictEqual(await dk.findApiKey(store, key), { id: apiKey.id, phone: '5550100', name: 'Home Assistant', role: 'readonly' });
+  assert.deepStrictEqual(await dk.findApiKey(store, key), { id: apiKey.id, phone: '5550100', name: 'Home Assistant', role: 'readonly', scopes: null });
   assert.ok((await dk.listApiKeys(store, '5550100'))[0].lastUsedAt);
   assert.strictEqual(await dk.findApiKey(store, `${key.slice(0, -1)}${key.endsWith('A') ? 'B' : 'A'}`), null); // wrong secret
   assert.strictEqual(await dk.findApiKey(store, 'dkg_nothex'), null);
@@ -1281,24 +1279,38 @@ test('step-up: passkey confirmation of the signed-in user only; sessions remembe
   assert.strictEqual((await dk.findSession(store, tok, 60000)).strongAt, at);
 }));
 
-test('docs/openapi.json matches the routes an API key can use (paths, methods, roles) and its references resolve', () => {
+test('docs/openapi.json matches every /api/* route (paths, methods, auth, API-key roles) and its references resolve', () => {
   const root = path.join(import.meta.dirname, '..');
   const routesDir = path.join(root, 'web', 'routes');
   const src = fs.readdirSync(routesDir).map((f) => fs.readFileSync(path.join(routesDir, f), 'utf8')).join('\n');
   const spec = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'openapi.json'), 'utf8'));
-  const fromRoutes = new Map();
+  const IGNORED_META = new Set(['GET /api/openapi.json', 'GET /api/docs', 'GET /api/docs/', 'GET /api/docs/{file}', 'GET /api/download']);
+  const apiKeyRoutes = new Map();
+  const allRoutes = new Set();
   for (const m of src.matchAll(/(webOnly\()?route\('(GET|POST|PUT|DELETE)', (`[^`]*`|'[^']*'|G), '([a-z-]+)'/g)) {
     const [, webOnly, method, raw, scope] = m;
-    if (webOnly || !scope.startsWith('gate')) continue;
-    const sub = raw === 'G' ? '' : raw.replace(/^[`']|[`']$/g, '').replace('${G}', '');
-    fromRoutes.set(`${method.toLowerCase()} /api/gates/{phone}${sub.replace(/:(\w+)/g, '{$1}')}`, scope === 'gate' ? 'readonly' : scope === 'gate-editor' ? 'editor' : 'admin');
+    const p = raw === 'G'
+      ? '/api/gates/{phone}'
+      : raw.replace(/^[`']|[`']$/g, '').replace('${G}', '/api/gates/{phone}').replace('${P}', '/api/portal/gates/{phone}').replace(/:(\w+)/g, '{$1}');
+    if (!p.startsWith('/api/')) continue;
+    const key = `${method.toLowerCase()} ${p}`;
+    if (IGNORED_META.has(`${method} ${p}`)) continue;
+    allRoutes.add(key);
+    if (!webOnly && scope.startsWith('gate')) {
+      apiKeyRoutes.set(key, scope === 'gate' ? 'readonly' : scope === 'gate-editor' ? 'editor' : 'admin');
+    }
   }
   const fromSpec = new Map();
-  for (const [p, ops] of Object.entries(spec.paths)) for (const [method, o] of Object.entries(ops)) fromSpec.set(`${method} ${p}`, o['x-role']);
-  const missing = [...fromRoutes.keys()].filter((k) => !fromSpec.has(k));
-  const extra = [...fromSpec.keys()].filter((k) => !fromRoutes.has(k));
-  assert.deepStrictEqual({ missing, extra }, { missing: [], extra: [] }, 'every API-key route is in the spec, and nothing else');
-  for (const [k, role] of fromRoutes) assert.strictEqual(fromSpec.get(k), role, `x-role of ${k}`);
+  for (const [p, ops] of Object.entries(spec.paths)) {
+    for (const [method, o] of Object.entries(ops)) fromSpec.set(`${method} ${p}`, o);
+  }
+  const missing = [...allRoutes].filter((k) => !fromSpec.has(k));
+  const extra = [...fromSpec.keys()].filter((k) => !allRoutes.has(k));
+  assert.deepStrictEqual({ missing, extra }, { missing: [], extra: [] }, 'every /api/* route is in docs/openapi.json, and nothing extra');
+  for (const [k, role] of apiKeyRoutes) {
+    assert.strictEqual(fromSpec.get(k)['x-auth'], 'apikey', `x-auth of ${k}`);
+    assert.strictEqual(fromSpec.get(k)['x-role'], role, `x-role of ${k}`);
+  }
   // Every $ref points somewhere, and every {param} in a path is declared by its operations.
   const resolve = (r) => r.slice(2).split('/').reduce((o, k) => (o ? o[k] : undefined), spec);
   const walk = (v) => {
@@ -2013,24 +2025,53 @@ test('usHolidaysForYear computes floating US holidays accurately and orders chro
   assert.strictEqual(h2027['Thanksgiving'], '11/25');
 });
 
-test('searchGate ranks exact card/entry/directory code matches above names and pages', () => {
-  const residents = [
-    { directoryCode: '101', name: 'Smith, J', type: 'Resident', hidden: false, areaCode: '214', areaCodeIndex: 0, phone: '5550101', entryCode: '4821', securityLevel: 1, elevatorRef: 1, floor: '', cards: ['10234'], entryOffset: 0, recordOffset: 0, note: 'Front gate' },
-    { directoryCode: '102', name: 'Baker, L', type: 'Resident', hidden: false, areaCode: '214', areaCodeIndex: 0, phone: '5550102', entryCode: '', securityLevel: 1, elevatorRef: 1, floor: '', cards: ['20001'], entryOffset: 20, recordOffset: 10, note: '' },
-  ];
-  const transactions = [
-    { ts: 1, minute: '20261121-0900', date: '2026-11-21', time: '9:00 AM', eventType: 'Cards', number: '10234', lookup: 'card', name: 'Smith, J', access: 'Admit', relay: 'Entry', apb: '', directoryCode: '101', camera: true, raw: '00' },
-  ];
-  const cardHits = searchGate('10234', { residents, transactions, elevators: true });
-  assert.strictEqual(cardHits[0].kind, 'resident');
-  assert.strictEqual(cardHits[0].resident.directoryCode, '101');
-  const codeHits = searchGate('4821', { residents, transactions, elevators: true });
-  assert.strictEqual(codeHits[0].kind, 'resident');
-  assert.strictEqual(codeHits[0].resident.directoryCode, '101');
-  const pageHits = searchGate('holidays', { residents, transactions, elevators: true });
-  assert.strictEqual(pageHits[0].kind, 'page');
-  assert.strictEqual(pageHits[0].page, 'holidays');
-});
+test('server: GET /api/health and /api/version return API metadata, and headless API returns JSON 404 for /', withServer(async ({ call }) => {
+  const health = await call('GET', '/api/health');
+  assert.strictEqual(health.status, 200);
+  assert.strictEqual(health.body.ok, true);
+  assert.strictEqual(health.body.service, 'doorking-api');
+  const ver = await call('GET', '/api/version');
+  assert.strictEqual(ver.status, 200);
+  assert.strictEqual(ver.body.apiVersion, 'v1');
+  assert.strictEqual(ver.body.passwordMinLength, dk.PASSWORD_MIN);
+  assert.ok(Array.isArray(ver.body.apiKeyScopes) && ver.body.apiKeyScopes.includes('directory:read'));
+  const root = await call('GET', '/');
+  assert.strictEqual(root.status, 404);
+  assert.strictEqual(root.body.error, 'Not found');
+}));
+
+test('server: scoped API keys enforce granular permissions alongside gate role', withServer(async ({ store, call }) => {
+  await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
+  await dk.registerGate(store, GATE_A, 'alice');
+  await pullInto(store);
+  await dk.ensureCache(store, GATE_A.phoneNumber);
+  const { key: scopedKey, apiKey } = await dk.createApiKey(store, GATE_A.phoneNumber, {
+    name: 'mcp-staging',
+    role: 'admin',
+    scopes: ['gate:read', 'directory:read', 'directory:write'],
+  }, 'alice');
+  assert.deepStrictEqual(apiKey.scopes, ['gate:read', 'directory:read', 'directory:write']);
+  const info = await call('GET', '/api/key-info', { key: scopedKey });
+  assert.strictEqual(info.status, 200);
+  assert.strictEqual(info.body.phone, GATE_A.phoneNumber);
+  assert.deepStrictEqual(info.body.scopes, ['gate:read', 'directory:read', 'directory:write']);
+  assert.strictEqual((await call('GET', `/api/gates/${GATE_A.phoneNumber}/residents`, { key: scopedKey })).status, 200);
+  assert.strictEqual((await call('PUT', `/api/gates/${GATE_A.phoneNumber}/residents/101`, { key: scopedKey, body: { name: 'Scoped Edit' } })).status, 200);
+  // POST /residents accepts type: "Vendor" in addition to vendor: true
+  const addVendor = await call('POST', `/api/gates/${GATE_A.phoneNumber}/residents`, { key: scopedKey, body: { directoryCode: '997', name: 'Typed Vendor', type: 'Vendor' } });
+  assert.strictEqual(addVendor.status, 201);
+  const gotVendor = await call('GET', `/api/gates/${GATE_A.phoneNumber}/residents/997`, { key: scopedKey });
+  assert.strictEqual(gotVendor.body.type, 'Vendor');
+  const deniedSend = await call('POST', `/api/gates/${GATE_A.phoneNumber}/send`, { key: scopedKey, body: {} });
+  assert.strictEqual(deniedSend.status, 403);
+  assert.match(deniedSend.body.error, /gate:send/);
+  const deniedRelay = await call('PUT', `/api/gates/${GATE_A.phoneNumber}/relays`, { key: scopedKey, body: { relay: 0, action: 'open' } });
+  assert.strictEqual(deniedRelay.status, 403);
+  assert.match(deniedRelay.body.error, /relays:trigger/);
+  const deniedTx = await call('GET', `/api/gates/${GATE_A.phoneNumber}/data`, { key: scopedKey });
+  assert.strictEqual(deniedTx.status, 403);
+  assert.match(deniedTx.body.error, /transactions:read/);
+}));
 
 test('server: GET /send returns human-readable From -> To changes for unsent edits', withServer(async ({ store, call }) => {
   await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });
@@ -2444,16 +2485,7 @@ test('server: scheduled transfers queue per DKS account', withServer(async ({ ap
   assert.strictEqual((await states())[waiting], 'idle');
 }));
 
-test('page files: the built page, /assets/ and the app files at the top of the build; nothing outside it', (t) => {
-  for (const bad of ['/../config.json', '/assets/../../config.json', '/.env', '/sw.js/x', '/%2e%2e/config.json', '/index.html.bak', '/api']) {
-    assert.strictEqual(staticFile(bad), null, bad);
-  }
-  if (!staticFile('/')) return t.skip('the page is not built (npm run build)');
-  assert.deepStrictEqual(staticFile('/manifest.webmanifest')?.[1], 'application/manifest+json');
-  assert.deepStrictEqual(staticFile('/sw.js')?.[1], 'text/javascript');
-  assert.deepStrictEqual(staticFile('/index.html')?.[1], 'text/html', 'the service worker caches it by this name');
-  assert.deepStrictEqual(staticFile('/pwa-192x192.png')?.[1], 'image/png');
-});
+// Headless API no longer serves static SPA files (handled by web-ui/ behind Caddy/Ingress).
 
 test('server: a passkey is saved without the password only for the first one, right after signing in', withServer(async ({ app, store, call }) => {
   await dk.createUser(store, { username: 'alice', password: PW, createdBy: 'test', mustChangePassword: false });

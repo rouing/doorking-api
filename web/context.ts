@@ -7,7 +7,7 @@ import path from 'node:path';
 import * as dk from '../index.ts';
 import type { RecordChange } from '../src/audit.ts';
 import type { SnapshotProgress, SnapshotResult } from '../src/cameras.ts';
-import type { GatePrefs, GateRole } from '../src/types.ts';
+import type { ApiKeyScope, GatePrefs, GateRole } from '../src/types.ts';
 import { logger, logMessages } from '../src/logging.ts';
 
 export type Body = Record<string, unknown>; // request JSON, checked by each handler
@@ -17,7 +17,8 @@ export type Reply = readonly [number, unknown];
  * API key (then user is "api:<key name>" and there is no session row). strongAt: last passkey confirmation (ms) or null.
  */
 export interface Session {
-  tokenHash: string; user: string; gate: string | null; mustChangePassword: boolean; strongAt: number | null; signedInAt: number; apiKey?: { phone: string; role: GateRole };
+  tokenHash: string; user: string; gate: string | null; mustChangePassword: boolean; strongAt: number | null; signedInAt: number;
+  apiKey?: { phone: string; role: GateRole; scopes: ApiKeyScope[] | null };
 }
 /**
  * A managed gate as seen by one user: role is theirs, actor their username (for History); user/password are the

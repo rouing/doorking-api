@@ -3,7 +3,7 @@
   "info": {
     "title": "DoorKing Gate Manager API",
     "version": "1.0.0",
-    "description": "The routes a **gate API key** can use. A gate admin creates keys in the web page (System Settings \u2192 API keys); each key belongs to one gate and has a role: **read only** (view, pull, cameras) or **admin** (also changes, sends and relays).\n\nSend the key as `Authorization: Bearer <key>` (click **Authorize**). `{phone}` must be the key's gate. Changes to residents and settings go to the **working copy**; nothing reaches the gate until `POST /send`. Only `POST /send` and `PUT /relays` change the gate itself.\n\nGate login, gate users, API keys, deleting the gate's data and accounts are web-page only. Full reference: `docs/API.md` in the repository."
+    "description": "Complete REST API for DoorKing Gate Manager (OpenAPI 3.1). Supports three authentication modes: **Gate API keys** (`Authorization: Bearer dkg_...`, scoped to one gate and optional granular scopes), **Native bearer sessions** (`Authorization: Bearer dks_...`, used by Android and remote MCP), and **Browser session cookies** (`sid`, HttpOnly SameSite=Strict). Changes to residents and board settings modify the local **working copy**; only `POST /api/gates/{phone}/send` and `PUT /api/gates/{phone}/relays` (or Resident Portal Buzz) touch physical hardware."
   },
   "servers": [
     {
@@ -43,6 +43,33 @@
     },
     {
       "name": "Cameras"
+    },
+    {
+      "name": "System"
+    },
+    {
+      "name": "Auth & Session"
+    },
+    {
+      "name": "Account"
+    },
+    {
+      "name": "Passkeys"
+    },
+    {
+      "name": "Single Sign-On"
+    },
+    {
+      "name": "Gate Admin"
+    },
+    {
+      "name": "Webhooks"
+    },
+    {
+      "name": "Resident Portal"
+    },
+    {
+      "name": "Portal Admin"
     }
   ],
   "paths": {
@@ -78,6 +105,47 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "x-auth": "apikey"
+      },
+      "delete": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Leave a gate (revoke own access)",
+        "x-auth": "session",
+        "x-role": "readonly",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           }
         }
       }
@@ -115,7 +183,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/pull": {
@@ -171,6 +240,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -180,13 +252,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/send": {
@@ -225,7 +295,8 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "post": {
         "tags": [
@@ -276,6 +347,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -285,13 +359,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/data": {
@@ -333,7 +405,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/residents": {
@@ -369,7 +442,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "post": {
         "tags": [
@@ -427,6 +501,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -436,13 +513,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/residents/instructions.pdf": {
@@ -465,12 +540,24 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "residentName": { "type": "string" },
-                  "directoryCode": { "type": "string" },
-                  "entryCode": { "type": "string" },
-                  "adminPhone": { "type": "string" },
-                  "grantAccessDigit": { "type": "string" },
-                  "saveAdminPhone": { "type": "boolean" }
+                  "residentName": {
+                    "type": "string"
+                  },
+                  "directoryCode": {
+                    "type": "string"
+                  },
+                  "entryCode": {
+                    "type": "string"
+                  },
+                  "adminPhone": {
+                    "type": "string"
+                  },
+                  "grantAccessDigit": {
+                    "type": "string"
+                  },
+                  "saveAdminPhone": {
+                    "type": "boolean"
+                  }
                 }
               }
             }
@@ -481,14 +568,24 @@
             "description": "Filled PDF document.",
             "content": {
               "application/pdf": {
-                "schema": { "type": "string", "format": "binary" }
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/residents/{code}": {
@@ -527,7 +624,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "put": {
         "tags": [
@@ -569,6 +667,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -578,13 +679,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "delete": {
         "tags": [
@@ -624,7 +723,8 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/residents/{code}/history": {
@@ -735,7 +835,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/residents/{code}/note": {
@@ -789,6 +890,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -797,11 +901,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/directory-codes/{code}": {
@@ -843,7 +945,8 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/dir-digits": {
@@ -893,6 +996,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -902,13 +1008,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/settings": {
@@ -944,7 +1048,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "put": {
         "tags": [
@@ -1009,6 +1114,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -1017,11 +1125,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/working-copy": {
@@ -1078,7 +1184,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "delete": {
         "tags": [
@@ -1112,7 +1219,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/files/{name}": {
@@ -1152,7 +1260,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/prefs": {
@@ -1188,7 +1297,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "put": {
         "tags": [
@@ -1228,6 +1338,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -1237,13 +1350,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/history": {
@@ -1293,7 +1404,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/history/{id}/revert": {
@@ -1350,7 +1462,8 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/relays": {
@@ -1401,7 +1514,8 @@
           "502": {
             "$ref": "#/components/responses/Upstream"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "put": {
         "tags": [
@@ -1467,6 +1581,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -1476,13 +1593,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "502": {
             "$ref": "#/components/responses/Upstream"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/schedules": {
@@ -1526,7 +1641,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "post": {
         "tags": [
@@ -1575,6 +1691,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -1583,11 +1702,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/schedules/{id}": {
@@ -1627,6 +1744,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -1635,11 +1755,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "delete": {
         "tags": [
@@ -1681,7 +1799,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/schedules/{id}/run": {
@@ -1739,7 +1858,8 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/cameras": {
@@ -1787,7 +1907,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "put": {
         "tags": [
@@ -1834,6 +1955,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -1842,11 +1966,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "delete": {
         "tags": [
@@ -1885,7 +2007,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/cameras/test": {
@@ -1957,7 +2080,8 @@
           "502": {
             "$ref": "#/components/responses/Upstream"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/cameras/live/{channel}": {
@@ -2000,7 +2124,8 @@
           "502": {
             "$ref": "#/components/responses/Upstream"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/snapshots": {
@@ -2054,7 +2179,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       },
       "delete": {
         "tags": [
@@ -2099,7 +2225,8 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/snapshots/run": {
@@ -2147,6 +2274,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -2156,13 +2286,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/snapshots/stop": {
@@ -2214,7 +2342,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/snapshots/{minute}/{file}": {
@@ -2263,7 +2392,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/snapshots/{minute}/{file}/refresh": {
@@ -2327,7 +2457,8 @@
           "502": {
             "$ref": "#/components/responses/Upstream"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/working-copy/conflicts": {
@@ -2430,7 +2561,8 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/relays/{relay}/timer": {
@@ -2453,7 +2585,8 @@
           "200": {
             "description": "Remaining active timers."
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/pull-archive": {
@@ -2473,7 +2606,8 @@
           "200": {
             "description": "Archived pulls, newest first."
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/pull-archive/{id}/diff": {
@@ -2496,7 +2630,8 @@
           "200": {
             "description": "Diff summary."
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/pull-archive/{id}/restore": {
@@ -2519,7 +2654,8 @@
           "200": {
             "description": "Restored working copy status."
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/audit": {
@@ -2542,7 +2678,8 @@
           "200": {
             "description": "Access audit summary."
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/residents/bulk": {
@@ -2562,7 +2699,8 @@
           "200": {
             "description": "Bulk update result."
           }
-        }
+        },
+        "x-auth": "apikey"
       }
     },
     "/api/gates/{phone}/residents/import": {
@@ -2582,6 +2720,3426 @@
           "200": {
             "description": "Preview or applied import result."
           }
+        },
+        "x-auth": "apikey"
+      }
+    },
+    "/api/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "API & database liveness check",
+        "x-auth": "public",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/version": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "API version, limits, and supported API key scopes",
+        "x-auth": "public",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/client-crashes": {
+      "post": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Submit remote Android crash trace",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "appVersion": {
+                    "type": "string"
+                  },
+                  "versionCode": {
+                    "type": "integer"
+                  },
+                  "device": {
+                    "type": "string"
+                  },
+                  "sdkInt": {
+                    "type": "integer"
+                  },
+                  "thread": {
+                    "type": "string"
+                  },
+                  "trace": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session": {
+      "get": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Get current session state",
+        "x-auth": "public",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionReply"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Sign in with username/email and password",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user",
+                  "password"
+                ],
+                "properties": {
+                  "user": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Sign out and revoke current session",
+        "x-auth": "public",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/setup": {
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Create first administrator account using console setup code",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "user",
+                  "password"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "user": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/email/verify": {
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Confirm pending email address token",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/password-reset/request": {
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Request password reset email",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user"
+                ],
+                "properties": {
+                  "user": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/password-reset": {
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Complete password reset with email token",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token",
+                  "password"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/invite/check": {
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Validate an account invitation token",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/invite": {
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Accept an invitation and set password",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token",
+                  "password"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/passkey/options": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Start WebAuthn passkey sign-in challenge",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/passkey/session": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Verify WebAuthn passkey assertion and sign in",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/step-up/options": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Start step-up passkey verification challenge",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/step-up": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Confirm step-up verification for sensitive actions",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/passkeys": {
+      "get": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "List registered passkeys",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "passkeys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PasskeyInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Save newly registered passkey",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/passkeys/options": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Start new passkey registration challenge",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/passkeys/approval": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Generate one-time approval code for adding a passkey on another device",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/passkeys/{id}": {
+      "put": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Rename a registered passkey",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Delete a registered passkey",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/sso/start": {
+      "post": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "Start OIDC sign-in flow",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "native": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sso/native-exchange": {
+      "post": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "Exchange RFC 8252 one-time native SSO code for bearer session",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/sso/start": {
+      "post": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "Link an additional OIDC identity to current account",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/sso/{provider}/callback": {
+      "get": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "OIDC authorization code callback",
+        "x-auth": "public",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/sso": {
+      "get": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "List linked SSO identities",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "identities": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SsoIdentityInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/sso/{provider}/{subject}": {
+      "delete": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "Unlink an SSO identity",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/provider"
+          },
+          {
+            "$ref": "#/components/parameters/subject"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Get current user profile",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Update profile preferences, email, phone, or dark mode",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/email/resend": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Resend pending email verification message",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/password": {
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Change account password",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "current": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/push": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "List Web Push subscriptions and VAPID public key",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "vapidPublicKey": {
+                      "type": "string"
+                    },
+                    "subscriptions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PushSubscriptionInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Register Web Push subscription",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/push/{id}": {
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Remove Web Push subscription",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/push/test": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Send test Web Push notification",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/session/gate": {
+      "put": {
+        "tags": [
+          "Gate"
+        ],
+        "summary": "Select active gate on session",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "phone"
+                ],
+                "properties": {
+                  "phone": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Gate"
+        ],
+        "summary": "Clear active gate on session",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkReply"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates": {
+      "get": {
+        "tags": [
+          "Gate"
+        ],
+        "summary": "List all gates accessible to the signed-in user",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gates": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GateInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Gate"
+        ],
+        "summary": "Add a new gate and start initial verification pull",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gate-add": {
+      "get": {
+        "tags": [
+          "Gate"
+        ],
+        "summary": "Poll latest add-gate verification pull job",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/login": {
+      "get": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Get saved DKS Cloud username (secrets omitted)",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Update DKS Cloud login or master code",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/users": {
+      "get": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "List gate users and roles",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GateUser"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Create and invite a user on this gate",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/users/{username}/invite": {
+      "post": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Resend invitation email to a gate user",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/username"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/share": {
+      "post": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Grant an existing user access to this gate",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/users/{username}": {
+      "put": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Change a user role on this gate",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/username"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "admin",
+                      "editor",
+                      "readonly"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Remove a user from this gate",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/username"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/api-keys": {
+      "get": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "List gate API keys (secrets never returned)",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apiKeys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ApiKeyInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Create a gate API key with role and optional granular scopes",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "admin",
+                      "editor",
+                      "readonly"
+                    ]
+                  },
+                  "expiresDays": {
+                    "type": "integer"
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "apiKey": {
+                      "$ref": "#/components/schemas/ApiKeyInfo"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/api-keys/{id}": {
+      "delete": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Revoke a gate API key",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apiKeys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ApiKeyInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/delete-data": {
+      "post": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Permanently delete all local data for this gate",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/residents/{code}/resend-invite": {
+      "post": {
+        "tags": [
+          "Gate Admin"
+        ],
+        "summary": "Resend Resident Portal invite email for a directory entry",
+        "x-auth": "session",
+        "x-role": "editor",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/code"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/webhooks": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "List outbound webhooks and recent deliveries",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "webhooks": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WebhookInfo"
+                      }
+                    },
+                    "deliveries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Create an outbound HMAC-signed webhook",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/webhooks/{id}": {
+      "put": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Update webhook URL, events, or enabled state",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Delete an outbound webhook",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/webhooks/{id}/test": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Queue a test webhook delivery",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/me": {
+      "get": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Get resident unit profile, masked code, and portal settings",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalMeReply"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/status": {
+      "get": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Check Buzz Me In availability and cooldown",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalStatusReply"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/buzz": {
+      "post": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Buzz Me In (momentary relay pulse for resident)",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "relay": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/reroll-code": {
+      "post": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Generate a new personal 4-digit keypad entry code",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/activity": {
+      "get": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "List resident unit access activity",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalActivityReply"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/snapshots/{minute}/{file}": {
+      "get": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Fetch authorized snapshot or video clip for resident activity",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/minute"
+          },
+          {
+            "$ref": "#/components/parameters/file"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/activity/report": {
+      "post": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Flag an unrecognized transaction as suspicious",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/requests": {
+      "get": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "List own submitted change requests",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "requests": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ResidentRequest"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Submit a resident profile/card change request",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/portal/gates/{phone}/instructions.pdf": {
+      "post": {
+        "tags": [
+          "Resident Portal"
+        ],
+        "summary": "Download personalized ResidentInstructions.pdf",
+        "x-auth": "session",
+        "x-role": "resident",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/login-audit": {
+      "get": {
+        "tags": [
+          "Portal Admin"
+        ],
+        "summary": "List recent sign-in audit events",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/LoginAuditEntry"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/suspicious-reports": {
+      "get": {
+        "tags": [
+          "Portal Admin"
+        ],
+        "summary": "List resident suspicious-activity reports",
+        "x-auth": "session",
+        "x-role": "readonly",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "reports": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SuspiciousReport"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/suspicious-reports/{id}/resolve": {
+      "post": {
+        "tags": [
+          "Portal Admin"
+        ],
+        "summary": "Resolve a suspicious-activity report",
+        "x-auth": "session",
+        "x-role": "admin",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/resident-requests": {
+      "get": {
+        "tags": [
+          "Portal Admin"
+        ],
+        "summary": "List resident self-service change requests",
+        "x-auth": "session",
+        "x-role": "readonly",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "requests": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ResidentRequest"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/gates/{phone}/resident-requests/{id}/review": {
+      "post": {
+        "tags": [
+          "Portal Admin"
+        ],
+        "summary": "Approve (into working copy) or reject a resident change request",
+        "x-auth": "session",
+        "x-role": "editor",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/phone"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "decision"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "reject"
+                    ]
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/key-info": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Introspect a gate API key (phone, role, scopes)",
+        "x-auth": "public",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key metadata (secret never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "phone",
+                    "name",
+                    "role"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "phone": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "admin",
+                        "editor",
+                        "readonly"
+                      ]
+                    },
+                    "scopes": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
         }
       }
     }
@@ -2592,7 +6150,18 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "dkg_<id>_<secret>",
-        "description": "A gate API key from System Settings \u2192 API keys."
+        "description": "A gate API key from System Settings → API keys."
+      },
+      "nativeSession": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "User session token (`dks_<64-hex>`) returned when signing in with `X-Client-Auth: bearer`."
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sid",
+        "description": "HttpOnly SameSite=Strict browser session cookie."
       }
     },
     "parameters": {
@@ -2728,6 +6297,51 @@
           "maximum": 730,
           "default": 90
         }
+      },
+      "username": {
+        "name": "username",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Local account username."
+      },
+      "provider": {
+        "name": "provider",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Configured SSO provider id."
+      },
+      "subject": {
+        "name": "subject",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "OIDC subject identifier."
+      },
+      "numericId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "integer"
+        },
+        "description": "Numeric record id."
+      },
+      "id": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Record identifier."
       }
     },
     "responses": {
@@ -2772,7 +6386,7 @@
         }
       },
       "Conflict": {
-        "description": "Conflict: a gate connection or snapshot run is running, duplicates, a revert refused, \u2026",
+        "description": "Conflict: a gate connection or snapshot run is running, duplicates, a revert refused, …",
         "content": {
           "application/json": {
             "schema": {
@@ -3953,6 +7567,660 @@
           "gate",
           "mine"
         ]
+      },
+      "OkReply": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "HealthReply": {
+        "type": "object",
+        "required": [
+          "ok",
+          "service",
+          "version"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "service": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "VersionReply": {
+        "type": "object",
+        "required": [
+          "service",
+          "version",
+          "apiVersion",
+          "passwordMinLength",
+          "noteMaxLength",
+          "maxCardsPerEntry",
+          "apiKeyScopes"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "apiVersion": {
+            "type": "string"
+          },
+          "passwordMinLength": {
+            "type": "integer"
+          },
+          "noteMaxLength": {
+            "type": "integer"
+          },
+          "maxCardsPerEntry": {
+            "type": "integer"
+          },
+          "apiKeyScopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ApiKeyInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "role",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "editor",
+              "readonly"
+            ]
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "PasskeyInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "site",
+          "synced",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          },
+          "synced": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "SsoProviderInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "SsoIdentityInfo": {
+        "type": "object",
+        "required": [
+          "provider",
+          "providerName",
+          "subject",
+          "email",
+          "linkedAt"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "providerName": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "linkedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "PushSubscriptionInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "SessionReply": {
+        "type": "object",
+        "required": [
+          "loggedIn",
+          "emailEnabled",
+          "sso"
+        ],
+        "properties": {
+          "loggedIn": {
+            "type": "boolean"
+          },
+          "setup": {
+            "type": "boolean"
+          },
+          "emailEnabled": {
+            "type": "boolean"
+          },
+          "sso": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SsoProviderInfo"
+            }
+          },
+          "user": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "pendingEmail": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "dark": {
+            "type": "boolean"
+          },
+          "notifyAccess": {
+            "type": "boolean"
+          },
+          "notifyAlerts": {
+            "type": "boolean"
+          },
+          "mustChangePassword": {
+            "type": "boolean"
+          },
+          "hasPassword": {
+            "type": "boolean"
+          },
+          "passwordAllowed": {
+            "type": "boolean"
+          },
+          "hasPasskey": {
+            "type": "boolean"
+          },
+          "stepUpMinutes": {
+            "type": "integer"
+          },
+          "strongUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "isResidentOnly": {
+            "type": "boolean"
+          },
+          "hasPortalUnit": {
+            "type": "boolean"
+          },
+          "gate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GateInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "WebhookInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "url",
+          "events",
+          "enabled",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ResidentRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "phone",
+          "directoryCode",
+          "username",
+          "kind",
+          "payload",
+          "note",
+          "status",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "directoryCode": {
+            "type": "string"
+          },
+          "residentName": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "phone",
+              "hidden",
+              "cardIssue",
+              "other"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "note": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reviewedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reviewedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "reviewNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SuspiciousReport": {
+        "type": "object",
+        "required": [
+          "id",
+          "phone",
+          "directoryCode",
+          "username",
+          "txSource",
+          "txKey",
+          "txTs",
+          "txSummary",
+          "note",
+          "status",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "directoryCode": {
+            "type": "string"
+          },
+          "residentName": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "txSource": {
+            "type": "string",
+            "enum": [
+              "gate",
+              "portal"
+            ]
+          },
+          "txKey": {
+            "type": "string"
+          },
+          "txTs": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "txSummary": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "resolved"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reviewedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reviewedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "reviewNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LoginAuditEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "identifier",
+          "method",
+          "outcome",
+          "ip",
+          "userAgent",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identifier": {
+            "type": "string"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "type": "string"
+          },
+          "userAgent": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PortalMeReply": {
+        "type": "object",
+        "properties": {
+          "gate": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "directoryCode": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "unit": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "portal": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "reroll": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "PortalStatusReply": {
+        "type": "object",
+        "required": [
+          "available",
+          "cooldownSeconds"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "busyReason": {
+            "type": "string"
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "cooldownSeconds": {
+            "type": "integer"
+          }
+        }
+      },
+      "PortalActivityReply": {
+        "type": "object",
+        "required": [
+          "rows",
+          "showSnapshots"
+        ],
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Transaction"
+            }
+          },
+          "showSnapshots": {
+            "type": "boolean"
+          }
+        }
       }
     }
   }

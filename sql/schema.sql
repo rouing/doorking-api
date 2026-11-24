@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS gate_access (phone TEXT NOT NULL REFERENCES managed_g
 CREATE INDEX IF NOT EXISTS gate_access_username ON gate_access (username);
 CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, phone TEXT NOT NULL REFERENCES managed_gates ON DELETE CASCADE,
   name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'readonly')), secret_hash TEXT NOT NULL,
-  created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ, last_used_at TIMESTAMPTZ);
+  created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ, last_used_at TIMESTAMPTZ,
+  scopes JSONB);
 CREATE INDEX IF NOT EXISTS api_keys_phone ON api_keys (phone);
 CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
   rp_id TEXT NOT NULL, public_key BYTEA NOT NULL, counter BIGINT NOT NULL, transports JSONB, name TEXT NOT NULL,
@@ -156,6 +157,7 @@ ALTER TABLE gate_state ADD COLUMN IF NOT EXISTS rebuild_ok BOOLEAN;
 ALTER TABLE gate_state ADD COLUMN IF NOT EXISTS rebuild_problems JSONB;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS strong_at TIMESTAMPTZ;
 ALTER TABLE user_identities ADD COLUMN IF NOT EXISTS last_claims JSONB;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes JSONB;
 DO $$ BEGIN
   ALTER TABLE gate_access DROP CONSTRAINT IF EXISTS gate_access_role_check;
   ALTER TABLE gate_access ADD CONSTRAINT gate_access_role_check CHECK (role IN ('admin', 'editor', 'readonly', 'resident'));

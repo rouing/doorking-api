@@ -1,16 +1,14 @@
 {
-  "name": "doorking-web",
+  "name": "doorking-api",
   "version": "1.0.0",
   "private": true,
-  "description": "Rebuild of the DoorKing32.exe desktop app: manages DoorKing gates through DKS Cloud.",
+  "description": "Headless REST API and DKS Cloud worker for DoorKing telephone-entry gates.",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "start": "node web/server.ts",
-    "dev": "vite --config web/ui/vite.config.mts",
-    "build": "vite build --config web/ui/vite.config.mts",
-    "typecheck": "tsc -p tsconfig.json && tsc -p web/ui/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json",
     "test": "node --test"
   },
   "type": "module",
@@ -23,11 +21,12 @@
     "@logtape/logtape": "^2.4.2",
     "@logtape/redaction": "^2.4.2",
     "@simplewebauthn/server": "^14.1.0",
-    "commander": "^15.1.0",
+    "commander": "^13.1.0",
     "dahua-p2p": "^1.0.0",
     "fast-xml-parser": "^5.12.1",
     "fastify": "^5.12.8",
     "github-slugger": "^2.0.0",
+    "ipaddr.js": "^2.5.0",
     "libphonenumber-js": "^1.13.17",
     "marked": "^18.2.1",
     "nodemailer": "^10.5.0",
@@ -40,26 +39,10 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@emotion/react": "^11.14.0",
-    "@emotion/styled": "^11.14.1",
-    "@mui/icons-material": "^9.5.0",
-    "@mui/material": "^9.5.0",
-    "@simplewebauthn/browser": "^14.0.0",
-    "@tanstack/react-virtual": "^3.14.26",
     "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
-    "@types/qrcode": "^1.5.6",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
     "@types/web-push": "^3.6.4",
-    "@vitejs/plugin-react": "^6.1.2",
-    "qrcode": "^1.5.4",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "typescript": "^7.0.2",
-    "vite": "^8.3.4",
-    "vite-plugin-pwa": "^2.0.0",
-    "workbox-window": "^7.4.1"
+    "typescript": "^7.0.2"
   },
   "license": "MIT"
 }
