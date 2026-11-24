@@ -2,6 +2,8 @@
 
 # Lean headless REST API runtime (Node 24 executes server .ts directly; web-ui/ builds & serves separately)
 FROM node:24-slim AS runtime
+LABEL org.opencontainers.image.source="https://github.com/rouing/doorking-api" \
+      org.opencontainers.image.description="Headless REST API and DKS Cloud worker for DoorKing telephone-entry gates"
 WORKDIR /app
 
 # ffmpeg is used for Dahua/Amcrest camera snapshots, video clips and live view.
