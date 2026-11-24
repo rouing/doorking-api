@@ -24,7 +24,7 @@ gate.example.com {
 		-Server
 	}
 
-	@api path /api /api/* /.well-known/* /download /help
+	@api path /api /api/* /.well-known/* /download /help /privacy
 	handle @api {
 		# Use 127.0.0.1:8080 when Caddy runs on the host (bare-metal or Docker Compose port publish),
 		# or api:8080 if Caddy runs as a container on the same Docker network.

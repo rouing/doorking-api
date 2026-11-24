@@ -16,7 +16,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY index.ts cli.ts config.example.json ./
 COPY src ./src
 COPY sql ./sql
-COPY docs/MANUAL.md docs/openapi.json docs/ResidentInstructions.pdf ./docs/
+COPY docs/MANUAL.md docs/PRIVACY.md docs/openapi.json docs/ResidentInstructions.pdf ./docs/
 COPY web/app.ts web/auth.ts web/context.ts web/data.ts web/editing.ts \
      web/jobs.ts web/mail.ts web/migrations.ts web/modules.ts \
      web/push.ts web/requests.ts web/routing.ts web/server.ts \

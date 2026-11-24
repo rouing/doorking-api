@@ -28,6 +28,7 @@ export function docsRoutes(modules: Modules): Route[] {
   const { config, HERE, store } = modules.context;
   const { clientIp, overLimit } = modules.auth;
   const MANUAL = path.join(HERE, '..', 'docs', 'MANUAL.md');
+  const PRIVACY = path.join(HERE, '..', 'docs', 'PRIVACY.md');
   /**
    * The API-key routes as OpenAPI 3.1 (docs/openapi.json, kept in step with ROUTES by a test) and a Swagger UI page
    * for it at /api/docs, served from node_modules/swagger-ui-dist (no CDN, so the CSP stays 'self').
@@ -110,8 +111,9 @@ export function docsRoutes(modules: Modules): Route[] {
       return [201, { ok: true }];
     }, { bodyLimit: 32 * 1024 }),
 
-    // The user guide (docs/MANUAL.md) as a page, read on each request so edits show at once. Public: it holds no gate data.
+    // The user guide (docs/MANUAL.md) and privacy policy (docs/PRIVACY.md) as pages, read on each request so edits show at once. Public: no gate data.
     route('GET', '/help', 'public', ({ reply }) => reply.type('text/html; charset=utf-8').send(helpPage(fs.readFileSync(MANUAL, 'utf8')))),
+    route('GET', '/privacy', 'public', ({ reply }) => reply.type('text/html; charset=utf-8').send(helpPage(fs.readFileSync(PRIVACY, 'utf8')))),
 
     // The API-key routes as OpenAPI (public: it holds no data) and the browsable docs page.
     route('GET', '/api/openapi.json', 'public', ({ reply }) => reply.header('Cache-Control', 'no-cache').type('application/json; charset=utf-8').sendFile('openapi.json', DOCS_DIR, { cacheControl: false })),
