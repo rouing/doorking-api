@@ -113,7 +113,7 @@ export function docsRoutes(modules: Modules): Route[] {
 
     // The user guide (docs/MANUAL.md) and privacy policy (docs/PRIVACY.md) as pages, read on each request so edits show at once. Public: no gate data.
     route('GET', '/help', 'public', ({ reply }) => reply.type('text/html; charset=utf-8').send(helpPage(fs.readFileSync(MANUAL, 'utf8')))),
-    route('GET', '/privacy', 'public', ({ reply }) => reply.type('text/html; charset=utf-8').send(helpPage(fs.readFileSync(PRIVACY, 'utf8')))),
+    route('GET', '/privacy', 'public', ({ reply }) => reply.type('text/html; charset=utf-8').send(helpPage(fs.readFileSync(PRIVACY, 'utf8'), 'Privacy Policy · DoorKing Gate Manager'))),
 
     // The API-key routes as OpenAPI (public: it holds no data) and the browsable docs page.
     route('GET', '/api/openapi.json', 'public', ({ reply }) => reply.header('Cache-Control', 'no-cache').type('application/json; charset=utf-8').sendFile('openapi.json', DOCS_DIR, { cacheControl: false })),

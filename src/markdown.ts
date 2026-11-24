@@ -63,9 +63,9 @@ export function markdownToHtml(markdown: string): string {
  * @param markdown - Markdown source text.
  * @returns `string` result.
  */
-export function helpPage(markdown: string): string {
+export function helpPage(markdown: string, title = 'User guide · DoorKing Gate Manager'): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>User guide · DoorKing Gate Manager</title><style>
+<title>${esc(title)}</title><style>
 :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #60646c; --line: #d9d9e0; --bg: #fff; --soft: #f4f4f6; --accent: #3e63dd; }
 @media (prefers-color-scheme: dark) { :root { --fg: #ededef; --muted: #a0a0ab; --line: #3a3a40; --bg: #111113; --soft: #1c1c20; --accent: #8da4ef; } }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
