@@ -227,5 +227,33 @@ export function accountRoutes(modules: Modules): Route[] {
       return [200, { subscriptions: await dk.listPushSubscriptions(store, session.user) }];
     }),
     route('POST', '/api/me/push/test', 'user', async ({ session }) => [200, await modules.push.sendTestPush(session.user)]),
+
+    // Android Firebase Cloud Messaging (FCM) device tokens for the signed-in user.
+    route('GET', '/api/me/fcm', 'user', async ({ session }) => [200, {
+      enabled: modules.push.fcmEnabled(),
+      tokens: await dk.listFcmTokens(store, session.user),
+    }]),
+    route('POST', '/api/me/fcm', 'user', async ({ session, body }) => {
+      await dk.saveFcmToken(store, session.user, body);
+      return [200, {
+        enabled: modules.push.fcmEnabled(),
+        tokens: await dk.listFcmTokens(store, session.user),
+      }];
+    }),
+    route('POST', '/api/me/fcm/unregister', 'user', async ({ session, body }) => {
+      await dk.deleteFcmToken(store, session.user, String(body.token ?? body.id ?? ''));
+      return [200, {
+        enabled: modules.push.fcmEnabled(),
+        tokens: await dk.listFcmTokens(store, session.user),
+      }];
+    }),
+    route('DELETE', '/api/me/fcm/:id', 'user', async ({ session, params }) => {
+      await dk.deleteFcmToken(store, session.user, params.id);
+      return [200, {
+        enabled: modules.push.fcmEnabled(),
+        tokens: await dk.listFcmTokens(store, session.user),
+      }];
+    }),
+    route('POST', '/api/me/fcm/test', 'user', async ({ session }) => [200, await modules.push.sendTestFcm(session.user)]),
   ];
 }

@@ -447,6 +447,7 @@ export async function deleteUserCompletely(store: Store, username: string): Prom
   await run(store, 'DELETE FROM sessions WHERE username = $1', [name]);
   await run(store, 'DELETE FROM passkeys WHERE username = $1', [name]);
   await run(store, 'DELETE FROM push_subscriptions WHERE username = $1', [name]);
+  await run(store, 'DELETE FROM fcm_tokens WHERE username = $1', [name]);
   await run(store, 'DELETE FROM email_tokens WHERE username = $1', [name]);
   await run(store, 'DELETE FROM user_identities WHERE username = $1', [name]);
   await run(store, 'DELETE FROM resident_requests WHERE username = $1', [name]);

@@ -216,8 +216,11 @@ export async function pushAlertRecipients(store: Store, phone: string): Promise<
   const rows = await all<{ username: string }>(store,
     `SELECT DISTINCT a.username FROM gate_access a
       JOIN users u ON u.username = a.username
-      JOIN push_subscriptions p ON p.username = a.username
-      WHERE a.phone = $1 AND a.role = 'admin' AND u.notify_alerts`, [phoneDigits(phone)]);
+      WHERE a.phone = $1 AND a.role = 'admin' AND u.notify_alerts
+        AND (
+          EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.username = a.username)
+          OR EXISTS (SELECT 1 FROM fcm_tokens f WHERE f.username = a.username)
+        )`, [phoneDigits(phone)]);
   return rows.map((row) => row.username);
 }
 

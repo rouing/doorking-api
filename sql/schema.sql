@@ -139,6 +139,9 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (id BIGINT GENERATED ALWAYS AS IDE
   payload TEXT, status TEXT NOT NULL CHECK (status IN ('queued', 'sent', 'failed')), attempts INTEGER NOT NULL,
   next_try TIMESTAMPTZ NOT NULL, last_status INTEGER, last_error TEXT, created_at TIMESTAMPTZ NOT NULL, sent_at TIMESTAMPTZ);
 CREATE INDEX IF NOT EXISTS webhook_deliveries_due ON webhook_deliveries (status, next_try);
+CREATE TABLE IF NOT EXISTS fcm_tokens (id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
+  token TEXT NOT NULL UNIQUE, label TEXT NOT NULL DEFAULT 'Android', created_at TIMESTAMPTZ NOT NULL, last_used_at TIMESTAMPTZ);
+CREATE INDEX IF NOT EXISTS fcm_tokens_username ON fcm_tokens (username);
 
 -- Upgrades of databases made before these columns existed.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS webauthn_id TEXT;

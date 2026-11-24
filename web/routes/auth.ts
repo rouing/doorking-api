@@ -246,7 +246,7 @@ function emailLinkRoutes(modules: Modules): Route[] {
  */
 function passkeyRoutes(modules: Modules): Route[] {
   const { logged, STEP_UP_MS, store } = modules.context;
-  const { clientIp, NO_PASSKEY_SITE, overLimit, PER_ADDRESS, relyingParty, sessionCookieOpts, sessionTokenFor } = modules.auth;
+  const { clientIp, confirmOwnPassword, NO_PASSKEY_SITE, overLimit, passwordOff, PER_ADDRESS, relyingParty, sessionCookieOpts, sessionTokenFor } = modules.auth;
   return [
     // Passkey sign-in: POST options (no username: the browser offers this site's passkeys, also in the username box's
     // suggestions), then POST session { response }; sets the sid cookie like a password sign-in. A passkey not
@@ -278,12 +278,22 @@ function passkeyRoutes(modules: Modules): Route[] {
     }),
 
     // Step-up (see STEP_UP): POST options (the signed-in user's passkeys for this site; 409 none), then POST
-    // { response } with the browser's answer: the session is confirmed for security.stepUpMinutes { strongUntil }.
+    // { response } with the WebAuthn answer OR { password } for accounts that allow passwords: the session is confirmed
+    // for security.stepUpMinutes { strongUntil }.
     route('POST', '/api/me/step-up/options', 'user', async ({ session, req }) => {
       const rp = relyingParty(req);
       return rp ? [200, await dk.confirmationOptions(store, session.user, rp)] : [400, { error: NO_PASSKEY_SITE }];
     }),
     route('POST', '/api/me/step-up', 'user', async ({ session, req, body }) => {
+      if (body.response === undefined && typeof body.password === 'string' && body.password.length > 0) {
+        const off = await passwordOff(session.user);
+        if (off) return [403, { error: off }];
+        const refused = await confirmOwnPassword(session.user, body.password);
+        if (refused) return refused;
+        const at = await dk.markSessionStrong(store, session.tokenHash);
+        logger('session').info`${session.user} confirmed with password (step-up)`;
+        return [200, { strongUntil: new Date(at + STEP_UP_MS).toISOString() }];
+      }
       const rp = relyingParty(req);
       if (!rp) return [400, { error: NO_PASSKEY_SITE }];
       try { await dk.confirmWithPasskey(store, session.user, body.response, rp); } catch (err) {

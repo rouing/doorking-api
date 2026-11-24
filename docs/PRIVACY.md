@@ -12,7 +12,8 @@ Depending on your role (Administrator, Editor, Read-Only Staff, or Resident) and
 - **Directory & Gate Access Data:** Resident/vendor display names, directory codes, phone numbers used by the call box, keypad entry codes, assigned card/remote numbers, and unit notes configured by your property administrator.
 - **Gate Activity & Optional Camera Media:** Access event timestamps, entry results, and—where configured by your property administrator—camera snapshots or video clips captured by the community's gate cameras.
 - **Resident Self-Service Requests:** Change requests or suspicious-activity reports you explicitly submit to your property administrator.
-- **Optional Crash Diagnostics:** If the Android app encounters an unhandled crash, it stores the stack trace locally and sends basic technical crash metadata (app version, Android SDK level, device model, and stack trace—no passwords or session tokens) to **your own configured DoorKing server** (`/api/client-crashes`) to help diagnose defects.
+- **Optional Crash Diagnostics:** If the Android app encounters an unhandled crash, crash diagnostics (app version, Android SDK level, device model, and stack trace—no passwords, entry codes, or session tokens) may be reported to **Google Firebase Crashlytics** and/or **your own configured DoorKing server** (`/api/client-crashes`) to help diagnose and fix defects.
+- **Push Notification Tokens:** If you enable push notifications on Android, the app registers a Firebase Cloud Messaging (FCM) device token with your configured DoorKing server so it can deliver gate alerts and account notices.
 
 ## 2. How Information Is Used
 
@@ -24,7 +25,8 @@ Information is used exclusively to:
 
 ## 3. Data Sharing & Third Parties
 
-- **No Advertising or Analytics Trackers:** The app contains **no** third-party advertising SDKs, behavioral trackers, or data brokers, and we never sell or rent personal data.
+- **No Advertising or Behavioral Analytics:** The app contains **no** third-party advertising SDKs, behavioral analytics trackers, or data brokers, and we never sell or rent personal data.
+- **Firebase (Push Notifications & Crash Diagnostics):** The Google Play Android app uses **Firebase Cloud Messaging (FCM)** to deliver opt-in push notifications and **Firebase Crashlytics** to capture crash reports. Notification payloads sent through FCM never include secret gate keypad codes.
 - **DKS Cloud & Infrastructure:** Your self-hosted server communicates with DoorKing's DKS Cloud service solely to pull/send gate configuration, access logs, and relay states on behalf of your gate administrator. If your server administrator configures SMTP email, OIDC Single Sign-On (e.g., Google), or push notifications, authentication or notification payloads pass through those configured providers only as needed to deliver the service.
 
 ## 4. Data Storage, Security & Retention

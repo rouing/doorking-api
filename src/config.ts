@@ -53,8 +53,8 @@ export interface ServerConfig {
    * 'none'. appUrl: the address links in emails point to ('' = https://<server.publicHost>).
    */
   email: { host: string; port: number; security: string; user: string; password: string; from: string; appUrl: string };
-  /** Optional VAPID keys for Web Push; when blank, keys are auto-generated and saved in PostgreSQL `meta`. */
-  push: { vapidPublicKey: string; vapidPrivateKey: string; subject: string };
+  /** Optional VAPID keys for Web Push and optional Firebase Service Account JSON path for Android FCM HTTP v1. */
+  push: { vapidPublicKey: string; vapidPrivateKey: string; subject: string; fcmServiceAccountPath: string };
   /** Optional native Android app verification (`/.well-known/assetlinks.json`, WebAuthn `android:apk-key-hash:` origins, and `/download` APK path). */
   android: { packageName: string; sha256CertFingerprints: string[]; apkPath: string };
   sso: { providers: SsoProvider[] };
@@ -178,6 +178,7 @@ const ConfigSchema = z.strictObject({
     vapidPublicKey: textField(''),
     vapidPrivateKey: textField(''),
     subject: textField(''),
+    fcmServiceAccountPath: textField(''),
   }, objError).prefault({}),
   android: z.strictObject({
     packageName: textField('').refine((value) => !value || /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(value), {
@@ -306,6 +307,10 @@ export function loadConfig({ file: given, env = process.env, args = process.argv
   // A path (with a folder) is relative to the config file's folder; a bare name such as "ffmpeg" is looked up on the PATH.
   if (/[\\/]/.test(sections.cameras.ffmpeg)) sections.cameras.ffmpeg = path.resolve(dir, sections.cameras.ffmpeg);
   if (sections.android.apkPath.trim()) sections.android.apkPath = path.resolve(dir, sections.android.apkPath.trim());
+  if (sections.push.fcmServiceAccountPath.trim()) {
+    sections.push.fcmServiceAccountPath = path.resolve(dir, sections.push.fcmServiceAccountPath.trim());
+    checkPrivate(sections.push.fcmServiceAccountPath);
+  }
   return { file: fs.existsSync(configFile) ? configFile : null, ...sections };
 }
 

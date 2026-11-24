@@ -1,21 +1,30 @@
 /**
  * @module web/push
  *
- * Web Push delivery module: initializes/caches VAPID keys on start and sends alerts to subscribed devices.
+ * Push delivery module: Web Push (VAPID) + optional Firebase Cloud Messaging (FCM HTTP v1) for native Android devices.
  */
 import * as dk from '../index.ts';
 import type { ContextModule } from './context.ts';
 import { logger, logMessages } from '../src/logging.ts';
 
 /**
- * Creates the server's Web Push module.
+ * Creates the server's Push module (Web Push + optional FCM).
  *
  * @param deps - Shared server context.
- * @returns VAPID key loader, gate-admin push alert sender, and user test push helper.
+ * @returns VAPID key loader, FCM status, gate-admin push alert sender, user notice sender, and test push helpers.
  */
 export function createPush(deps: ContextModule) {
   const { APP, config, store } = deps;
   let vapidPromise: Promise<dk.VapidConfig> | null = null;
+  let fcmSender: dk.FcmSender | null = null;
+  if (config.push.fcmServiceAccountPath) {
+    try {
+      fcmSender = dk.createFcmSender(config.push.fcmServiceAccountPath);
+      if (fcmSender) logger('server').info`FCM push enabled for project ${fcmSender.projectId}`;
+    } catch (err) {
+      logger('server').warn`FCM service account could not be loaded: ${(err as Error).message}`;
+    }
+  }
 
   /** Loads or auto-generates the server's VAPID keypair (cached for this server instance). */
   function vapid(): Promise<dk.VapidConfig> {
@@ -33,56 +42,76 @@ export function createPush(deps: ContextModule) {
     return (await vapid()).publicKey;
   }
 
+  /** True when server-side FCM HTTP v1 credentials are configured and loaded. */
+  function fcmEnabled(): boolean {
+    return fcmSender !== null;
+  }
+
   /**
-   * Sends a Web Push notification to all gate admins of `phone` who have `notify_alerts` enabled.
+   * Sends a push notification (Web Push + Android FCM) to all gate admins of `phone` with `notify_alerts` enabled.
    * Never throws (errors are logged).
-   *
-   * @param phone - Gate system phone number.
-   * @param title - Notification title.
-   * @param body - Notification body text.
    */
   async function pushGateAlert(phone: string, title: string, body: string): Promise<void> {
     try {
       const admins = await dk.pushAlertRecipients(store, phone);
       if (!admins.length) return;
-      await dk.sendPushToUsers(store, await vapid(), admins, { title, body, url: '/', tag: `gate-${dk.phoneDigits(phone)}` }, { log: logMessages('server') });
+      const payload = { title, body, url: '/', tag: `gate-${dk.phoneDigits(phone)}` };
+      await Promise.all([
+        dk.sendPushToUsers(store, await vapid(), admins, payload, { log: logMessages('server') }),
+        dk.sendFcmToUsers(store, fcmSender, admins, payload, { log: logMessages('server') }),
+      ]);
     } catch (err) {
-      logger('server').warn`Web Push gate alert failed: ${(err as Error).message}`;
+      logger('server').warn`Push gate alert failed: ${(err as Error).message}`;
     }
   }
 
   /**
-   * Sends a test push notification to all of `username`'s subscribed devices.
-   *
-   * @param username - Local account username.
-   * @returns Promise resolving to `{ sent, failed, removed }`.
+   * Sends a test push notification to all of `username`'s subscribed Web Push + FCM devices.
    */
   async function sendTestPush(username: string): Promise<{ sent: number; failed: number; removed: number }> {
-    return dk.sendPushToUsers(store, await vapid(), [username], {
+    const payload = {
       title: 'DoorKing Gate Manager',
       body: 'Push notifications are working on this device.',
       url: '/',
       tag: 'doorking-test',
-    }, { log: logMessages('server') });
+    };
+    const [web, fcm] = await Promise.all([
+      dk.sendPushToUsers(store, await vapid(), [username], payload, { log: logMessages('server') }),
+      dk.sendFcmToUsers(store, fcmSender, [username], payload, { log: logMessages('server') }),
+    ]);
+    return { sent: web.sent + fcm.sent, failed: web.failed + fcm.failed, removed: web.removed + fcm.removed };
   }
 
   /**
-   * Sends a Web Push notification to one user's subscribed devices (never throws).
-   *
-   * @param username - Local account username.
-   * @param title - Notification title.
-   * @param body - Notification body text (never include secret gate codes).
-   * @param [tag] - Notification tag for collapsing duplicates.
+   * Sends a test push notification specifically to `username`'s registered Android FCM devices.
+   */
+  async function sendTestFcm(username: string): Promise<{ enabled: boolean; sent: number; failed: number; removed: number }> {
+    if (!fcmSender) return { enabled: false, sent: 0, failed: 0, removed: 0 };
+    const result = await dk.sendFcmToUsers(store, fcmSender, [username], {
+      title: 'DoorKing Gate Manager',
+      body: 'Android push notifications are working on this device.',
+      url: '/',
+      tag: 'doorking-test',
+    }, { log: logMessages('server') });
+    return { enabled: true, ...result };
+  }
+
+  /**
+   * Sends a push notification (Web Push + Android FCM) to one user's devices (never throws).
    */
   async function pushUserNotice(username: string, title: string, body: string, tag = 'doorking-notice'): Promise<void> {
     try {
-      await dk.sendPushToUsers(store, await vapid(), [username], { title, body, url: '/', tag }, { log: logMessages('server') });
+      const payload = { title, body, url: '/', tag };
+      await Promise.all([
+        dk.sendPushToUsers(store, await vapid(), [username], payload, { log: logMessages('server') }),
+        dk.sendFcmToUsers(store, fcmSender, [username], payload, { log: logMessages('server') }),
+      ]);
     } catch (err) {
-      logger('server').warn`Web Push user notice failed: ${(err as Error).message}`;
+      logger('server').warn`Push user notice failed: ${(err as Error).message}`;
     }
   }
 
-  return { publicKey, pushGateAlert, pushUserNotice, sendTestPush };
+  return { publicKey, fcmEnabled, pushGateAlert, pushUserNotice, sendTestPush, sendTestFcm };
 }
 
 export type PushModule = ReturnType<typeof createPush>;

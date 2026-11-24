@@ -210,9 +210,16 @@ export function createAuth(deps: ContextModule) {
    */
   async function stepUpRefusal(session: Session, extra = ''): Promise<Reply> {
     const hasPasskey = (await dk.listPasskeys(store, session.user)).length > 0;
-    return [403, { stepUp: true, hasPasskey, error: (hasPasskey
-      ? 'Confirm it\'s you with your passkey to do this.'
-      : 'This needs a passkey. Add one in User Settings (Passkeys), then try again.') + extra }];
+    const user = await dk.getUser(store, session.user);
+    const canUsePassword = Boolean(user?.hasPassword && !(await passwordOff(session.user)));
+    const message = hasPasskey && canUsePassword
+      ? 'Confirm it\'s you with your passkey or password to do this.'
+      : hasPasskey
+        ? 'Confirm it\'s you with your passkey to do this.'
+        : canUsePassword
+          ? 'Confirm it\'s you with your password to do this.'
+          : 'This needs a passkey. Add one in User Settings (Passkeys), then try again.';
+    return [403, { stepUp: true, hasPasskey, canUsePassword, error: message + extra }];
   }
   /**
    * Re-confirming who it is before a sensitive account change (email, adding or removing a passkey), so a stolen session

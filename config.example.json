@@ -48,7 +48,8 @@
   "push": {
     "vapidPublicKey": "",
     "vapidPrivateKey": "",
-    "subject": ""
+    "subject": "",
+    "fcmServiceAccountPath": ""
   },
   "android": {
     "packageName": "",
