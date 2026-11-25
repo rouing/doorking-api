@@ -142,6 +142,14 @@ function sessionRoutes(modules: Modules): Route[] {
       return [200, { ok: true }];
     }),
 
+    // Mints an independent long-lived native Bearer token for an already-authenticated user session
+    // (used by same-origin OAuth consent flows such as doorking-mcp after Passkey or SSO sign-in).
+    route('POST', '/api/session/mint-bearer', 'user', async ({ session }) => {
+      const tok = await dk.createSession(store, session.user, { client: 'native' });
+      logger('session').info`${session.user} minted delegated MCP bearer session`;
+      return [200, { token: `dks_${tok}`, user: session.user }];
+    }),
+
     // First start only (no account yet): creates the first account, which becomes admin of every gate that has no
     // admin (gates moved over from DKS sign-in), and signs it in. { setupCode, username, password, email? }.
     route('POST', '/api/setup', 'public', async ({ body, req, reply }) => {
@@ -383,6 +391,11 @@ function ssoRoutes(modules: Modules): Route[] {
           return reply.redirect(`doorking://sso/callback?code=${encodeURIComponent(code)}`, 302);
         }
         reply.setCookie('sid', await dk.createSession(store, done.username, { strong: result.strong, client: sessionClientFor(req) }), sessionCookieOpts(req));
+        const returnTo = String(req.cookies?.dk_return_to || '');
+        if (/^\/oauth\/consent\/[0-9a-f]{32}$/.test(returnTo)) {
+          reply.clearCookie('dk_return_to', { path: '/' });
+          return reply.redirect(returnTo, 302);
+        }
         return reply.redirect('/', 302);
       } catch (caught) {
         const err = caught as Error & { status?: number };
