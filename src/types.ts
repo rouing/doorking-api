@@ -533,7 +533,11 @@ export interface PortalMeReply {
     cards: { number: string; device: string }[];
     email: string;
   };
-  portal: ResidentPortalPrefs & { buzzRelayLabels: { relay: number; name: string }[] };
+  portal: ResidentPortalPrefs & {
+    buzzRelayLabels: { relay: number; name: string }[];
+    allBuzzRelayLabels?: { relay: number; name: string }[];
+    hiddenRelays?: number[];
+  };
   reroll: { usedToday: number; maxPerDay: number; remainingToday: number; pendingSend: boolean; nextScheduledSend: string | null };
 }
 

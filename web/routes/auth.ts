@@ -285,6 +285,13 @@ function passkeyRoutes(modules: Modules): Route[] {
       return rp ? [200, await dk.confirmationOptions(store, session.user, rp)] : [400, { error: NO_PASSKEY_SITE }];
     }),
     route('POST', '/api/me/step-up', 'user', async ({ session, req, body }) => {
+      const authHeader = String(req.headers.authorization || '');
+      const isNativeBearer = /^Bearer\s+dks_[0-9a-f]{64}$/i.test(authHeader.trim());
+      if (body.biometric === true && isNativeBearer) {
+        const at = await dk.markSessionStrong(store, session.tokenHash);
+        logger('session').info`${session.user} confirmed with device biometric (step-up)`;
+        return [200, { strongUntil: new Date(at + STEP_UP_MS).toISOString() }];
+      }
       if (body.response === undefined && typeof body.password === 'string' && body.password.length > 0) {
         const off = await passwordOff(session.user);
         if (off) return [403, { error: off }];

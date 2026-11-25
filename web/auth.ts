@@ -242,7 +242,7 @@ export function createAuth(deps: ContextModule) {
     return [403, { error: SIGN_IN_AGAIN }];
   }
   const meReply = (user: dk.User) => ({ username: user.username, email: user.email, pendingEmail: user.pendingEmail, phone: user.phone, dark: user.dark,
-    notifyAccess: user.notifyAccess, notifyAlerts: user.notifyAlerts });
+    notifyAccess: user.notifyAccess, notifyAlerts: user.notifyAlerts, hiddenRelays: user.hiddenRelays });
   /**
    * The site name passkeys are tied to for this request: the public name (over HTTPS), or localhost on the server
    * itself; null for any other host (such as 127.0.0.1, which WebAuthn doesn't accept).

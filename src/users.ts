@@ -25,12 +25,12 @@ const scrypt = promisify(crypto.scrypt) as (password: string, salt: Buffer, len:
  */
 export interface User {
   username: string; email: string; pendingEmail: string; phone: string; dark: boolean; mustChangePassword: boolean; notifyAccess: boolean;
-  notifyAlerts: boolean; invited: boolean; hasPassword: boolean; createdAt: string; createdBy: string; lastSignIn: string | null; signIns: number;
+  notifyAlerts: boolean; hiddenRelays: Record<string, number[]>; invited: boolean; hasPassword: boolean; createdAt: string; createdBy: string; lastSignIn: string | null; signIns: number;
   resetAt: string | null; // the last password reset by email link
 }
 interface UserRow {
   username: string; password_hash: string; email: string | null; pending_email: string | null; phone: string | null; dark: boolean; must_change: boolean;
-  notify_access: boolean; notify_alerts: boolean; created_at: string; created_by: string; last_sign_in: string | null; sign_ins: number;
+  notify_access: boolean; notify_alerts: boolean; hidden_relays?: Record<string, unknown> | null; created_at: string; created_by: string; last_sign_in: string | null; sign_ins: number;
   reset_at: string | null;
 }
 /**
@@ -47,10 +47,23 @@ const NO_PASSWORD = '!';
  * @param user - Local account username (or actor name for audit logs).
  * @returns `string` result.
  */
+function normalizeHiddenRelays(raw: unknown): Record<string, number[]> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, number[]> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const phone = String(k).replace(/\D/g, '');
+    if (!phone || !Array.isArray(v)) continue;
+    const list = [...new Set(v.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 18))].sort((a, b) => a - b);
+    if (list.length) out[phone] = list;
+  }
+  return out;
+}
+
 export const userKey = (user: unknown): string => String(user || '').trim().toLowerCase();
 const fromRow = (row: UserRow): User => ({
   username: row.username, email: row.email || '', pendingEmail: row.pending_email || '', phone: row.phone || '', dark: row.dark, mustChangePassword: row.must_change,
-  notifyAccess: row.notify_access, notifyAlerts: row.notify_alerts, invited: row.password_hash === NO_PASSWORD, hasPassword: hasPasswordHash(row.password_hash), createdAt: row.created_at, createdBy: row.created_by, lastSignIn: row.last_sign_in, signIns: row.sign_ins,
+  notifyAccess: row.notify_access, notifyAlerts: row.notify_alerts, hiddenRelays: normalizeHiddenRelays(row.hidden_relays),
+  invited: row.password_hash === NO_PASSWORD, hasPassword: hasPasswordHash(row.password_hash), createdAt: row.created_at, createdBy: row.created_by, lastSignIn: row.last_sign_in, signIns: row.sign_ins,
   resetAt: row.reset_at ? new Date(row.reset_at).toISOString() : null,
 });
 
@@ -548,14 +561,18 @@ async function setOwnEmail(store: Store, name: string, mail: string): Promise<vo
  * @returns Promise resolving to `User`.
  * @throws HTTP 404 error on invalid input or conflict.
  */
-export async function updateUserSettings(store: Store, username: string, { email, dark, phone, notifyAccess, notifyAlerts }:
-  { email?: unknown; dark?: unknown; phone?: unknown; notifyAccess?: unknown; notifyAlerts?: unknown }): Promise<User> {
+export async function updateUserSettings(store: Store, username: string, { email, dark, phone, notifyAccess, notifyAlerts, hiddenRelays }:
+  { email?: unknown; dark?: unknown; phone?: unknown; notifyAccess?: unknown; notifyAlerts?: unknown; hiddenRelays?: unknown }): Promise<User> {
   const name = userKey(username);
   if (phone !== undefined) await run(store, 'UPDATE users SET phone = $2 WHERE username = $1', [name, checkUserPhone(phone) || null]);
   if (email !== undefined) await setOwnEmail(store, name, checkEmail(email));
   if (dark !== undefined) await run(store, 'UPDATE users SET dark = $2 WHERE username = $1', [name, dark === true]);
   if (notifyAccess !== undefined) await run(store, 'UPDATE users SET notify_access = $2 WHERE username = $1', [name, notifyAccess !== false]);
   if (notifyAlerts !== undefined) await run(store, 'UPDATE users SET notify_alerts = $2 WHERE username = $1', [name, notifyAlerts !== false]);
+  if (hiddenRelays !== undefined) {
+    const normalized = normalizeHiddenRelays(hiddenRelays);
+    await run(store, 'UPDATE users SET hidden_relays = $2::jsonb WHERE username = $1', [name, JSON.stringify(normalized)]);
+  }
   const user = await getUser(store, name);
   if (!user) throw httpError(`No user "${name}"`, 404);
   return user;

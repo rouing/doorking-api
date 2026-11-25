@@ -32,19 +32,28 @@ export function portalRoutes(modules: Modules): Route[] {
   // Per-resident Buzz Me In cooldown tracker (key: `${phone}:${username}` -> last buzz ms).
   const lastBuzzAt = new Map<string, number>();
 
-  /** Loads the gate's normalized portal prefs and verifies the resident owns at least one enabled unit. */
+  /** Loads the gate's normalized portal prefs and verifies the resident owns at least one enabled unit (or is gate admin). */
   async function resolveResidentContext(gate: Gate, username: string, requestedCode?: string) {
     const prefs = await prefsOf(gate.phoneNumber);
     const portal = dk.normalizeResidentPortalPrefs(prefs.residentPortal);
-    if (!portal.enabled) throw dk.httpError('The Resident Portal is currently turned off for this gate.', 403);
+    const isAdmin = gate.role === 'admin';
+    if (!portal.enabled && !isAdmin) throw dk.httpError('The Resident Portal is currently turned off for this gate.', 403);
     const owned = await dk.ownedPortalUnits(store, gate.phoneNumber, username);
-    if (!owned.length) throw dk.httpError('Your Resident Portal access for this gate is disabled.', 403);
+    if (!owned.length && !isAdmin) throw dk.httpError('Your Resident Portal access for this gate is disabled.', 403);
     const [, list] = await editorResidents(gate);
     const rows = list.rows || [];
     const ownedRows = owned
       .map((codeKey) => rows.find((r) => dk.noteKey(r.directoryCode) === codeKey))
       .filter((r): r is NonNullable<typeof r> => Boolean(r));
-    if (!ownedRows.length) throw dk.httpError('Your unit was not found in the gate directory.', 404);
+    if (!ownedRows.length) {
+      if (!isAdmin) throw dk.httpError('Your unit was not found in the gate directory.', 404);
+      const adminUnit: ResidentRow = {
+        directoryCode: 'ADMIN', type: 'Resident', name: username, hidden: true,
+        areaCode: '', areaCodeIndex: 0, phone: '', entryCode: '', securityLevel: 1, floor: 0, elevatorRef: 0,
+        cards: [], note: '', entryOffset: 0, recordOffset: 0,
+      };
+      return { prefs, portal, list, ownedRows: [adminUnit], unit: adminUnit };
+    }
     const wantKey = requestedCode ? dk.noteKey(requestedCode) : '';
     const unit = wantKey ? ownedRows.find((r) => dk.noteKey(r.directoryCode) === wantKey) : ownedRows[0];
     if (!unit) throw dk.httpError('You do not have access to that directory code.', 403);
@@ -83,13 +92,20 @@ export function portalRoutes(modules: Modules): Route[] {
       const { prefs, portal, list, ownedRows, unit } = await resolveResidentContext(gate, session.user, code);
       const devices = prefs.deviceAssociation || dk.DEFAULT_DEVICE_ASSOCIATION;
       const labels = prefs.relayLabels || {};
-      const [usedToday, pendingSend, nextSend, portalRec, siteName] = await Promise.all([
+      const [usedToday, pendingSend, nextSend, portalRec, siteName, userRec] = await Promise.all([
         dk.countRerollsToday(store, gate.phoneNumber, unit.directoryCode),
         dk.hasPendingReroll(store, gate.phoneNumber, unit.directoryCode),
         dk.nextScheduledSend(store, gate.phoneNumber),
         dk.getResidentPortal(store, gate.phoneNumber, unit.directoryCode),
         siteNameOf(gate.phoneNumber),
+        dk.getUser(store, session.user),
       ]);
+      const isAdmin = gate.role === 'admin';
+      const allowedRelays = isAdmin ? dk.allOpenableRelays(prefs) : portal.buzzRelays;
+      const hiddenRelays = userRec?.hiddenRelays?.[gate.phoneNumber] || [];
+      const hiddenSet = new Set(hiddenRelays);
+      const allBuzzRelayLabels = allowedRelays.map((relay) => ({ relay, name: labels[String(relay)] || `Relay ${relay}` }));
+      const visibleBuzzRelayLabels = allBuzzRelayLabels.filter((item) => !hiddenSet.has(item.relay));
       const reply: PortalMeReply = {
         gate: {
           phoneNumber: gate.phoneNumber,
@@ -109,7 +125,11 @@ export function portalRoutes(modules: Modules): Route[] {
         },
         portal: {
           ...portal,
-          buzzRelayLabels: portal.buzzRelays.map((relay) => ({ relay, name: labels[String(relay)] || `Relay ${relay}` })),
+          buzzEnabled: portal.buzzEnabled || isAdmin,
+          buzzRelays: allowedRelays,
+          buzzRelayLabels: visibleBuzzRelayLabels,
+          allBuzzRelayLabels,
+          hiddenRelays,
         },
         reroll: {
           usedToday,
@@ -134,10 +154,12 @@ export function portalRoutes(modules: Modules): Route[] {
     // "Buzz Me In": momentary fail-safe pulse with Portal Open synthetic event + relay_timers safety net.
     webOnly(route('POST', `${P}/buzz`, 'gate-resident', async ({ session, gate, body }): Promise<Reply> => {
       const { prefs, portal, unit } = await resolveResidentContext(gate, session.user, body.code ? String(body.code) : undefined);
-      if (!portal.buzzEnabled) return [403, { error: 'Remote gate opening is not enabled for this community.' }];
+      const isAdmin = gate.role === 'admin';
+      if (!portal.buzzEnabled && !isAdmin) return [403, { error: 'Remote gate opening is not enabled for this community.' }];
       if (portal.requirePasskeyForBuzz && !strongUntil(session)) return stepUpRefusal(session);
-      const relay = Number(body.relay ?? portal.buzzRelays[0] ?? 0);
-      if (!portal.buzzRelays.includes(relay)) return [403, { error: 'That entrance is not enabled for resident opening.' }];
+      const allowedRelays = isAdmin ? dk.allOpenableRelays(prefs) : portal.buzzRelays;
+      const relay = Number(body.relay ?? allowedRelays[0] ?? 0);
+      if (!allowedRelays.includes(relay)) return [403, { error: 'That entrance is not enabled for resident opening.' }];
       const status = jobStatusFor(gate);
       if (!status.available) {
         return [409, { error: `The gate is currently ${status.busyReason || 'busy'}${status.percent !== null ? ` (${status.percent}%)` : ''}. Try again once it finishes.`, status }];

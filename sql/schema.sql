@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS gate_working (phone TEXT PRIMARY KEY, dir_digits INTE
 CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, email TEXT UNIQUE,
   dark BOOLEAN NOT NULL, must_change BOOLEAN NOT NULL, created_at TIMESTAMPTZ NOT NULL, created_by TEXT NOT NULL,
   last_sign_in TIMESTAMPTZ, sign_ins INTEGER NOT NULL, webauthn_id TEXT, pending_email TEXT, phone TEXT,
-  notify_access BOOLEAN NOT NULL DEFAULT true, notify_alerts BOOLEAN NOT NULL DEFAULT true);
+  notify_access BOOLEAN NOT NULL DEFAULT true, notify_alerts BOOLEAN NOT NULL DEFAULT true,
+  hidden_relays JSONB NOT NULL DEFAULT '{}'::jsonb);
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL, last_seen TIMESTAMPTZ NOT NULL, gate TEXT, strong_at TIMESTAMPTZ);
 CREATE INDEX IF NOT EXISTS sessions_username ON sessions (username);
@@ -150,6 +151,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_access BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_alerts BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS hidden_relays JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE gate_cards ADD COLUMN IF NOT EXISTS raw_code TEXT;
 ALTER TABLE gate_working ADD COLUMN IF NOT EXISTS area_codes JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE gate_working ADD COLUMN IF NOT EXISTS middle_pointer TEXT NOT NULL DEFAULT 'ffffff';

@@ -15,7 +15,7 @@ import { logger } from '../../src/logging.ts';
  * @returns Registered route definitions for this area.
  */
 export function accountRoutes(modules: Modules): Route[] {
-  const { asGate, logged, mailer, NO_EMAIL, prefsOf, store } = modules.context;
+  const { asGate, logged, mailer, NO_EMAIL, prefsOf, siteNameOf, store } = modules.context;
   const {
     approvals, confirmOwnPassword, meReply, NO_PASSKEY_SITE, passwordOff, providerOf, reauthNeed, reauthRefusal,
     relyingParty, SSO
@@ -87,19 +87,55 @@ export function accountRoutes(modules: Modules): Route[] {
     return updatedUnits.length ? { updatedUnits, nextScheduledSend: nextSends.sort()[0] || null } : undefined;
   }
 
+  /** Resolves all buzz-openable relays per gate accessible to `username`, with each relay's current hidden state. */
+  async function accessiblePortalRelays(username: string, hiddenRelays: Record<string, number[]>) {
+    const gates = await dk.userGates(store, username);
+    const out: Array<{ phone: string; siteName: string; relays: Array<{ relay: number; name: string; hidden: boolean }> }> = [];
+    for (const g of gates) {
+      const prefs = await prefsOf(g.phoneNumber);
+      const portal = dk.normalizeResidentPortalPrefs(prefs.residentPortal);
+      const isAdmin = g.role === 'admin';
+      let allowed: number[] = [];
+      if (isAdmin) {
+        allowed = dk.allOpenableRelays(prefs);
+      } else if (portal.enabled && portal.buzzEnabled) {
+        const owned = await dk.ownedPortalUnits(store, g.phoneNumber, username);
+        if (owned.length) allowed = portal.buzzRelays;
+      }
+      if (!allowed.length) continue;
+      const labels = prefs.relayLabels || {};
+      const hidden = new Set(hiddenRelays[g.phoneNumber] || []);
+      const siteName = (await siteNameOf(g.phoneNumber)) || `Gate ${g.phoneNumber}`;
+      out.push({
+        phone: g.phoneNumber,
+        siteName,
+        relays: allowed.map((relay) => ({
+          relay,
+          name: labels[String(relay)] || `Relay ${relay}`,
+          hidden: hidden.has(relay),
+        })),
+      });
+    }
+    return out;
+  }
+
   return [
-    // The signed-in user's own settings: GET { username, email, pendingEmail, phone, dark, notifyAccess, notifyAlerts };
-    // PUT changes any of email (needs the current password), phone, dark, notifyAccess, notifyAlerts.
+    // The signed-in user's own settings: GET { username, email, pendingEmail, phone, dark, notifyAccess, notifyAlerts, hiddenRelays, portalRelays };
+    // PUT changes any of email (needs the current password), phone, dark, notifyAccess, notifyAlerts, hiddenRelays.
     route('GET', '/api/me', 'user', async ({ session }) => {
-      const base = meReply((await dk.getUser(store, session.user))!);
-      const linkedUnits = await linkedResidentUnits(session.user);
+      const user = (await dk.getUser(store, session.user))!;
+      const base = meReply(user);
+      const [linkedUnits, portalRelays] = await Promise.all([
+        linkedResidentUnits(session.user),
+        accessiblePortalRelays(session.user, user.hiddenRelays),
+      ]);
       const fallbackPhone = !base.phone && linkedUnits.length
         ? linkedUnits.map((u) => u.phone).find(Boolean) || ''
         : '';
       const displayPhone = base.phone || (fallbackPhone.length === 10 ? `+1${fallbackPhone}` : fallbackPhone);
-      return [200, { ...base, phone: displayPhone, ...(linkedUnits.length && { linkedUnits }) }];
+      return [200, { ...base, phone: displayPhone, portalRelays, ...(linkedUnits.length && { linkedUnits }) }];
     }),
-    // { email?, phone?, dark?, notifyAccess?, notifyAlerts? }. A new email waits for its confirmation link (sent to it); the
+    // { email?, phone?, dark?, notifyAccess?, notifyAlerts?, hiddenRelays? }. A new email waits for its confirmation link (sent to it); the
     // old confirmed address is told about the change. For residents with portal units, updating phone also updates their
     // unit's call-box phone in the gate working copy so they can self-serve update it.
     route('PUT', '/api/me', 'user', async ({ session, body }) => {
@@ -108,7 +144,14 @@ export function accountRoutes(modules: Modules): Route[] {
         const refused = await reauthRefusal(session, 'email', body.password); // a changed email could take over the account by password reset
         if (refused) return refused;
       }
-      const user = await dk.updateUserSettings(store, session.user, { email: body.email, dark: body.dark, phone: body.phone, notifyAccess: body.notifyAccess, notifyAlerts: body.notifyAlerts });
+      const user = await dk.updateUserSettings(store, session.user, {
+        email: body.email,
+        dark: body.dark,
+        phone: body.phone,
+        notifyAccess: body.notifyAccess,
+        notifyAlerts: body.notifyAlerts,
+        hiddenRelays: body.hiddenRelays,
+      });
       let warning = '';
       if (user.pendingEmail && user.pendingEmail !== was.pendingEmail) {
         // The new address is saved (waiting) either way; a failed confirmation email is reported, not refused.
