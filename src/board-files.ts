@@ -334,6 +334,33 @@ export function decodeRcvEvent(transaction: { raw: string }, relayNames: string[
 }
 
 /**
+ * Decodes the numeric relay index(es) (0-18) triggered by one parsed rcv_out.bin record, or `[]` when no relay fired.
+ * Byte 7: 0x12 = relay 0, 0x00 = relay 1, 0x01 = relay 2, 0x02-0x11 = Tracker relays 3-18, 0xFC-0xFF = combos.
+ *
+ * @param transaction - Transaction record containing hex `raw` bytes.
+ * @returns Sorted numeric relay indices (0-18).
+ */
+export function decodeRcvRelayNumbers(transaction: { raw: string }): number[] {
+  const rec = Buffer.from(transaction.raw, 'hex');
+  if (rec.length < 8) return [];
+  const type = rec[4];
+  const isApb = type >= 0x22 && type <= 0x25;
+  const access = !(rec[2] & 0x40) ? 'Deny' : isApb ? 'Open' : 'Admit';
+  if (type === 5 || (type > 0x0c && !isApb)) return [];
+  if ((type === 0 || type === 1) && access === 'Deny') return [];
+  if (type === 2 && rec.readUInt16BE(5) >= 0xff80) return [];
+  if (!(type === 0 || type === 1 || type === 2 || type === 4 || SYSTEM_EVENTS[type] || type === 0x0b || type === 0x0c || isApb)) return [];
+  const flags = rec[7];
+  if (flags === 0x12) return [0];
+  if (flags >= 0 && flags <= 0x11) return [flags + 1];
+  if (flags === 0xfc) return [0, 1];
+  if (flags === 0xfd) return [0, 2];
+  if (flags === 0xfe) return [1, 2];
+  if (flags === 0xff) return [0, 1, 2];
+  return [];
+}
+
+/**
  * The columns that depend on the record type (byte 4); access: the column as decoded from byte 2.
  *
  * @param rec - `Buffer` value.

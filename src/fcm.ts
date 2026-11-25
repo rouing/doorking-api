@@ -35,9 +35,13 @@ interface ServiceAccountJson {
   token_uri?: string;
 }
 
+export interface FcmPayload extends PushPayload {
+  data?: Record<string, string>;
+}
+
 export interface FcmSender {
   readonly projectId: string;
-  send(token: string, payload: PushPayload): Promise<{ ok: true } | { ok: false; unregistered: boolean; error: string }>;
+  send(token: string, payload: FcmPayload): Promise<{ ok: true } | { ok: false; unregistered: boolean; error: string }>;
 }
 
 const fromRow = (row: FcmTokenRow): FcmTokenInfo => ({
@@ -115,6 +119,12 @@ export function createFcmSender(
       const accessToken = await getAccessToken();
       const tag = payload.tag || 'doorking-alert';
       const url = `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`;
+      const extraData: Record<string, string> = {};
+      if (payload.data) {
+        for (const [k, v] of Object.entries(payload.data)) {
+          if (v !== undefined && v !== null) extraData[k] = String(v);
+        }
+      }
       const res = await fetchFn(url, {
         method: 'POST',
         headers: {
@@ -132,6 +142,7 @@ export function createFcmSender(
             data: {
               url: payload.url || '/',
               tag,
+              ...extraData,
             },
             android: {
               priority: 'HIGH',
@@ -200,7 +211,7 @@ export async function sendFcmToUsers(
   store: Store,
   sender: FcmSender | null,
   usernames: string[],
-  payload: PushPayload,
+  payload: FcmPayload,
   { log = () => {} }: { log?: (msg: string) => void } = {},
 ): Promise<{ sent: number; failed: number; removed: number }> {
   const out = { sent: 0, failed: 0, removed: 0 };

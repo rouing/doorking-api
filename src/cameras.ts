@@ -14,8 +14,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { phoneDigits, run, type Store } from './db.ts';
 import type { CameraChannel, SnapshotMinute } from './types.ts';
-import { frameJobs, posterFile, type FrameJob } from './snapshot-files.ts';
-import { afterMs, finished, frameOfFile, listSnapshots, minuteStart, NO_FOOTAGE_MSG, NO_RECORDING_MSG, noFootageMinute, pendingMinutes, playbackTime, recordSnapshot, shiftsOf } from './camera-log.ts';
+import { channelsForRelays, frameJobs, posterFile, type FrameJob } from './snapshot-files.ts';
+import { afterMs, finished, footageApplies, frameOfFile, listSnapshots, minuteKey, minuteStart, NO_FOOTAGE_MSG, NO_RECORDING_MSG, noFootageMinute, pendingMinutes, playbackTime, recordSnapshot, shiftsOf } from './camera-log.ts';
 import { createCameraRunner, NO_CONNECTION, STOPPED_MSG } from './camera-runner.ts';
 import { type CameraConfig, CLIP_TRIES, recorderSettings, type Log, NO_VIDEO_MSG, type PendingMinute, type Recorder, SETTLE_MS, type Shifts, type TxRow, type WithPassword } from './camera-settings.ts';
 import { httpError } from './errors.ts';
@@ -67,11 +67,17 @@ async function settleAll<T>(fns: (() => Promise<T>)[], limit: number): Promise<S
  * @param [short] - { [file]: seconds }.
  * @returns `{ kept: string[]; jobs: FrameJob[] }` result.
  */
-function missingFrames(cfg: CameraConfig, dir: string, minute: string, have: string[] = [], short: Shifts = {}):
-  { kept: string[]; jobs: FrameJob[] } {
+function missingFrames(
+  cfg: CameraConfig,
+  dir: string,
+  minute: string,
+  have: string[] = [],
+  short: Shifts = {},
+  channels: CameraChannel[] = cfg.channels,
+): { kept: string[]; jobs: FrameJob[] } {
   const folder = path.join(dir, 'snapshots', minute);
   const kept = have.filter((name) => fs.existsSync(path.join(folder, name)));
-  const jobs = frameJobs(cfg).filter(({ file }) => !kept.includes(file) || short[file]);
+  const jobs = frameJobs(cfg, channels).filter(({ file }) => !kept.includes(file) || short[file]);
   return { kept, jobs };
 }
 
@@ -323,11 +329,11 @@ async function grabNearby(runner: CameraRunner, cfg: Recorder, channel: number, 
  * @param [options6.short] - Map of short video filenames to recorded durations in seconds.
  * @returns Promise resolving to the operation result.
  */
-async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: string, { minute, ts }: PendingMinute, have: string[] = [],
+async function snapshotMinute(runner: CameraRunner, cfg: RecorderConfig, dir: string, { minute, ts, channels }: PendingMinute, have: string[] = [],
   { signal, onFrame = () => {}, log = () => {}, short: given = {} }: { signal?: AbortSignal; onFrame?: () => void; log?: Log; short?: Shifts } = {}) {
   const folder = path.join(dir, 'snapshots', minute);
   fs.mkdirSync(folder, { recursive: true });
-  const { kept, jobs } = missingFrames(cfg, dir, minute, have, given);
+  const { kept, jobs } = missingFrames(cfg, dir, minute, have, given, channels);
   let unreachable = null as CodedError | null;
   const shifts: Shifts = {};
   const short: Shifts = { ...given };
@@ -575,7 +581,7 @@ export async function runSnapshots(store: Store, runner: CameraRunner, phone: st
   const { pending, tooRecent } = minutesToFetch(cfg, rows, known, minute, now);
   const out: SnapshotResult = { minutes: pending.length, done: 0, partial: 0, failed: 0, stopped: false };
   if (tooRecent) out.error = 'This minute may not be recorded yet; try again in a few minutes';
-  const progress = snapshotProgress(pending, (item) => missingFrames(cfg, dir, item, known[item]?.files, known[item]?.short).jobs.length, onProgress);
+  const progress = snapshotProgress(pending, (item) => missingFrames(cfg, dir, item.minute, known[item.minute]?.files, known[item.minute]?.short, item.channels).jobs.length, onProgress);
   for (const item of pending) {
     if (signal && signal.aborted) { out.stopped = true; break; }
     progress.starting(item.minute);
@@ -612,20 +618,28 @@ function minutesToFetch(cfg: RecorderConfig, rows: TxRow[], known: Record<string
   if (start === null) throw httpError('Not a transaction minute');
   if (noFootageMinute(rows, minute)) throw httpError(NO_FOOTAGE_MSG);
   const tooRecent = start > now - SETTLE_MS - afterMs(cfg);
-  return { pending: tooRecent ? [] : [{ minute, ts: start }], tooRecent };
+  if (tooRecent) return { pending: [], tooRecent: true };
+  const relays = new Set<number | null>();
+  for (const row of rows) {
+    if (minuteKey(row.ts) !== minute || !footageApplies(row)) continue;
+    if (row.relays?.length) for (const r of row.relays) relays.add(r);
+    else relays.add(row.relay ?? null);
+  }
+  const matched = channelsForRelays(cfg.channels, relays);
+  return { pending: [{ minute, ts: start, channels: matched.length ? matched : cfg.channels }], tooRecent: false };
 }
 
 /**
  * A run's progress, reported (onProgress) as each minute starts, each frame is saved and each minute ends.
- * framesOf(minute): the frames still to fetch for it.
+ * framesOf(item): the frames still to fetch for it.
  *
  * @param pending - `PendingMinute[]` value.
- * @param framesOf - `(minute: string) => number` value.
+ * @param framesOf - `(item: PendingMinute) => number` value.
  * @param onProgress - Callback receiving snapshot progress updates.
  * @returns Operation result.
  */
-function snapshotProgress(pending: PendingMinute[], framesOf: (minute: string) => number, onProgress: (progress: SnapshotProgress) => void) {
-  const byMinute: SnapshotProgress['byMinute'] = Object.fromEntries(pending.map((item) => [item.minute, { frames: framesOf(item.minute), done: 0 }]));
+function snapshotProgress(pending: PendingMinute[], framesOf: (item: PendingMinute) => number, onProgress: (progress: SnapshotProgress) => void) {
+  const byMinute: SnapshotProgress['byMinute'] = Object.fromEntries(pending.map((item) => [item.minute, { frames: framesOf(item), done: 0 }]));
   const state = {
     minutes: pending.length, minutesDone: 0, framesDone: 0,
     frames: Object.values(byMinute).reduce((total, counts) => total + counts.frames, 0), current: null as string | null,

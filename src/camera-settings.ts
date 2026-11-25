@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { encrypt, decrypt, phoneDigits, one, run, type Store } from './db.ts';
-import type { CameraSettings } from './types.ts';
+import type { CameraChannel, CameraSettings } from './types.ts';
 import { httpError } from './errors.ts';
 
 /** Settings as validated by normalizeCameraSettings; with the recorder password for the runner. */
@@ -16,8 +16,8 @@ export interface Recorder { serial: string; username: string; password: string }
 export type Shifts = Record<string, number>;
 export type Log = (message: string) => void;
 /** Transaction rows as read by transactions.ts (only the fields used here). */
-export interface TxRow { ts: number; access?: string; eventType?: string }
-export interface PendingMinute { minute: string; ts: number }
+export interface TxRow { ts: number; access?: string; eventType?: string; relay?: number | null; relays?: number[] }
+export interface PendingMinute { minute: string; ts: number; channels?: CameraChannel[] }
 
 const CAMERA_EVENTS = ['access', 'all'] as const; // access: admitted/denied entries only
 const CAMERA_MODES = ['snapshots', 'video'] as const;
@@ -33,12 +33,33 @@ const intField = (def: number, min: number, max: number, msg: string) =>
   z.preprocess((value) => (value === undefined || value === null || value === '' ? def : Number(value)),
     z.int({ error: msg }).min(min, { error: msg }).max(max, { error: msg }));
 
+const ChannelRelaysSchema = z.preprocess(
+  (value) => (value === undefined || value === null ? undefined : value),
+  z.array(
+    z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() !== '' ? Number(value) : value),
+      z.int({ error: 'Channel relays must be whole numbers from 0 to 18' })
+        .min(0, { error: 'Channel relays must be whole numbers from 0 to 18' })
+        .max(18, { error: 'Channel relays must be whole numbers from 0 to 18' }),
+    ),
+    { error: 'Channel relays must be a list of relay numbers (0-18)' },
+  ).transform((list) => {
+    const sorted = [...new Set(list)].sort((a, b) => a - b);
+    return sorted.length ? sorted : undefined;
+  }).optional(),
+);
+
 const ChannelsSchema = z.preprocess(
   (value) => (Array.isArray(value) ? value.filter((item) => item && typeof item === 'object' && item.channel !== '' && item.channel != null) : []),
   z.array(z.object({
     channel: z.preprocess((value) => Number(value), z.int({ error: 'Channels must be 1-64' }).min(1, { error: 'Channels must be 1-64' }).max(64, { error: 'Channels must be 1-64' })),
     name: z.preprocess((value) => String(value || '').trim().slice(0, 40), z.string()),
-  }))
+    relays: ChannelRelaysSchema,
+  }).transform(({ channel, name, relays }) => ({
+    channel,
+    name,
+    ...(relays?.length ? { relays } : {}),
+  })))
     .min(1, { error: `List 1-${MAX_CHANNELS} channels` })
     .max(MAX_CHANNELS, { error: `List 1-${MAX_CHANNELS} channels` })
     .superRefine((list, ctx) => {

@@ -1,4 +1,4 @@
-import { decodeRcvEvent, hasValidDate, residentRows, type RcvRecord, type ResidentsData } from '../src/board-files.ts';
+import { decodeRcvEvent, decodeRcvRelayNumbers, hasValidDate, residentRows, type RcvRecord, type ResidentsData } from '../src/board-files.ts';
 import { DEFAULT_DEVICE_ASSOCIATION, deviceNameFor } from '../src/shared.ts';
 import { footageApplies, minuteKey } from '../src/camera-log.ts';
 import type { TxRow } from '../src/camera-settings.ts';
@@ -98,7 +98,14 @@ function recordTime(record: RcvRecord): number {
 export function cameraRows(history: RcvRecord[]): TxRow[] {
   return history.filter(hasValidDate).map((record) => {
     const { eventType, access } = decodeRcvEvent(record);
-    return { ts: recordTime(record), eventType, access };
+    const relays = decodeRcvRelayNumbers(record);
+    return {
+      ts: recordTime(record),
+      eventType,
+      access,
+      relay: relays.length ? relays[0] : null,
+      ...(relays.length > 1 && { relays }),
+    };
   });
 }
 

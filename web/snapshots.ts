@@ -192,7 +192,7 @@ export function createSnapshots(deps: ContextModule & EditingModule) {
     keepDays: 'Keep pictures',
   };
   const cameraText = (key: string, value: unknown): string => (key === 'keepDays' ? (value ? `${value} days` : 'Forever') : value == null ? '' : key === 'channels'
-    ? (value as CameraChannel[]).map((channel) => `${channel.channel}${channel.name ? ` ${channel.name}` : ''}`).join(', ') : String(value));
+    ? (value as CameraChannel[]).map((channel) => `${channel.channel}${channel.name ? ` ${channel.name}` : ''}${channel.relays?.length ? ` (relays ${channel.relays.join(', ')})` : ''}`).join(', ') : String(value));
   /**
    * Saves the gate's camera settings and records the change (never the password) in the gate's history.
    *

@@ -17,13 +17,44 @@ import { logger } from '../../src/logging.ts';
 export function accountRoutes(modules: Modules): Route[] {
   const { asGate, logged, mailer, NO_EMAIL, prefsOf, siteNameOf, store } = modules.context;
   const {
-    approvals, confirmOwnPassword, meReply, NO_PASSKEY_SITE, passwordOff, providerOf, reauthNeed, reauthRefusal,
-    relyingParty, SSO
+    approvals, clientIp, confirmOwnPassword, meReply, NO_PASSKEY_SITE, overLimit, passwordOff, providerOf, pushApprovals,
+    reauthNeed, reauthRefusal, relyingParty, SSO
   } = modules.auth;
   const { editOpts, editResidentInCache, editorResidents, withHistory } = modules.editing;
   const { gateAlert, mailTo, securityAlert, sendVerification } = modules.mail;
-  const passkeysReply = async (user: string) => ({ passkeys: await dk.listPasskeys(store, user), userHandle: await dk.passkeyUserHandle(store, user) });
+  const passkeysReply = async (user: string) => {
+    const fcmOn = modules.push.fcmEnabled();
+    const [passkeys, userHandle, fcmTokens, bioKeys] = await Promise.all([
+      dk.listPasskeys(store, user),
+      dk.passkeyUserHandle(store, user),
+      fcmOn ? dk.listFcmTokens(store, user) : Promise.resolve([]),
+      fcmOn ? dk.listBiometricKeys(store, user) : Promise.resolve([]),
+    ]);
+    return {
+      passkeys,
+      userHandle,
+      pushApprovalAvailable: fcmOn && fcmTokens.length > 0 && bioKeys.length > 0,
+    };
+  };
   const fcmReply = async (user: string) => ({ enabled: modules.push.fcmEnabled(), tokens: await dk.listFcmTokens(store, user) });
+
+  function deviceLabelFrom(given: unknown, userAgent: unknown): string {
+    const custom = String(given ?? '').trim().slice(0, 80);
+    if (custom) return custom;
+    const ua = String(userAgent ?? '');
+    if (!ua) return 'Another device';
+    const browser = /Edg\//i.test(ua) ? 'Edge'
+      : /Firefox\//i.test(ua) ? 'Firefox'
+        : /Chrome\//i.test(ua) ? 'Chrome'
+          : /Safari\//i.test(ua) ? 'Safari' : '';
+    const os = /Android/i.test(ua) ? 'Android'
+      : /iPhone|iPad/i.test(ua) ? 'iOS'
+        : /Mac OS X/i.test(ua) ? 'macOS'
+          : /Windows/i.test(ua) ? 'Windows'
+            : /Linux/i.test(ua) ? 'Linux' : '';
+    if (browser && os) return `${browser} on ${os}`;
+    return browser || os || 'Another device';
+  }
 
   /** Resolves enabled resident portal units for `username` along with their current directory call-box phone. */
   async function linkedResidentUnits(username: string) {
@@ -230,6 +261,92 @@ export function accountRoutes(modules: Modules): Route[] {
       logger('session').info`${session.user} created a code to add a passkey on another device`;
       await securityAlert(session.user, 'A code to add a passkey on another device was created');
       return [201, out];
+    }),
+    // Push-notification passkey approval (2-digit number match + hardware ECDSA P-256 verification on Android).
+    route('POST', '/api/me/passkey-approval-requests', 'user', async ({ session, req, body }) => {
+      if (await overLimit(`push-approval:${session.user}`, 5)) {
+        return [429, { error: 'Too many approval requests. Try again in a few minutes.' }];
+      }
+      if (!modules.push.fcmEnabled()) {
+        return [503, { error: 'Push approval is not available on this server.' }];
+      }
+      const [fcmTokens, bioKeys] = await Promise.all([
+        dk.listFcmTokens(store, session.user),
+        dk.listBiometricKeys(store, session.user),
+      ]);
+      if (!fcmTokens.length || !bioKeys.length) {
+        return [409, { error: 'Push approval requires a registered Android device with notifications and biometric approval enabled.' }];
+      }
+      const deviceLabel = deviceLabelFrom(body.deviceLabel, req.headers['user-agent']);
+      const ip = clientIp(req);
+      const created = pushApprovals.create(session.user, session.tokenHash, { deviceLabel, ip });
+      await modules.push.sendFcmDataToUser(session.user, {
+        title: 'Approve passkey request',
+        body: `${deviceLabel}${ip ? ` (${ip})` : ''} wants to add a passkey to your account.`,
+        url: '/',
+        tag: `passkey-approval-${created.id}`,
+        data: {
+          type: 'passkey_approval',
+          requestId: created.id,
+          deviceLabel,
+          ip,
+          choices: JSON.stringify(created.choices),
+          expiresAt: created.expiresAt,
+        },
+      });
+      logger('session').info`${session.user} requested push passkey approval (${deviceLabel}, ${ip})`;
+      return [201, { id: created.id, numberMatch: created.numberMatch, expiresAt: created.expiresAt }];
+    }),
+    route('GET', '/api/me/passkey-approval-requests/pending', 'user', async ({ session }) => [
+      200,
+      { requests: pushApprovals.listPendingForUser(session.user) },
+    ]),
+    route('GET', '/api/me/passkey-approval-requests/:id', 'user', async ({ session, params }) => {
+      const result = pushApprovals.getForRequester(session.user, session.tokenHash, params.id);
+      if (!result) return [404, { error: 'Approval request not found' }];
+      return [200, result];
+    }),
+    route('POST', '/api/me/passkey-approval-requests/:id/respond', 'user', async ({ session, params, body }) => {
+      const decision = String(body.decision ?? '').trim().toLowerCase();
+      if (decision !== 'approve' && decision !== 'deny') {
+        return [400, { error: 'Decision must be "approve" or "deny"' }];
+      }
+      if (decision === 'deny') {
+        const res = pushApprovals.deny(session.user, params.id);
+        if (!res.ok) {
+          if (res.status === 'not_found') return [404, { error: 'Approval request not found' }];
+          return [409, { error: res.status === 'expired' ? 'Approval request has expired' : 'Approval request was already handled', status: res.status }];
+        }
+        logger('session').info`${session.user} denied push passkey approval request ${params.id}`;
+        return [200, { ok: true, status: 'denied' }];
+      }
+      const pending = pushApprovals.getPending(session.user, params.id);
+      if (!pending) {
+        return [404, { error: 'Approval request not found, expired, or already handled' }];
+      }
+      const pickedNumber = Number(body.pickedNumber);
+      if (!Number.isInteger(pickedNumber)) {
+        return [400, { error: 'A 2-digit confirmation number is required' }];
+      }
+      await dk.verifyBiometricSignature(store, session.user, {
+        keyId: body.biometricKeyId,
+        challenge: pending.challenge,
+        signature: body.signature,
+      });
+      if (pickedNumber !== pending.numberMatch) {
+        pushApprovals.approve(session.user, params.id, pickedNumber, '');
+        logger('session').warn`${session.user} chose the wrong number for push passkey approval ${params.id} (marked denied)`;
+        return [403, { error: 'The selected number did not match. The request has been denied.', status: 'denied' }];
+      }
+      const { code } = approvals.create(session.user);
+      const approved = pushApprovals.approve(session.user, params.id, pickedNumber, code);
+      if (!approved.ok) {
+        approvals.drop(session.user);
+        return [409, { error: approved.status === 'expired' ? 'Approval request has expired' : 'Approval request was already handled', status: approved.status }];
+      }
+      logger('session').info`${session.user} approved push passkey request ${params.id} with hardware biometric key`;
+      await securityAlert(session.user, 'A passkey addition on another device was approved via push notification');
+      return [200, { ok: true, status: 'approved' }];
     }),
     route('PUT', '/api/me/passkeys/:id', 'user', async ({ session, params, body }) => {
       await dk.renamePasskey(store, session.user, params.id, body.name);

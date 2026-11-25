@@ -31,7 +31,7 @@ function sessionRoutes(modules: Modules): Route[] {
   const { editorResidents } = modules.editing;
   const {
     clearFailedSignIn, clientIp, countTry, endSetup, oneSetupAtATime, passwordOff,
-    sessionCookieOpts, sessionTokenFor, setupCodeMatches, signInKeys, SSO_LIST, strongUntil
+    sessionClientFor, sessionCookieOpts, sessionTokenFor, setupCodeMatches, signInKeys, SSO_LIST, strongUntil
   } = modules.auth;
   /**
    * The first account (see POST /api/setup).
@@ -49,7 +49,7 @@ function sessionRoutes(modules: Modules): Route[] {
     }
     const user = await dk.createUser(store, { username: body.username, password: body.password, email: body.email, createdBy: 'setup', mustChangePassword: false });
     const adopted = await dk.adoptAdminlessGates(store, user.username);
-    const tok = await dk.createSession(store, user.username);
+    const tok = await dk.createSession(store, user.username, { client: sessionClientFor(req) });
     endSetup();
     logger('session').info`First account ${user.username} created (admin of ${adopted.length} gate(s))`;
     reply.setCookie('sid', tok, sessionCookieOpts(req));
@@ -129,7 +129,7 @@ function sessionRoutes(modules: Modules): Route[] {
       }
       await takeBack();
       await clearFailedSignIn(rateKey, ip);
-      const tok = await dk.createSession(store, account.username);
+      const tok = await dk.createSession(store, account.username, { client: sessionClientFor(req) });
       await recordPasswordAudit('success', undefined, account);
       logger('session').info`${account.username} signed in`;
       reply.setCookie('sid', tok, sessionCookieOpts(req));
@@ -158,7 +158,7 @@ function sessionRoutes(modules: Modules): Route[] {
  */
 function emailLinkRoutes(modules: Modules): Route[] {
   const { APP, logged, mailer, NO_EMAIL, store } = modules.context;
-  const { clearFailures, clientIp, overLimit, passwordOff, PER_ADDRESS, RESET_PER_ACCOUNT, sessionCookieOpts, sessionTokenFor } = modules.auth;
+  const { clearFailures, clientIp, overLimit, passwordOff, PER_ADDRESS, RESET_PER_ACCOUNT, sessionClientFor, sessionCookieOpts, sessionTokenFor } = modules.auth;
   const { mailTo, securityAlert } = modules.mail;
   return [
     // Email links (public: they work without being signed in). verify { token }: confirms the address. Password reset:
@@ -217,7 +217,7 @@ function emailLinkRoutes(modules: Modules): Route[] {
       if (!token) return [400, { error: 'This invitation link is invalid, used or expired. Ask the gate admin to send a new one.' }];
       const user = await dk.acceptInvite(store, token.username, body.password);
       await dk.recordSignIn(store, user.username);
-      const tok = await dk.createSession(store, user.username);
+      const tok = await dk.createSession(store, user.username, { client: sessionClientFor(req) });
       const role = await dk.isResidentOnlyUser(store, user.username) ? 'resident' : 'staff';
       await dk.recordLoginAudit(store, { username: user.username, identifier: user.email || user.username, role, method: 'invite', outcome: 'success', ip: clientIp(req), userAgent: String(req.headers['user-agent'] || '') }).catch(logged('session', 'Login audit write failed'));
       logger('session').info`${user.username} accepted their invitation and signed in`;
@@ -235,7 +235,7 @@ function emailLinkRoutes(modules: Modules): Route[] {
  */
 function passkeyRoutes(modules: Modules): Route[] {
   const { logged, STEP_UP_MS, store } = modules.context;
-  const { biometricChallenges, clientIp, confirmOwnPassword, NO_PASSKEY_SITE, overLimit, passwordOff, PER_ADDRESS, relyingParty, sessionCookieOpts, sessionTokenFor } = modules.auth;
+  const { biometricChallenges, clientIp, confirmOwnPassword, NO_PASSKEY_SITE, overLimit, passwordOff, PER_ADDRESS, relyingParty, sessionClientFor, sessionCookieOpts, sessionTokenFor } = modules.auth;
   return [
     // Passkey sign-in: POST options (no username: the browser offers this site's passkeys, also in the username box's
     // suggestions), then POST session { response }; sets the sid cookie like a password sign-in. A passkey not
@@ -258,7 +258,7 @@ function passkeyRoutes(modules: Modules): Route[] {
         throw err;
       }
       await dk.recordSignIn(store, username);
-      const tok = await dk.createSession(store, username, { strong: true });
+      const tok = await dk.createSession(store, username, { strong: true, client: sessionClientFor(req) });
       const role = await dk.isResidentOnlyUser(store, username) ? 'resident' : 'staff';
       await dk.recordLoginAudit(store, { username, identifier: username, role, method: 'passkey', outcome: 'success', ip, userAgent: ua }).catch(logged('session', 'Login audit write failed'));
       logger('session').info`${username} signed in with a passkey`;
@@ -322,7 +322,7 @@ function ssoRoutes(modules: Modules): Route[] {
   const { logged, STEP_UP_MS, store } = modules.context;
   const {
     clientIp, confirmOwnPassword, NO_SSO_SITE, overLimit, PER_ADDRESS, providerOf,
-    sessionCookieOpts, sessionTokenFor, ssoCookieOpts, ssoFlows, ssoRedirect
+    sessionClientFor, sessionCookieOpts, sessionTokenFor, ssoCookieOpts, ssoFlows, ssoRedirect
   } = modules.auth;
   const { securityAlert } = modules.mail;
   return [
@@ -347,7 +347,7 @@ function ssoRoutes(modules: Modules): Route[] {
     }),
     route('POST', '/api/sso/native-exchange', 'public', async ({ req, reply, body }) => {
       const { username, strong } = dk.consumeNativeSsoCode(ssoFlows, body.code, body.verifier);
-      const tok = await dk.createSession(store, username, { strong });
+      const tok = await dk.createSession(store, username, { strong, client: sessionClientFor(req) });
       reply.setCookie('sid', tok, sessionCookieOpts(req));
       return [200, { ok: true, ...sessionTokenFor(req, tok) }];
     }),
@@ -382,7 +382,7 @@ function ssoRoutes(modules: Modules): Route[] {
           const code = dk.issueNativeSsoCode(ssoFlows, { username: done.username, strong: result.strong, verifierHash: result.nativeVerifierHash });
           return reply.redirect(`doorking://sso/callback?code=${encodeURIComponent(code)}`, 302);
         }
-        reply.setCookie('sid', await dk.createSession(store, done.username, { strong: result.strong }), sessionCookieOpts(req));
+        reply.setCookie('sid', await dk.createSession(store, done.username, { strong: result.strong, client: sessionClientFor(req) }), sessionCookieOpts(req));
         return reply.redirect('/', 302);
       } catch (caught) {
         const err = caught as Error & { status?: number };

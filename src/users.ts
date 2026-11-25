@@ -579,8 +579,10 @@ export async function updateUserSettings(store: Store, username: string, { email
   return user;
 }
 
+export type SessionClient = 'web' | 'native';
+
 /** strongAt: when the session was last confirmed with a passkey (sign-in or confirmation), ms; null never. */
-export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number; strongAt: number | null; createdAt: number }
+export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number; strongAt: number | null; createdAt: number; client: SessionClient }
 
 const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 
@@ -593,11 +595,11 @@ const tokenHash = (token: string) => crypto.createHash('sha256').update(token).d
  * @param [options.strong] - Signed in with a passkey.
  * @returns Promise resolving to `string`.
  */
-export async function createSession(store: Store, username: string, { strong = false } = {}): Promise<string> {
+export async function createSession(store: Store, username: string, { strong = false, client = 'web' }: { strong?: boolean; client?: SessionClient } = {}): Promise<string> {
   const token = crypto.randomBytes(32).toString('hex');
   const now = new Date().toISOString();
-  await run(store, 'INSERT INTO sessions (token_hash, username, created_at, last_seen, strong_at) VALUES ($1, $2, $3, $3, $4)',
-    [tokenHash(token), userKey(username), now, strong ? now : null]);
+  await run(store, 'INSERT INTO sessions (token_hash, username, created_at, last_seen, strong_at, client) VALUES ($1, $2, $3, $3, $4, $5)',
+    [tokenHash(token), userKey(username), now, strong ? now : null, client]);
   return token;
 }
 
@@ -700,20 +702,30 @@ export function reauthNeeded(state: ReauthState, change: ReauthChange): Reauth {
  * @param [maxAgeMs] - Maximum session age in milliseconds.
  * @returns Promise resolving to `SessionInfo | null`.
  */
-export async function findSession(store: Store, token: string, idleMs: number, maxAgeMs = Infinity): Promise<SessionInfo | null> {
+export async function findSession(
+  store: Store,
+  token: string,
+  idleMs: number,
+  maxAgeMs = Infinity,
+  nativeIdleMs = idleMs,
+  nativeMaxAgeMs = maxAgeMs,
+): Promise<SessionInfo | null> {
   const hash = tokenHash(token);
-  const row = await one<{ username: string; gate: string | null; last_seen: string; strong_at: string | null; created_at: string }>(store,
-    'SELECT username, gate, last_seen, strong_at, created_at FROM sessions WHERE token_hash = $1', [hash]);
+  const row = await one<{ username: string; gate: string | null; last_seen: string; strong_at: string | null; created_at: string; client?: string | null }>(store,
+    'SELECT username, gate, last_seen, strong_at, created_at, client FROM sessions WHERE token_hash = $1', [hash]);
   if (!row) return null;
+  const client: SessionClient = row.client === 'native' ? 'native' : 'web';
+  const effectiveIdleMs = client === 'native' ? nativeIdleMs : idleMs;
+  const effectiveMaxAgeMs = client === 'native' ? nativeMaxAgeMs : maxAgeMs;
   const seen = new Date(row.last_seen).getTime();
   const now = Date.now();
-  if (now - seen > idleMs || now - new Date(row.created_at).getTime() > maxAgeMs) {
+  if (now - seen > effectiveIdleMs || now - new Date(row.created_at).getTime() > effectiveMaxAgeMs) {
     await run(store, 'DELETE FROM sessions WHERE token_hash = $1', [hash]);
     return null;
   }
   if (now - seen > 60000) await run(store, 'UPDATE sessions SET last_seen = $2 WHERE token_hash = $1', [hash, new Date(now).toISOString()]);
   return { tokenHash: hash, username: row.username, gate: row.gate, lastSeen: now, strongAt: row.strong_at ? new Date(row.strong_at).getTime() : null,
-    createdAt: new Date(row.created_at).getTime() };
+    createdAt: new Date(row.created_at).getTime(), client };
 }
 
 /**
@@ -745,9 +757,24 @@ export async function setSessionGate(store: Store, tokenHashValue: string, phone
  * @param [maxAgeMs] - Maximum session age in milliseconds.
  * @returns Promise resolving to `string[]`.
  */
-export async function sweepSessions(store: Store, idleMs: number, maxAgeMs = Infinity): Promise<string[]> {
-  const cutoff = new Date(Date.now() - idleMs).toISOString();
-  const oldest = new Date(Number.isFinite(maxAgeMs) ? Date.now() - maxAgeMs : 0).toISOString();
-  return (await all<{ username: string }>(store, 'DELETE FROM sessions WHERE last_seen < $1 OR created_at < $2 RETURNING username', [cutoff, oldest]))
-    .map((row) => row.username);
+export async function sweepSessions(
+  store: Store,
+  idleMs: number,
+  maxAgeMs = Infinity,
+  nativeIdleMs = idleMs,
+  nativeMaxAgeMs = maxAgeMs,
+): Promise<string[]> {
+  const now = Date.now();
+  const webIdle = new Date(now - idleMs).toISOString();
+  const webOldest = new Date(Number.isFinite(maxAgeMs) ? now - maxAgeMs : 0).toISOString();
+  const nativeIdle = new Date(now - nativeIdleMs).toISOString();
+  const nativeOldest = new Date(Number.isFinite(nativeMaxAgeMs) ? now - nativeMaxAgeMs : 0).toISOString();
+  return (await all<{ username: string }>(
+    store,
+    `DELETE FROM sessions
+      WHERE (client <> 'native' AND (last_seen < $1 OR created_at < $2))
+         OR (client = 'native' AND (last_seen < $3 OR created_at < $4))
+     RETURNING username`,
+    [webIdle, webOldest, nativeIdle, nativeOldest],
+  )).map((row) => row.username);
 }

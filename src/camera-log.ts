@@ -6,8 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { phoneDigits, all, run, type Store } from './db.ts';
-import type { SnapshotMinute } from './types.ts';
-import { frameJobs, NO_FOOTAGE_EVENTS } from './snapshot-files.ts';
+import type { CameraChannel, SnapshotMinute } from './types.ts';
+import { channelsForRelays, frameJobs, NO_FOOTAGE_EVENTS } from './snapshot-files.ts';
 import { type CameraConfig, type PendingMinute, SETTLE_MS, type Shifts, type TxRow } from './camera-settings.ts';
 
 const pad = (value: number): string => String(value).padStart(2, '0');
@@ -299,17 +299,42 @@ export const NO_RECORDING_MSG = 'No recording at this time';
 export const finished = (snapshot: { error?: string | null }): boolean => !snapshot.error || String(snapshot.error).split('; ').every((part) => NO_RECORDING.test(part));
 
 /**
+ * Relays triggered in each wanted transaction minute (used to filter camera channels mapped to specific relays).
+ *
+ * @param cfg - Camera settings.
+ * @param rows - Transaction rows.
+ * @returns Map from `YYYYMMDD-HHMM` to set of triggered relay numbers (or `null` when no relay fired).
+ */
+export function minuteRelays(cfg: CameraConfig, rows: TxRow[]): Map<string, Set<number | null>> {
+  const out = new Map<string, Set<number | null>>();
+  for (const row of rows) {
+    if (!wantsSnapshot(cfg, row)) continue;
+    const minute = minuteKey(row.ts);
+    let set = out.get(minute);
+    if (!set) { set = new Set(); out.set(minute, set); }
+    if (row.relays?.length) {
+      for (const r of row.relays) set.add(r);
+    } else {
+      set.add(row.relay ?? null);
+    }
+  }
+  return out;
+}
+
+/**
  * A logged minute still to fetch. Video mode: until every channel has its video, a minute with only pictures
  * is fetched again (its picture runs do not count); after a video run, finished and tries count as usual.
  *
  * @param cfg - Configuration or settings object.
  * @param snapshot - `SnapshotMinute` value.
+ * @param [channels] - Filtered channel subset for this minute (defaults to `cfg.channels`).
  * @returns True when the condition holds.
  */
-function needsRun(cfg: CameraConfig, snapshot: SnapshotMinute): boolean {
+function needsRun(cfg: CameraConfig, snapshot: SnapshotMinute, channels: CameraChannel[] = cfg.channels): boolean {
   if (snapshot.status === 'removed') return false;
+  if (!channels.length) return false;
   if (cfg.mode !== 'video') return !finished(snapshot) && snapshot.attempts < MAX_ATTEMPTS;
-  if (frameJobs(cfg).every(({ file }) => snapshot.files.includes(file) && !(snapshot.short || {})[file])) return false;
+  if (frameJobs(cfg, channels).every(({ file }) => snapshot.files.includes(file) && !(snapshot.short || {})[file])) return false;
   return !snapshot.videoAttempts || (!finished(snapshot) && snapshot.videoAttempts < MAX_ATTEMPTS);
 }
 
@@ -318,20 +343,24 @@ function needsRun(cfg: CameraConfig, snapshot: SnapshotMinute): boolean {
  * not removed, and not tried MAX_ATTEMPTS times (see needsRun). rows: transaction rows ({ ts, access }).
  *
  * @param cfg - Configuration or settings object.
- * @param rows - Transaction rows (`{ ts, access, eventType }`).
+ * @param rows - Transaction rows (`{ ts, access, eventType, relay }`).
  * @param done - Map of recorded snapshot minutes.
  * @param [now] - Reference timestamp in milliseconds (defaults to `Date.now()`).
  * @returns `PendingMinute[]` result.
  */
 export function pendingMinutes(cfg: CameraConfig, rows: TxRow[], done: Record<string, SnapshotMinute>, now = Date.now()): PendingMinute[] {
   const since = Math.max(now - cfg.backfillHours * 3600000, cfg.keepDays ? now - cfg.keepDays * DAY_MS : -Infinity);
+  const relaysByMinute = minuteRelays(cfg, rows);
   const seen = new Map<string, PendingMinute>();
   for (const row of rows) {
     if (!wantsSnapshot(cfg, row) || row.ts < since || row.ts > now - SETTLE_MS - afterMs(cfg)) continue;
     const minute = minuteKey(row.ts);
+    if (seen.has(minute)) continue;
+    const channels = channelsForRelays(cfg.channels, relaysByMinute.get(minute) || new Set());
+    if (!channels.length) continue;
     const snapshot = done[minute];
-    if (seen.has(minute) || (snapshot && !needsRun(cfg, snapshot))) continue;
-    seen.set(minute, { minute, ts: new Date(row.ts).setSeconds(0, 0) });
+    if (snapshot && !needsRun(cfg, snapshot, channels)) continue;
+    seen.set(minute, { minute, ts: new Date(row.ts).setSeconds(0, 0), channels });
   }
   return [...seen.values()].sort((a, b) => b.ts - a.ts).slice(0, MAX_MINUTES_PER_RUN);
 }

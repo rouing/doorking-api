@@ -127,6 +127,32 @@ export async function issueBiometricChallenge(
   return { challenge: challenges.issue(username, id), keyId: id };
 }
 
+/**
+ * Verifies a hardware ECDSA P-256 SHA-256 signature over `challenge` against a registered biometric key owned by `username`.
+ * Updates `last_used_at` on success; throws 400/403 on missing fields, unknown key, or invalid signature.
+ */
+export async function verifyBiometricSignature(
+  store: Store,
+  username: string,
+  params: { keyId?: unknown; challenge?: unknown; signature?: unknown },
+): Promise<void> {
+  const id = String(params.keyId ?? '').trim();
+  const challenge = String(params.challenge ?? '').trim();
+  const sigB64 = String(params.signature ?? '').trim();
+  if (!id || !challenge || !sigB64) throw httpError('Missing biometric signature fields');
+  const row = await one<BiometricKeyRow>(
+    store,
+    'SELECT * FROM biometric_keys WHERE id = $1 AND username = $2',
+    [id, userKey(username)],
+  );
+  if (!row) throw httpError('Biometric key not registered for this account', 403);
+  const { keyObject } = parseP256SpkiKey(row.public_key_spki);
+  const sigBuf = Buffer.from(sigB64, 'base64');
+  const verified = sigBuf.length > 0 && crypto.verify('sha256', Buffer.from(challenge, 'utf8'), keyObject, sigBuf);
+  if (!verified) throw httpError('Biometric signature verification failed', 403);
+  await run(store, 'UPDATE biometric_keys SET last_used_at = $2 WHERE id = $1', [id, new Date().toISOString()]);
+}
+
 export async function verifyBiometricStepUp(
   store: Store,
   challenges: BiometricChallenges,
@@ -140,15 +166,5 @@ export async function verifyBiometricStepUp(
   if (!challenges.consume(challenge, username, id)) {
     throw httpError('Biometric challenge expired or invalid. Try again.', 403);
   }
-  const row = await one<BiometricKeyRow>(
-    store,
-    'SELECT * FROM biometric_keys WHERE id = $1 AND username = $2',
-    [id, userKey(username)],
-  );
-  if (!row) throw httpError('Biometric key not registered for this account', 403);
-  const { keyObject } = parseP256SpkiKey(row.public_key_spki);
-  const sigBuf = Buffer.from(sigB64, 'base64');
-  const verified = sigBuf.length > 0 && crypto.verify('sha256', Buffer.from(challenge, 'utf8'), keyObject, sigBuf);
-  if (!verified) throw httpError('Biometric signature verification failed', 403);
-  await run(store, 'UPDATE biometric_keys SET last_used_at = $2 WHERE id = $1', [id, new Date().toISOString()]);
+  await verifyBiometricSignature(store, username, { keyId: id, challenge, signature: sigB64 });
 }

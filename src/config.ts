@@ -45,7 +45,7 @@ export interface ServerConfig {
   database: DatabaseConfig;
   dks: { url: string };
   /** stepUpMinutes: how long a passkey confirmation covers the sensitive actions (see STEP_UP in requests.ts). */
-  security: { sessionIdleMinutes: number; sessionMaxHours: number; maxFailedSignIns: number; signInWindowMinutes: number; stepUpMinutes: number };
+  security: { sessionIdleMinutes: number; sessionMaxHours: number; nativeSessionIdleDays: number; nativeSessionMaxDays: number; maxFailedSignIns: number; signInWindowMinutes: number; stepUpMinutes: number };
   schedules: { checkSeconds: number };
   cameras: { ffmpeg: string; tidyMinutes: number }; // ffmpeg: '' = tools/bin, else ffmpeg on the PATH; a path is absolute
   /**
@@ -154,6 +154,8 @@ const ConfigSchema = z.strictObject({
   security: z.strictObject({
     sessionIdleMinutes: intRange(1, 1440, 30),
     sessionMaxHours: intRange(1, 8760, 168),
+    nativeSessionIdleDays: intRange(1, 365, 90),
+    nativeSessionMaxDays: intRange(1, 3650, 365),
     maxFailedSignIns: intRange(1, 100, 5),
     signInWindowMinutes: intRange(1, 1440, 15),
     stepUpMinutes: intRange(5, 1440, 180),

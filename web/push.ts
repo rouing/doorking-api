@@ -100,6 +100,18 @@ export function createPush(deps: ContextModule) {
   }
 
   /**
+   * Sends a high-priority FCM push with custom `data` fields to `username`'s registered Android devices.
+   */
+  async function sendFcmDataToUser(
+    username: string,
+    payload: dk.FcmPayload,
+  ): Promise<{ enabled: boolean; sent: number; failed: number; removed: number }> {
+    if (!fcmSender) return { enabled: false, sent: 0, failed: 0, removed: 0 };
+    const result = await dk.sendFcmToUsers(store, fcmSender, [username], payload, { log: logMessages('server') });
+    return { enabled: true, ...result };
+  }
+
+  /**
    * Sends a push notification (Web Push + Android FCM) to one user's devices (never throws).
    */
   async function pushUserNotice(username: string, title: string, body: string, tag = 'doorking-notice'): Promise<void> {
@@ -110,7 +122,7 @@ export function createPush(deps: ContextModule) {
     }
   }
 
-  return { publicKey, fcmEnabled, pushGateAlert, pushUserNotice, sendTestPush, sendTestFcm };
+  return { publicKey, fcmEnabled, pushGateAlert, pushUserNotice, sendTestPush, sendTestFcm, sendFcmDataToUser };
 }
 
 export type PushModule = ReturnType<typeof createPush>;

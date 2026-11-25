@@ -94,6 +94,9 @@ export function createAuth(deps: ContextModule) {
     try { return await fn(); } finally { setup.running = false; }
   }
   const approvals = new dk.PasskeyApprovals(); // codes from a signed-in device that let another device add a passkey
+  const pushApprovals = new dk.PasskeyPushApprovals(); // push-notification passkey approvals with 2-digit number match
+  const NATIVE_IDLE_MS = config.security.nativeSessionIdleDays * 86400000;
+  const NATIVE_MAX_AGE_MS = config.security.nativeSessionMaxDays * 86400000;
   /**
    * Failed sign-in limits (dk.signInKeys); "me:<user>" counts the signed-in user's own password checks (confirmOwnPassword).
    *
@@ -165,20 +168,25 @@ export function createAuth(deps: ContextModule) {
   /** Ends idle sessions (they are kept in the database, so they survive a restart) and prunes expired rate-limit tracking. */
   async function sweepSessions() {
     try {
-      for (const user of await dk.sweepSessions(store, IDLE_MS, MAX_AGE_MS)) logger('session').info`${user} signed out (idle or signed in too long ago)`;
+      for (const user of await dk.sweepSessions(store, IDLE_MS, MAX_AGE_MS, NATIVE_IDLE_MS, NATIVE_MAX_AGE_MS)) {
+        logger('session').info`${user} signed out (idle or signed in too long ago)`;
+      }
     } catch (err) { logger('session').error`Session sweep failed: ${(err as Error).message}`; }
     pruneUserIpKeys();
     approvals.sweep();
+    pushApprovals.sweep();
   }
   const NATIVE_SESSION_PREFIX = 'dks_';
   const wantsBearerSession = (req: FastifyRequest): boolean =>
     String(req.headers['x-client-auth'] || '').trim().toLowerCase() === 'bearer';
+  const sessionClientFor = (req: FastifyRequest): dk.SessionClient =>
+    (wantsBearerSession(req) ? 'native' : 'web');
   const sessionTokenFor = (req: FastifyRequest, tok: string): { sessionToken?: string } =>
     (wantsBearerSession(req) ? { sessionToken: `${NATIVE_SESSION_PREFIX}${tok}` } : {});
 
   async function sessionFromToken(sid: string | undefined): Promise<Session | null> {
     if (!sid || !/^[a-f0-9]{64}$/.test(sid)) return null;
-    const found = await dk.findSession(store, sid, IDLE_MS, MAX_AGE_MS);
+    const found = await dk.findSession(store, sid, IDLE_MS, MAX_AGE_MS, NATIVE_IDLE_MS, NATIVE_MAX_AGE_MS);
     if (!found) return null;
     const user = await dk.getUser(store, found.username);
     if (!user) return null;
@@ -326,7 +334,7 @@ export function createAuth(deps: ContextModule) {
   const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, ...(PUBLIC_HOST ? [PUBLIC_HOST] : [])]);
   const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`,
     ...(PUBLIC_HOST ? [`https://${PUBLIC_HOST}`] : [])]);
-  return { approvals, biometricChallenges, reauthNeed, RESET_PER_ACCOUNT, PER_ADDRESS, overLimit, clientIp, newSetupCode, setupCodeMatches, endSetup, oneSetupAtATime, clearFailedSignIn, signInKeys, countTry, clearFailures, sweepSessions, sessionFromToken, sessionTokenFor, NATIVE_SESSION_PREFIX, currentSession, strongUntil, stepUpRefusal, reauthRefusal, meReply, relyingParty, SSO, SSO_LIST, providerOf, ssoFlows, ssoRedirect, NO_SSO_SITE, sessionCookieOpts, ssoCookieOpts, confirmOwnPassword, passwordOff, NO_PASSKEY_SITE, ALLOWED_HOSTS, ALLOWED_ORIGINS };
+  return { approvals, pushApprovals, biometricChallenges, reauthNeed, RESET_PER_ACCOUNT, PER_ADDRESS, overLimit, clientIp, newSetupCode, setupCodeMatches, endSetup, oneSetupAtATime, clearFailedSignIn, signInKeys, countTry, clearFailures, sweepSessions, sessionFromToken, sessionClientFor, sessionTokenFor, NATIVE_SESSION_PREFIX, currentSession, strongUntil, stepUpRefusal, reauthRefusal, meReply, relyingParty, SSO, SSO_LIST, providerOf, ssoFlows, ssoRedirect, NO_SSO_SITE, sessionCookieOpts, ssoCookieOpts, confirmOwnPassword, passwordOff, NO_PASSKEY_SITE, ALLOWED_HOSTS, ALLOWED_ORIGINS };
 }
 
 export type AuthModule = ReturnType<typeof createAuth>;
