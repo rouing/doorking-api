@@ -192,7 +192,7 @@ export const areaCodeLimit = (setting: unknown): number => (/^\s*10\b/.test(Stri
  * @returns `number` result.
  * @throws HTTP 400 error on invalid input or conflict.
  */
-export function areaCodeIndex(names: Buffer, value: unknown, limit: number = NAMES_AREA_CODE_SLOTS): number {
+export function ensureAreaCodeIndex(names: Buffer, value: unknown, limit: number = NAMES_AREA_CODE_SLOTS): number {
   const typed = digits(value);
   if (!typed) return 0xff;
   if (!/^(\d{3}|1\d{3})$/.test(typed)) throw httpError(`Area code must be 3 digits, or 4 starting with 1 (got "${typed}")`);
@@ -426,7 +426,7 @@ function editPhoneNumber(names: Buffer, phone: Buffer, phoneOffset: number, edit
   const mode = phoneMode(names);
   const fields = readPhoneFields(phone.subarray(phoneOffset, phoneOffset + PHONE_RECORD_SIZE), mode);
   if ('areaCode' in edit) {
-    const index = areaCodeIndex(names, edit.areaCode, opts.areaCodeSlots);
+    const index = ensureAreaCodeIndex(names, edit.areaCode, opts.areaCodeSlots);
     fields.areaCodeIndex = index === 0xff ? null : index;
   }
   if ('phone' in edit) fields.phone = localNumberOf(edit.phone);

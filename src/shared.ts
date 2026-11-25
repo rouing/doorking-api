@@ -37,16 +37,27 @@ export const DEFAULT_RESIDENT_PORTAL_PREFS: ResidentPortalPrefs = {
 };
 
 /**
+ * Returns active Tracker command relays for a gate (relay 1 with Tracker 1, relay 2 with Tracker 2).
+ */
+export function commandRelaysOf(
+  prefs?: { tracker?: { enabled?: boolean; tracker1?: boolean; tracker2?: boolean } } | null,
+): number[] {
+  const tracker = prefs?.tracker?.enabled === true ? prefs.tracker : null;
+  if (!tracker) return [];
+  return [...(tracker.tracker1 ? [1] : []), ...(tracker.tracker2 ? [2] : [])];
+}
+
+/**
  * Returns every openable relay index for a gate: relays 0–2 (excluding any Tracker command relay) plus
  * enabled Tracker expansion relays (3–10 for Tracker 2, 11–18 for Tracker 1).
  */
 export function allOpenableRelays(
   prefs?: { tracker?: { enabled?: boolean; tracker1?: boolean; tracker2?: boolean } } | null,
 ): number[] {
-  const tracker = prefs?.tracker?.enabled === true ? prefs.tracker : null;
-  const relays = [0, 1, 2].filter((r) => !(r === 2 && tracker?.tracker2) && !(r === 1 && tracker?.tracker1));
-  if (tracker?.tracker2) for (let r = 3; r <= 10; r++) relays.push(r);
-  if (tracker?.tracker1) for (let r = 11; r <= 18; r++) relays.push(r);
+  const cmd = commandRelaysOf(prefs);
+  const relays = [0, 1, 2].filter((r) => !cmd.includes(r));
+  if (cmd.includes(2)) for (let r = 3; r <= 10; r++) relays.push(r);
+  if (cmd.includes(1)) for (let r = 11; r <= 18; r++) relays.push(r);
   return relays;
 }
 

@@ -29,6 +29,7 @@ export * from './src/tx-audit.ts';
 export * from './src/webhooks.ts';
 export * from './src/push.ts';
 export * from './src/fcm.ts';
+export * from './src/biometric-keys.ts';
 export * from './src/resident-pdf.ts';
 export * from './src/portal.ts';
 export * from './src/camera-settings.ts';

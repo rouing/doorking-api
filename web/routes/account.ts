@@ -23,6 +23,7 @@ export function accountRoutes(modules: Modules): Route[] {
   const { editOpts, editResidentInCache, editorResidents, withHistory } = modules.editing;
   const { gateAlert, mailTo, securityAlert, sendVerification } = modules.mail;
   const passkeysReply = async (user: string) => ({ passkeys: await dk.listPasskeys(store, user), userHandle: await dk.passkeyUserHandle(store, user) });
+  const fcmReply = async (user: string) => ({ enabled: modules.push.fcmEnabled(), tokens: await dk.listFcmTokens(store, user) });
 
   /** Resolves enabled resident portal units for `username` along with their current directory call-box phone. */
   async function linkedResidentUnits(username: string) {
@@ -36,9 +37,10 @@ export function accountRoutes(modules: Modules): Route[] {
       if (!rec) continue;
       const portal = dk.normalizeResidentPortalPrefs((await prefsOf(gatePhone)).residentPortal);
       if (!portal.enabled) continue;
-      const [, list] = await editorResidents(asGate(rec, 'resident', username));
+      const working = await dk.loadWorkingState(store, gatePhone);
+      const residents = working?.state.residents || [];
       for (const codeKey of codes) {
-        const unit = (list.rows || []).find((r) => dk.noteKey(r.directoryCode) === codeKey);
+        const unit = residents.find((r) => dk.noteKey(r.directoryCode) === codeKey);
         if (!unit) continue;
         const digits = `${unit.areaCode || ''}${unit.phone || ''}`.replace(/\D/g, '');
         out.push({ gatePhone, directoryCode: unit.directoryCode, phone: digits });
@@ -272,31 +274,39 @@ export function accountRoutes(modules: Modules): Route[] {
     route('POST', '/api/me/push/test', 'user', async ({ session }) => [200, await modules.push.sendTestPush(session.user)]),
 
     // Android Firebase Cloud Messaging (FCM) device tokens for the signed-in user.
-    route('GET', '/api/me/fcm', 'user', async ({ session }) => [200, {
-      enabled: modules.push.fcmEnabled(),
-      tokens: await dk.listFcmTokens(store, session.user),
-    }]),
+    route('GET', '/api/me/fcm', 'user', async ({ session }) => [200, await fcmReply(session.user)]),
     route('POST', '/api/me/fcm', 'user', async ({ session, body }) => {
       await dk.saveFcmToken(store, session.user, body);
-      return [200, {
-        enabled: modules.push.fcmEnabled(),
-        tokens: await dk.listFcmTokens(store, session.user),
-      }];
+      return [200, await fcmReply(session.user)];
     }),
     route('POST', '/api/me/fcm/unregister', 'user', async ({ session, body }) => {
       await dk.deleteFcmToken(store, session.user, String(body.token ?? body.id ?? ''));
-      return [200, {
-        enabled: modules.push.fcmEnabled(),
-        tokens: await dk.listFcmTokens(store, session.user),
-      }];
+      return [200, await fcmReply(session.user)];
     }),
     route('DELETE', '/api/me/fcm/:id', 'user', async ({ session, params }) => {
       await dk.deleteFcmToken(store, session.user, params.id);
-      return [200, {
-        enabled: modules.push.fcmEnabled(),
-        tokens: await dk.listFcmTokens(store, session.user),
-      }];
+      return [200, await fcmReply(session.user)];
     }),
     route('POST', '/api/me/fcm/test', 'user', async ({ session }) => [200, await modules.push.sendTestFcm(session.user)]),
+
+    // Device-bound Android Keystore ECDSA P-256 public keys for hardware-backed biometric step-up.
+    route('GET', '/api/me/biometric-keys', 'user', async ({ session }) => [200, {
+      keys: await dk.listBiometricKeys(store, session.user),
+    }]),
+    route('POST', '/api/me/biometric-keys', 'user', async ({ session, body }) => {
+      const refused = await reauthRefusal(session, 'add-passkey', body.password);
+      if (refused) return refused;
+      const key = await dk.registerBiometricKey(store, session.user, {
+        keyId: body.keyId,
+        publicKeySpki: body.publicKeySpki,
+        label: body.label,
+      });
+      logger('session').info`${session.user} registered hardware biometric key (${key.label})`;
+      return [201, { key, keys: await dk.listBiometricKeys(store, session.user) }];
+    }),
+    route('DELETE', '/api/me/biometric-keys/:id', 'user', async ({ session, params }) => {
+      await dk.deleteBiometricKey(store, session.user, params.id);
+      return [200, { keys: await dk.listBiometricKeys(store, session.user) }];
+    }),
   ];
 }

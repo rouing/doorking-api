@@ -472,12 +472,9 @@ function createTransfers(deps: ContextModule & EditingModule & MailModule & Snap
       if (current[relay]?.code === '1') return { alreadyOpen: true };
       const safetyRelease = new Date(Date.now() + Math.max(seconds + 20, 30) * 1000);
       await dk.setRelayTimer(store, gate.phoneNumber, relay, safetyRelease, gate.actor);
-      try {
-        await dk.controlRelays(client(), gate, { [relay]: true });
-      } catch (err) {
-        await dk.clearRelayTimer(store, gate.phoneNumber, relay).catch(() => {});
-        throw err;
-      }
+      // Leave the safety timer armed if controlRelays throws: SetRelays may have opened the gate before
+      // the follow-up GetRelays timed out, and releasing an already-closed relay 30s later is harmless.
+      await dk.controlRelays(client(), gate, { [relay]: true });
       await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
       try {
         await dk.controlRelays(client(), gate, { [relay]: false });

@@ -537,6 +537,22 @@ export async function listResidentRequests(
   return rows.map(fromRequestRow);
 }
 
+/** Reads a single pending resident change request by positive integer ID (or throws 404). */
+export async function getPendingResidentRequest(
+  store: Store,
+  phone: string,
+  id: number,
+): Promise<ResidentRequest> {
+  if (!Number.isInteger(id) || id < 1) throw httpError('Pending request not found', 404);
+  const row = await one<ResidentRequestRow>(
+    store,
+    "SELECT * FROM resident_requests WHERE phone = $1 AND id = $2 AND status = 'pending'",
+    [phoneDigits(phone), id],
+  );
+  if (!row) throw httpError('Pending request not found', 404);
+  return fromRequestRow(row);
+}
+
 /** Marks a resident change request approved or rejected. */
 export async function reviewResidentRequest(
   store: Store,
@@ -546,6 +562,7 @@ export async function reviewResidentRequest(
   reviewer: string,
   reviewNote = '',
 ): Promise<ResidentRequest> {
+  if (!Number.isInteger(id) || id < 1) throw httpError('Pending request not found', 404);
   const row = await one<ResidentRequestRow>(store, `
     UPDATE resident_requests SET status = $3, reviewed_by = $4, reviewed_at = $5, review_note = $6
     WHERE phone = $1 AND id = $2 AND status = 'pending' RETURNING *`,
@@ -605,6 +622,7 @@ export async function resolveSuspiciousReport(
   reviewer: string,
   reviewNote = '',
 ): Promise<SuspiciousReport> {
+  if (!Number.isInteger(id) || id < 1) throw httpError('Suspicious report not found', 404);
   const row = await one<SuspiciousReportRow>(store, `
     UPDATE suspicious_reports SET status = 'resolved', reviewed_by = $3, reviewed_at = $4, review_note = $5
     WHERE phone = $1 AND id = $2 RETURNING *`,

@@ -17,7 +17,6 @@ import { logger } from '../../src/logging.ts';
  */
 export function relaysRoutes(modules: Modules): Route[] {
   const { client, prefsOf, store } = modules.context;
-  const { commandRelays, liveRelays } = modules.editing;
   const { withAccount } = modules.jobs;
   const { emitWebhook } = modules.webhooks;
   return [
@@ -35,8 +34,8 @@ export function relaysRoutes(modules: Modules): Route[] {
     route('PUT', `${G}/relays`, 'gate-admin', async ({ session, gate, body }) => {
       const desired: Record<string, boolean> = {};
       const prefs = await prefsOf(gate.phoneNumber);
-      const cmd = await commandRelays(gate.phoneNumber);
-      const allowed = liveRelays(cmd);
+      const cmd = dk.commandRelaysOf(prefs);
+      const allowed = dk.allOpenableRelays(prefs);
       for (const key of Object.keys(body)) {
         if (typeof body[key] !== 'boolean') continue;
         if (!allowed.includes(Number(key)) || !/^\d{1,2}$/.test(key)) {
@@ -57,14 +56,20 @@ export function relaysRoutes(modules: Modules): Route[] {
         await dk.addEvent(store, gate.phoneNumber, { user: session.user, action: 'relay', summary, result, ...(error && { error }) });
       };
       return withAccount(gate, async (): Promise<Reply> => {
+        // Persist hold-open auto-release timers BEFORE calling controlRelays so a cellular timeout after
+        // SetRelays cannot leave the physical gate stuck open without a safety timer.
+        if (releaseAt) {
+          for (const [key, on] of Object.entries(desired)) {
+            if (on) await dk.setRelayTimer(store, gate.phoneNumber, Number(key), releaseAt, session.user);
+          }
+        }
         let out;
         try {
           out = await dk.controlRelays(client(), gate, desired);
         } catch (err) { await record('failed', (err as Error).message); return [502, { error: (err as Error).message }]; }
         for (const [key, on] of Object.entries(desired)) {
           const relayNum = Number(key);
-          if (on && releaseAt) await dk.setRelayTimer(store, gate.phoneNumber, relayNum, releaseAt, session.user);
-          else await dk.clearRelayTimer(store, gate.phoneNumber, relayNum);
+          if (!on || !releaseAt) await dk.clearRelayTimer(store, gate.phoneNumber, relayNum);
         }
         await record('done');
         emitWebhook(gate.phoneNumber, 'relay.changed', { actor: session.user, desired, releaseAt: releaseAt?.toISOString() || null });

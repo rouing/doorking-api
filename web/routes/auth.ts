@@ -73,8 +73,8 @@ function sessionRoutes(modules: Modules): Route[] {
           const ownedCodes = await dk.ownedPortalUnits(store, rec.phoneNumber, user.username);
           hasPortalUnit = ownedCodes.length > 0;
           if (!effectivePhone && ownedCodes.length) {
-            const [, list] = await editorResidents(asGate(rec, open, user.username));
-            const firstUnit = (list.rows || []).find((r) => dk.noteKey(r.directoryCode) === ownedCodes[0]);
+            const working = await dk.loadWorkingState(store, rec.phoneNumber);
+            const firstUnit = (working?.state.residents || []).find((r) => dk.noteKey(r.directoryCode) === ownedCodes[0]);
             const digits = firstUnit ? `${firstUnit.areaCode || ''}${firstUnit.phone || ''}`.replace(/\D/g, '') : '';
             if (digits) effectivePhone = digits.length === 10 ? `+1${digits}` : digits;
           }
@@ -95,53 +95,42 @@ function sessionRoutes(modules: Modules): Route[] {
       if (!user || !password) return [400, { error: 'Username and password are required' }];
       const key = user.toLowerCase();
       const ip = clientIp(req);
-      const keys = signInKeys(key, ip);
-      /**
-       * The typed username is logged only when it is an account (people sometimes type their password there).
-       *
-       * @returns Computed result.
-       */
-      const who = async () => ((await dk.getUser(store, key)) || (await dk.findUserByEmail(store, key)))?.username || 'an unknown username';
       const ua = String(req.headers['user-agent'] || '');
       const auditFailed = logged('session', 'Login audit write failed');
-      const takeBack = await countTry(keys);
-      if (!takeBack) {
-        const matched = (await dk.getUser(store, key)) || (await dk.findUserByEmail(store, key));
+      const matched = (await dk.getUser(store, key)) || (await dk.findUserByEmail(store, key));
+      const rateKey = matched ? matched.username : key;
+      const keys = signInKeys(rateKey, ip);
+      const recordPasswordAudit = async (outcome: 'rate_limited' | 'failed' | 'success', reason?: string, resolvedUser?: dk.User | null) => {
+        const target = resolvedUser ?? matched;
+        const role = target ? (await dk.isResidentOnlyUser(store, target.username) ? 'resident' : 'staff') : null;
         await dk.recordLoginAudit(store, {
-          username: matched?.username || null,
-          identifier: matched ? key : 'unknown',
+          username: target?.username || null,
+          identifier: target ? key : 'unknown',
+          role,
           method: 'password',
-          outcome: 'rate_limited',
-          reason: 'Too many failed tries',
+          outcome,
+          ...(reason && { reason }),
           ip,
           userAgent: ua,
         }).catch(auditFailed);
+      };
+      const takeBack = await countTry(keys);
+      if (!takeBack) {
+        await recordPasswordAudit('rate_limited', 'Too many failed tries');
         logger('session').warn`Sign-in for ${matched?.username || 'an unknown username'} refused after too many failed tries (${ip})`;
         return [429, { error: `Too many failed sign-ins. Try again in ${SIGN_IN_WINDOW_MS / 60000} minutes.` }];
       }
       let account: dk.User | null;
       try { account = await dk.authenticate(store, user, password, passwordOff); } catch (err) { await takeBack(); throw err; }
       if (!account) {
-        const matched = (await dk.getUser(store, key)) || (await dk.findUserByEmail(store, key));
-        const role = matched ? (await dk.isResidentOnlyUser(store, matched.username) ? 'resident' : 'staff') : null;
-        await dk.recordLoginAudit(store, {
-          username: matched?.username || null,
-          identifier: matched ? key : 'unknown',
-          role,
-          method: 'password',
-          outcome: 'failed',
-          reason: 'Wrong username/email or password',
-          ip,
-          userAgent: ua,
-        }).catch(auditFailed);
+        await recordPasswordAudit('failed', 'Wrong username/email or password');
         logger('session').warn`Sign-in for ${matched?.username || 'an unknown username'} refused: wrong username or password (${ip})`;
         return [401, { error: `Wrong username or password${SSO_LIST.length ? '. Accounts that sign in with a work account use its button.' : ''}` }];
       }
       await takeBack();
-      await clearFailedSignIn(key, ip);
+      await clearFailedSignIn(rateKey, ip);
       const tok = await dk.createSession(store, account.username);
-      const role = await dk.isResidentOnlyUser(store, account.username) ? 'resident' : 'staff';
-      await dk.recordLoginAudit(store, { username: account.username, identifier: key, role, method: 'password', outcome: 'success', ip, userAgent: ua }).catch(auditFailed);
+      await recordPasswordAudit('success', undefined, account);
       logger('session').info`${account.username} signed in`;
       reply.setCookie('sid', tok, sessionCookieOpts(req));
       return [200, { ok: true, ...sessionTokenFor(req, tok) }];
@@ -246,7 +235,7 @@ function emailLinkRoutes(modules: Modules): Route[] {
  */
 function passkeyRoutes(modules: Modules): Route[] {
   const { logged, STEP_UP_MS, store } = modules.context;
-  const { clientIp, confirmOwnPassword, NO_PASSKEY_SITE, overLimit, passwordOff, PER_ADDRESS, relyingParty, sessionCookieOpts, sessionTokenFor } = modules.auth;
+  const { biometricChallenges, clientIp, confirmOwnPassword, NO_PASSKEY_SITE, overLimit, passwordOff, PER_ADDRESS, relyingParty, sessionCookieOpts, sessionTokenFor } = modules.auth;
   return [
     // Passkey sign-in: POST options (no username: the browser offers this site's passkeys, also in the username box's
     // suggestions), then POST session { response }; sets the sid cookie like a password sign-in. A passkey not
@@ -284,15 +273,24 @@ function passkeyRoutes(modules: Modules): Route[] {
       const rp = relyingParty(req);
       return rp ? [200, await dk.confirmationOptions(store, session.user, rp)] : [400, { error: NO_PASSKEY_SITE }];
     }),
+    route('POST', '/api/me/step-up/biometric/options', 'user', async ({ session, body }) => [
+      200,
+      await dk.issueBiometricChallenge(store, biometricChallenges, session.user, body.keyId),
+    ]),
     route('POST', '/api/me/step-up', 'user', async ({ session, req, body }) => {
-      const authHeader = String(req.headers.authorization || '');
-      const isNativeBearer = /^Bearer\s+dks_[0-9a-f]{64}$/i.test(authHeader.trim());
-      if (body.biometric === true && isNativeBearer) {
+      if (body.biometricKeyId !== undefined || body.signature !== undefined) {
+        await dk.verifyBiometricStepUp(store, biometricChallenges, session.user, {
+          keyId: body.biometricKeyId,
+          challenge: body.challenge,
+          signature: body.signature,
+        });
         const at = await dk.markSessionStrong(store, session.tokenHash);
-        logger('session').info`${session.user} confirmed with device biometric (step-up)`;
+        logger('session').info`${session.user} confirmed with hardware biometric key (step-up)`;
         return [200, { strongUntil: new Date(at + STEP_UP_MS).toISOString() }];
       }
       if (body.response === undefined && typeof body.password === 'string' && body.password.length > 0) {
+        const userRec = await dk.getUser(store, session.user);
+        if (!userRec?.hasPassword) return [403, { error: 'This account does not have a password configured.' }];
         const off = await passwordOff(session.user);
         if (off) return [403, { error: off }];
         const refused = await confirmOwnPassword(session.user, body.password);
@@ -321,7 +319,7 @@ function passkeyRoutes(modules: Modules): Route[] {
  * @returns Registered route definitions for this area.
  */
 function ssoRoutes(modules: Modules): Route[] {
-  const { logged, store } = modules.context;
+  const { logged, STEP_UP_MS, store } = modules.context;
   const {
     clientIp, confirmOwnPassword, NO_SSO_SITE, overLimit, PER_ADDRESS, providerOf,
     sessionCookieOpts, sessionTokenFor, ssoCookieOpts, ssoFlows, ssoRedirect
@@ -374,7 +372,7 @@ function ssoRoutes(modules: Modules): Route[] {
       const isNativeFlow = ssoFlows.isNativeState(query.get('state'));
       try {
         if (!provider) throw dk.httpError('Unknown sign-in provider', 404);
-        const result = await dk.finishSso(ssoFlows, provider, query, req.cookies?.dk_sso || '');
+        const result = await dk.finishSso(ssoFlows, provider, query, req.cookies?.dk_sso || '', Date.now(), STEP_UP_MS);
         const done = await dk.completeSso(store, provider, result);
         logger('session').info`${done.username}: ${provider.name} single sign-on (${done.outcome})`;
         if (done.outcome === 'linked') await securityAlert(done.username, `Sign-in with ${provider.name} was linked to your account`);

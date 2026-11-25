@@ -295,7 +295,14 @@ function checkAuthTime(provider: SsoProvider, authTime: unknown, flow: Flow, now
  * @returns Promise resolving to `SsoResult`.
  * @throws HTTP 200/400 error on invalid input or conflict.
  */
-export async function finishSso(sso: SsoFlows, provider: SsoProvider, query: URLSearchParams, binding: string, now = Date.now()): Promise<SsoResult> {
+export async function finishSso(
+  sso: SsoFlows,
+  provider: SsoProvider,
+  query: URLSearchParams,
+  binding: string,
+  now = Date.now(),
+  stepUpMs = 180 * 60000,
+): Promise<SsoResult> {
   const state = query.get('state') || '';
   const flow = sso.takeFlow(state);
   const error = query.get('error');
@@ -310,7 +317,7 @@ export async function finishSso(sso: SsoFlows, provider: SsoProvider, query: URL
   if (!claims || !claims.sub) throw httpError(`${provider.name} didn't say who you are`);
   checkAuthTime(provider, claims.auth_time, flow, now);
   const identity = claimsOf(claims as Record<string, unknown>, provider.roleMap?.claim || 'groups');
-  const strong = isStrongSso(provider, identity.auth, now);
+  const strong = isStrongSso(provider, identity.auth, now, stepUpMs);
   return {
     mode: flow.mode, username: flow.username, inviteToken: flow.inviteToken, identity, strong,
     ...(flow.native && { native: true, nativeVerifierHash: flow.nativeVerifierHash }),

@@ -62,7 +62,7 @@ export const ffmpegCommand = (binDir = BIN_DIR): string => (fs.existsSync(ffmpeg
  * @param file - File path or filename.
  * @returns `string` result.
  */
-function executable(file: string): string {
+function ensureExecutable(file: string): string {
   if (process.platform === 'win32') return file;
   try {
     const { mode } = fs.statSync(file);
@@ -203,16 +203,16 @@ function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: n
    * @param cfg - Configuration or settings object.
    * @returns `{ key: string; port: Promise<number>; b: Bridge }` result.
    */
-  function bridge(cfg: Recorder): { key: string; port: Promise<number>; b: Bridge } {
+  function acquireBridge(cfg: Recorder): { key: string; port: Promise<number>; b: Bridge } {
     const key = `${cfg.serial}|${cfg.username}`;
     let running = bridges.get(key);
     if (running && (running.password !== cfg.password || running.dead)) { stop(key); running = undefined; }
     if (!running) { running = start(key, cfg); bridges.set(key, running); }
-    idle(key, running);
+    scheduleIdleStop(key, running);
     return { key, port: running.port, b: running };
   }
 
-  function idle(key: string, b: Bridge): void {
+  function scheduleIdleStop(key: string, b: Bridge): void {
     clearTimeout(b.timer);
     if (!b.busy && bridges.get(key) === b) {
       b.timer = setTimeout(() => { log(`Recorder ${key.split('|')[0]}: bridge stopped after ${idleMs / 1000} s idle`); stop(key); }, idleMs);
@@ -245,7 +245,7 @@ function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: n
       return await use(url);
     } finally {
       b.busy--;
-      idle(key, b);
+      scheduleIdleStop(key, b);
     }
   }
 
@@ -257,7 +257,7 @@ function createBridgePool({ readyMs, idleMs, log }: { readyMs: number; idleMs: n
    * @param b - Active dahua-p2p bridge handle.
    */
   const drop = (key: string, b: Bridge): void => { if (bridges.get(key) === b && (!b.busy || b.dead)) stop(key); };
-  return { bridge, onBridge, streamUrl, drop, stopAll, running: () => bridges.size };
+  return { acquireBridge, onBridge, streamUrl, drop, stopAll, running: () => bridges.size };
 }
 
 /**
@@ -288,7 +288,7 @@ function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: str
         ? [...input, '-i', url, '-t', String(video), '-map', '0:v:0', '-c', 'copy',
           '-f', 'mp4', '-movflags', '+frag_keyframe+empty_moov', '-y', outFile]
         : [...input, '-fflags', '+discardcorrupt', '-skip_frame', 'nokey', '-i', url, '-frames:v', '1', '-update', '1', '-q:v', '3', '-y', outFile];
-      const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      const proc = spawn(ensureExecutable(ffmpegPath || ffmpegCommand(binDir)), args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
       proc.stderr.on('data', (chunk) => { err = (err + chunk).slice(-2000); });
       const timer = setTimeout(() => proc.kill(), video ? video * 1000 + clipExtraMs : grabMs + 5000);
@@ -317,7 +317,7 @@ function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: str
   /** Runs ffmpeg on local files, rejecting on spawn errors instead of returning a sentinel exit code. */
   function localFfmpeg(args: string[], ms = 60000): Promise<{ code: number | null; err: string }> {
     return new Promise((resolve, reject) => {
-      const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), ['-hide_banner', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      const proc = spawn(ensureExecutable(ffmpegPath || ffmpegCommand(binDir)), ['-hide_banner', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
       proc.stderr.on('data', (chunk) => { err = (err + chunk).slice(-4000); });
       const timer = setTimeout(() => proc.kill(), ms);
@@ -374,7 +374,7 @@ function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: str
         '-fflags', 'nobuffer', '-flags', 'low_delay', '-i', url, '-map', '0:v:0', '-an',
         '-vf', `fps=${LIVE_FPS},scale=w='min(${LIVE_WIDTH},iw)':h=-2`, '-c:v', 'mjpeg', '-q:v', '6',
         '-f', 'mpjpeg', '-boundary_tag', 'frame', 'pipe:1'];
-      const proc = spawn(executable(ffmpegPath || ffmpegCommand(binDir)), args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn(ensureExecutable(ffmpegPath || ffmpegCommand(binDir)), args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let err = '';
       let started = false;
       const firstTimer = setTimeout(() => proc.kill(), grabMs + 5000);
@@ -425,7 +425,7 @@ function createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs }: { binDir: str
 export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs = 120000, readyMs = 45000, grabMs = 45000,
   clipExtraMs = 60000, connectTries = 3, connectWaitMs = 10000, retryWaitMs = 2000, log = () => {} }: CameraRunnerOptions = {}) {
   const pool = createBridgePool({ readyMs, idleMs, log });
-  const { bridge, onBridge, streamUrl, drop, stopAll } = pool;
+  const { acquireBridge, onBridge, streamUrl, drop, stopAll } = pool;
   const { ffmpeg, clipSeconds, finishClip, mjpeg } = createFfmpeg({ binDir, ffmpegPath, grabMs, clipExtraMs });
 
   /**
@@ -449,7 +449,7 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     let retried = once;
     for (let fails = 0; ;) {
       if (signal && signal.aborted) throw new Error(STOPPED_MSG);
-      const { key, port, b } = bridge(cfg);
+      const { key, port, b } = acquireBridge(cfg);
       let localPort: number;
       try {
         localPort = await port;
@@ -497,7 +497,7 @@ export function createCameraRunner({ binDir = BIN_DIR, ffmpegPath = '', idleMs =
     const pathQuery = `/cam/realmonitor?channel=${channel}&subtype=${sub ? 1 : 0}`;
     for (let attempt = 0; ; attempt++) {
       if (signal && signal.aborted) return;
-      const { key, port, b } = bridge(cfg);
+      const { key, port, b } = acquireBridge(cfg);
       try {
         const localPort = await port;
         return await onBridge(key, b, (url) => mjpeg(url, out, [cfg.password], { signal, onStart, maxMs }), streamUrl(cfg, localPort, pathQuery));

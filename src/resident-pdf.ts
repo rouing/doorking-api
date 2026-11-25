@@ -37,6 +37,15 @@ export interface ResidentPdfFields {
  * @param [templatePath] - Path to the blank PDF template (defaults to `docs/ResidentInstructions.pdf`).
  * @returns Promise resolving to the filled PDF bytes.
  */
+/** Sanitizes text to printable WinAnsi-safe ASCII so pdf-lib standard Helvetica never throws on Unicode. */
+const toPdfAscii = (raw: unknown, maxLen: number): string =>
+  String(raw ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7e]/g, '')
+    .trim()
+    .slice(0, maxLen);
+
 export async function fillResidentInstructionsPdf(
   fields: ResidentPdfFields,
   templatePath = RESIDENT_INSTRUCTIONS_TEMPLATE,
@@ -49,18 +58,18 @@ export async function fillResidentInstructionsPdf(
   const ink = rgb(0.06, 0.1, 0.22);
 
   // 1. Building manager / HOA phone number above the Phone # line (x = 82.75..290.75, y = 618.26)
-  const rawAdminPhone = String(fields.adminPhone ?? '').trim();
+  const rawAdminPhone = toPdfAscii(fields.adminPhone, 28);
   if (rawAdminPhone) {
     const digits = rawAdminPhone.replace(/\D/g, '');
-    const display = digits.length === 10 || digits.length === 7 ? fmtPhone(digits) : rawAdminPhone.slice(0, 28);
+    const display = digits.length === 10 || digits.length === 7 ? fmtPhone(digits) : rawAdminPhone;
     const size = 12;
     const width = bold.widthOfTextAtSize(display, size);
     page.drawText(display, { x: 186.75 - width / 2, y: 622, size, font: bold, color: ink });
   }
 
   // 2. Resident Name + Directory Code summary box in open right-hand whitespace opposite Phone #
-  const name = String(fields.residentName ?? '').trim().slice(0, 30);
-  const dirCode = String(fields.directoryCode ?? '').trim().slice(0, 8);
+  const name = toPdfAscii(fields.residentName, 30);
+  const dirCode = toPdfAscii(fields.directoryCode, 8);
   if (name || dirCode) {
     const boxX = 324;
     const boxY = 605;
@@ -87,7 +96,7 @@ export async function fillResidentInstructionsPdf(
   }
 
   // 3. Touch-Tone Grant Access digit above _____ (x = 214.96..239.96, baseline y = 405.07)
-  const grantDigit = String(fields.grantAccessDigit ?? '').trim().slice(0, 4);
+  const grantDigit = toPdfAscii(fields.grantAccessDigit, 4);
   if (grantDigit) {
     const size = 10.5;
     const width = bold.widthOfTextAtSize(grantDigit, size);

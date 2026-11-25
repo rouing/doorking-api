@@ -39,18 +39,10 @@ function createRelayRules(deps: ContextModule) {
    * @returns Promise resolving to `number[]`.
    */
   async function commandRelays(phone: string): Promise<number[]> {
-    const tracker = (await prefsOf(phone)).tracker;
-    return tracker && tracker.enabled ? [...(tracker.tracker1 ? [1] : []), ...(tracker.tracker2 ? [2] : [])] : [];
+    return dk.commandRelaysOf(await prefsOf(phone));
   }
-  /**
-   * Relays live control may set: 0-2 except Tracker command relays, plus 3-10 with Tracker 2 and 11-18 with Tracker 1.
-   *
-   * @param cmd - `number[]` value.
-   * @returns `number[]` result.
-   */
   function liveRelays(cmd: number[]): number[] {
-    const range = (from: number) => Array.from({ length: 8 }, (_, i) => from + i);
-    return [...[0, 1, 2].filter((relay) => !cmd.includes(relay)), ...(cmd.includes(2) ? range(3) : []), ...(cmd.includes(1) ? range(11) : [])];
+    return dk.allOpenableRelays({ tracker: { enabled: cmd.length > 0, tracker1: cmd.includes(1), tracker2: cmd.includes(2) } });
   }
   /**
    * Tone-open digits used by more than one tone of relays 0-2, e.g. "3 (Relay 0 Momentary, Relay 1 Hold)".
@@ -102,8 +94,13 @@ function createWorkingCopy(deps: ContextModule, relays: RelayRules) {
     const synthetic = portalEvents.map((ev) => dk.portalEventToTxRow(ev, nameByCode, prefs.relayLabels));
     const apbEnabled = Boolean(working?.state.settings?.apbMode && working.state.settings.apbMode !== 'Off');
     if (!data.transactions && !synthetic.length) return { transactions: null, apbEnabled };
-    const rows = [...(data.transactions?.rows || []), ...synthetic].sort((a, b) => b.ts - a.ts).slice(0, page.limit);
-    const updated = data.transactions?.updated || (synthetic[0] ? new Date(synthetic[0].ts).toISOString() : new Date().toISOString());
+    const hwRows = data.transactions?.rows || [];
+    // Only merge portal events within (or newer than) this hardware page's window so we never truncate
+    // hardware rows and drop them across `next` cursor boundaries.
+    const oldestHwTs = tx.next != null && hwRows.length ? hwRows[hwRows.length - 1].ts : -Infinity;
+    const inPagePortal = synthetic.filter((ev) => ev.ts >= oldestHwTs);
+    const rows = [...hwRows, ...inPagePortal].sort((a, b) => b.ts - a.ts);
+    const updated = data.transactions?.updated || (inPagePortal[0] ? new Date(inPagePortal[0].ts).toISOString() : new Date().toISOString());
     return { transactions: { updated, rows, next: tx.next }, apbEnabled };
   };
   /**

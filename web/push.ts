@@ -47,6 +47,18 @@ export function createPush(deps: ContextModule) {
     return fcmSender !== null;
   }
 
+  /** Fans out a push payload across Web Push (VAPID) and Android FCM for `users`. */
+  async function deliverPush(
+    users: string[],
+    payload: { title: string; body: string; url: string; tag: string },
+  ): Promise<{ sent: number; failed: number; removed: number }> {
+    const [web, fcm] = await Promise.all([
+      dk.sendPushToUsers(store, await vapid(), users, payload, { log: logMessages('server') }),
+      dk.sendFcmToUsers(store, fcmSender, users, payload, { log: logMessages('server') }),
+    ]);
+    return { sent: web.sent + fcm.sent, failed: web.failed + fcm.failed, removed: web.removed + fcm.removed };
+  }
+
   /**
    * Sends a push notification (Web Push + Android FCM) to all gate admins of `phone` with `notify_alerts` enabled.
    * Never throws (errors are logged).
@@ -55,11 +67,7 @@ export function createPush(deps: ContextModule) {
     try {
       const admins = await dk.pushAlertRecipients(store, phone);
       if (!admins.length) return;
-      const payload = { title, body, url: '/', tag: `gate-${dk.phoneDigits(phone)}` };
-      await Promise.all([
-        dk.sendPushToUsers(store, await vapid(), admins, payload, { log: logMessages('server') }),
-        dk.sendFcmToUsers(store, fcmSender, admins, payload, { log: logMessages('server') }),
-      ]);
+      await deliverPush(admins, { title, body, url: '/', tag: `gate-${dk.phoneDigits(phone)}` });
     } catch (err) {
       logger('server').warn`Push gate alert failed: ${(err as Error).message}`;
     }
@@ -69,17 +77,12 @@ export function createPush(deps: ContextModule) {
    * Sends a test push notification to all of `username`'s subscribed Web Push + FCM devices.
    */
   async function sendTestPush(username: string): Promise<{ sent: number; failed: number; removed: number }> {
-    const payload = {
+    return deliverPush([username], {
       title: 'DoorKing Gate Manager',
       body: 'Push notifications are working on this device.',
       url: '/',
       tag: 'doorking-test',
-    };
-    const [web, fcm] = await Promise.all([
-      dk.sendPushToUsers(store, await vapid(), [username], payload, { log: logMessages('server') }),
-      dk.sendFcmToUsers(store, fcmSender, [username], payload, { log: logMessages('server') }),
-    ]);
-    return { sent: web.sent + fcm.sent, failed: web.failed + fcm.failed, removed: web.removed + fcm.removed };
+    });
   }
 
   /**
@@ -101,11 +104,7 @@ export function createPush(deps: ContextModule) {
    */
   async function pushUserNotice(username: string, title: string, body: string, tag = 'doorking-notice'): Promise<void> {
     try {
-      const payload = { title, body, url: '/', tag };
-      await Promise.all([
-        dk.sendPushToUsers(store, await vapid(), [username], payload, { log: logMessages('server') }),
-        dk.sendFcmToUsers(store, fcmSender, [username], payload, { log: logMessages('server') }),
-      ]);
+      await deliverPush([username], { title, body, url: '/', tag });
     } catch (err) {
       logger('server').warn`Push user notice failed: ${(err as Error).message}`;
     }

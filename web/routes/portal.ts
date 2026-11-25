@@ -32,16 +32,45 @@ export function portalRoutes(modules: Modules): Route[] {
   // Per-resident Buzz Me In cooldown tracker (key: `${phone}:${username}` -> last buzz ms).
   const lastBuzzAt = new Map<string, number>();
 
-  /** Loads the gate's normalized portal prefs and verifies the resident owns at least one enabled unit (or is gate admin). */
-  async function resolveResidentContext(gate: Gate, username: string, requestedCode?: string) {
+  /** Fast portal access check (no binary rebuild) for high-frequency endpoints like /status and /requests. */
+  async function verifyPortalAccess(gate: Gate, username: string) {
     const prefs = await prefsOf(gate.phoneNumber);
     const portal = dk.normalizeResidentPortalPrefs(prefs.residentPortal);
     const isAdmin = gate.role === 'admin';
     if (!portal.enabled && !isAdmin) throw dk.httpError('The Resident Portal is currently turned off for this gate.', 403);
     const owned = await dk.ownedPortalUnits(store, gate.phoneNumber, username);
     if (!owned.length && !isAdmin) throw dk.httpError('Your Resident Portal access for this gate is disabled.', 403);
-    const [, list] = await editorResidents(gate);
-    const rows = list.rows || [];
+    return { prefs, portal, isAdmin, owned };
+  }
+
+  /** Loads the gate's normalized portal prefs and resolves the resident's owned unit from SQL working state (no binary rebuild). */
+  async function resolveResidentContext(gate: Gate, username: string, requestedCode?: string) {
+    const { prefs, portal, isAdmin, owned } = await verifyPortalAccess(gate, username);
+    const working = await dk.loadWorkingState(store, gate.phoneNumber);
+    const cardsByCode = new Map<string, string[]>();
+    for (const c of working?.state.cards || []) {
+      if (!c.directoryCode) continue;
+      const k = dk.noteKey(c.directoryCode);
+      cardsByCode.set(k, [...(cardsByCode.get(k) || []), c.cardNumber]);
+    }
+    const rows: ResidentRow[] = (working?.state.residents || []).map((r) => ({
+      directoryCode: r.directoryCode,
+      type: r.type,
+      name: r.name,
+      hidden: r.hidden,
+      areaCode: r.areaCode,
+      areaCodeIndex: 0,
+      phone: r.phone,
+      entryCode: r.entryCode,
+      securityLevel: r.securityLevel ?? 1,
+      floor: r.floor ?? 0,
+      elevatorRef: r.elevatorRef ?? 0,
+      cards: cardsByCode.get(dk.noteKey(r.directoryCode)) || [],
+      note: '',
+      entryOffset: 0,
+      recordOffset: 0,
+    }));
+    const grantAccessDigit = working?.state.settings?.relay0ToneMomentary || '9';
     const ownedRows = owned
       .map((codeKey) => rows.find((r) => dk.noteKey(r.directoryCode) === codeKey))
       .filter((r): r is NonNullable<typeof r> => Boolean(r));
@@ -52,12 +81,12 @@ export function portalRoutes(modules: Modules): Route[] {
         areaCode: '', areaCodeIndex: 0, phone: '', entryCode: '', securityLevel: 1, floor: 0, elevatorRef: 0,
         cards: [], note: '', entryOffset: 0, recordOffset: 0,
       };
-      return { prefs, portal, list, ownedRows: [adminUnit], unit: adminUnit };
+      return { prefs, portal, list: { grantAccessDigit }, ownedRows: [adminUnit], unit: adminUnit };
     }
     const wantKey = requestedCode ? dk.noteKey(requestedCode) : '';
     const unit = wantKey ? ownedRows.find((r) => dk.noteKey(r.directoryCode) === wantKey) : ownedRows[0];
     if (!unit) throw dk.httpError('You do not have access to that directory code.', 403);
-    return { prefs, portal, list, ownedRows, unit };
+    return { prefs, portal, list: { grantAccessDigit }, ownedRows, unit };
   }
 
   /** Filters gate transactions + portal opens strictly to this resident's own unit. */
@@ -144,7 +173,7 @@ export function portalRoutes(modules: Modules): Route[] {
 
     // Live gate availability + % progress (polled while gate is pushing/pulling so relays show unavailable).
     webOnly(route('GET', `${P}/status`, 'gate-resident', async ({ session, gate }) => {
-      await resolveResidentContext(gate, session.user);
+      await verifyPortalAccess(gate, session.user);
       const status = jobStatusFor(gate);
       const last = lastBuzzAt.get(`${gate.phoneNumber}:${session.user}`) || 0;
       const cooldownSeconds = Math.max(0, Math.ceil((last + BUZZ_COOLDOWN_MS - Date.now()) / 1000));
@@ -258,16 +287,16 @@ export function portalRoutes(modules: Modules): Route[] {
       return [200, { rows: enriched, showSnapshots: portal.showSnapshots } as PortalActivityReply];
     })),
 
-    // Own-unit snapshot image/video download (strictly verifies the minute belongs to this resident's own activity
-    // and resolves the file via `dk.snapshotFile` so default frame names like `ch1-00.jpg` and `ch1-a20.jpg` work).
+    // Own-unit snapshot image/video download: verify ownership BEFORE probing the filesystem so
+    // unauthorized minutes always return 403 instead of leaking neighbor gate times via 403 vs 404.
     webOnly(route('GET', `${P}/snapshots/:minute/:file`, 'gate-resident', async ({ session, gate, params, req, reply }) => {
       const code = String((req.query as Record<string, string | undefined>).code || '');
       const { portal, unit } = await resolveResidentContext(gate, session.user, code);
       if (!portal.showSnapshots) return [403, { error: 'Snapshots are not enabled for residents on this gate.' }];
-      const file = dk.snapshotFile(gate.dir, params.minute, params.file);
-      if (!file) return [404, { error: 'Snapshot not found' }];
       const rows = await ownActivityRows(gate, unit, 200);
       if (!rows.some((r) => r.minute === params.minute)) return [403, { error: 'That snapshot does not belong to your unit.' }];
+      const file = dk.snapshotFile(gate.dir, params.minute, params.file);
+      if (!file) return [404, { error: 'Snapshot not found' }];
       return sendMedia(reply, file);
     })),
 
@@ -294,7 +323,7 @@ export function portalRoutes(modules: Modules): Route[] {
 
     // Self-service change requests (phone, directory visibility, lost remote, other).
     webOnly(route('GET', `${P}/requests`, 'gate-resident', async ({ session, gate }) => {
-      await resolveResidentContext(gate, session.user);
+      await verifyPortalAccess(gate, session.user);
       return [200, { requests: await dk.listResidentRequests(store, gate.phoneNumber, { username: session.user }) }];
     })),
     webOnly(route('POST', `${P}/requests`, 'gate-resident', async ({ session, gate, body }) => {
@@ -360,16 +389,20 @@ export function portalRoutes(modules: Modules): Route[] {
       const decision = body.decision === 'approved' ? 'approved' : body.decision === 'rejected' ? 'rejected' : '';
       if (!decision) return [400, { error: 'decision must be approved or rejected' }];
       const reviewNote = String(body.reviewNote ?? '').trim();
-      const request = await dk.reviewResidentRequest(store, gate.phoneNumber, Number(params.id), decision, session.user, reviewNote);
-      // When approved with apply=true and a structured phone update, apply directly to working copy inside History.
-      if (decision === 'approved' && body.apply !== false && request.kind === 'phone') {
-        const nanp = dk.parseNanpPhone(String(request.payload.phone ?? ''), { keepLeadingOne: true });
+      const requestId = Number(params.id);
+      const pending = await dk.getPendingResidentRequest(store, gate.phoneNumber, requestId);
+      // Apply the working-copy edit FIRST when approved with apply=true so a failed edit never leaves the request
+      // permanently marked "approved" and unretryable.
+      if (decision === 'approved' && body.apply !== false && pending.kind === 'phone') {
+        const nanp = dk.parseNanpPhone(String(pending.payload.phone ?? ''), { keepLeadingOne: true });
         if (nanp) {
           const opts = await editOpts(gate);
-          await withHistory(session, gate, { summary: `Approved resident phone update for unit ${request.directoryCode}` },
-            (ctx) => editResidentInCache(gate.phoneNumber, request.directoryCode, nanp, opts, ctx));
+          const editReply = await withHistory(session, gate, { summary: `Approved resident phone update for unit ${pending.directoryCode}` },
+            (ctx) => editResidentInCache(gate.phoneNumber, pending.directoryCode, nanp, opts, ctx));
+          if (editReply[0] >= 300) return editReply;
         }
       }
+      const request = await dk.reviewResidentRequest(store, gate.phoneNumber, requestId, decision, session.user, reviewNote);
       await notifyResidentRequestReviewed(request.username, gate.phoneNumber, decision, request.kind, reviewNote);
       return [200, { request }];
     })),

@@ -90,7 +90,7 @@ export function docsRoutes(modules: Modules): Route[] {
         .sendFile(path.basename(apkPath), path.dirname(apkPath), { cacheControl: false });
     })),
 
-    // Remote Android crash report intake -> appended to logs/android-crashes.jsonl and logged via LogTape.
+    // Remote Android crash report intake -> written via LogTape's existing rotating async file sink (5 MB × 5 files).
     route('POST', '/api/client-crashes', 'public', async ({ req, body }) => {
       if (await overLimit(`crash:${clientIp(req)}`, 20)) return [429, { error: 'Too many crash reports' }];
       const trace = String(body.trace ?? '').slice(0, 24000).trim();
@@ -104,10 +104,8 @@ export function docsRoutes(modules: Modules): Route[] {
         thread: String(body.thread ?? '').slice(0, 80),
         trace,
       };
-      fs.mkdirSync(config.paths.logs, { recursive: true });
-      fs.appendFileSync(path.join(config.paths.logs, 'android-crashes.jsonl'), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
       const firstLine = trace.split('\n').find((line) => line.includes('Exception') || line.includes('Error')) || trace.split('\n')[0];
-      logger('android').error`Android crash (${entry.appVersion}/${entry.versionCode} ${entry.device}): ${firstLine}`;
+      logger('android').error('Android crash ({appVersion}/{versionCode} {device}): {firstLine}', { ...entry, firstLine });
       return [201, { ok: true }];
     }, { bodyLimit: 32 * 1024 }),
 

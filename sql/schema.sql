@@ -143,6 +143,9 @@ CREATE INDEX IF NOT EXISTS webhook_deliveries_due ON webhook_deliveries (status,
 CREATE TABLE IF NOT EXISTS fcm_tokens (id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
   token TEXT NOT NULL UNIQUE, label TEXT NOT NULL DEFAULT 'Android', created_at TIMESTAMPTZ NOT NULL, last_used_at TIMESTAMPTZ);
 CREATE INDEX IF NOT EXISTS fcm_tokens_username ON fcm_tokens (username);
+CREATE TABLE IF NOT EXISTS biometric_keys (id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
+  public_key_spki TEXT NOT NULL, label TEXT NOT NULL DEFAULT 'Android', created_at TIMESTAMPTZ NOT NULL, last_used_at TIMESTAMPTZ);
+CREATE INDEX IF NOT EXISTS biometric_keys_username ON biometric_keys (username);
 
 -- Upgrades of databases made before these columns existed.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS webauthn_id TEXT;

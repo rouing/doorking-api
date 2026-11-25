@@ -17,7 +17,7 @@ import { logger } from '../../src/logging.ts';
 export function camerasRoutes(modules: Modules): Route[] {
   const { cameras, store } = modules.context;
   const { cameraTransactions } = modules.editing;
-  const { forgetSnapRun, queueSnapshots, refreshSnapshot, saveCameras, sendMedia, snapRunOf, stopSnapshots } = modules.snapshots;
+  const { forgetSnapRun, queueSnapshots, refreshSnapshot, saveCameras, sendMedia, snapRunOf, snapshotWorkFor, stopSnapshots } = modules.snapshots;
   return [
     // Camera settings for this gate (shared by every account that manages it). The password is never returned;
     // PUT with a blank password keeps the saved one. Body: { enabled, serial, username, password,
@@ -98,10 +98,11 @@ export function camerasRoutes(modules: Modules): Route[] {
       if (stopped) logger('camera').info`Gate ${gate.phoneNumber}: snapshot run stopped by ${session.user}`;
       return [200, { stopped }];
     }),
-    // Deletes every saved picture and the snapshot log (refused while a run is going).
+    // Deletes every saved picture and the snapshot log (refused while a run or single-picture refresh/tidy is active).
     route('DELETE', `${G}/snapshots`, 'gate-admin', async ({ session, gate }) => {
       const cur = snapRunOf(gate.phoneNumber);
       if (cur && cur.state === 'running') return [409, { error: 'Stop the snapshot run first' }];
+      if (snapshotWorkFor(gate.phoneNumber)) return [409, { error: 'Wait for the camera pictures to finish updating' }];
       const out = await dk.deleteSnapshots(store, gate.phoneNumber, gate.dir);
       forgetSnapRun(gate.phoneNumber);
       if (out.minutes || out.files) {

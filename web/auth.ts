@@ -248,6 +248,7 @@ export function createAuth(deps: ContextModule) {
    * itself; null for any other host (such as 127.0.0.1, which WebAuthn doesn't accept).
    */
   const challenges = new dk.PasskeyChallenges(); // this server's passkey challenges
+  const biometricChallenges = new dk.BiometricChallenges(); // this server's hardware biometric step-up challenges
   const androidOrigins = config.android.sha256CertFingerprints.map((fp) => dk.androidApkKeyHashOrigin(fp));
   function relyingParty(req: FastifyRequest): dk.RelyingParty | null {
     const host = (req.headers.host || '').toLowerCase();
@@ -325,7 +326,7 @@ export function createAuth(deps: ContextModule) {
   const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, ...(PUBLIC_HOST ? [PUBLIC_HOST] : [])]);
   const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`,
     ...(PUBLIC_HOST ? [`https://${PUBLIC_HOST}`] : [])]);
-  return { approvals, reauthNeed, RESET_PER_ACCOUNT, PER_ADDRESS, overLimit, clientIp, newSetupCode, setupCodeMatches, endSetup, oneSetupAtATime, clearFailedSignIn, signInKeys, countTry, clearFailures, sweepSessions, sessionFromToken, sessionTokenFor, NATIVE_SESSION_PREFIX, currentSession, strongUntil, stepUpRefusal, reauthRefusal, meReply, relyingParty, SSO, SSO_LIST, providerOf, ssoFlows, ssoRedirect, NO_SSO_SITE, sessionCookieOpts, ssoCookieOpts, confirmOwnPassword, passwordOff, NO_PASSKEY_SITE, ALLOWED_HOSTS, ALLOWED_ORIGINS };
+  return { approvals, biometricChallenges, reauthNeed, RESET_PER_ACCOUNT, PER_ADDRESS, overLimit, clientIp, newSetupCode, setupCodeMatches, endSetup, oneSetupAtATime, clearFailedSignIn, signInKeys, countTry, clearFailures, sweepSessions, sessionFromToken, sessionTokenFor, NATIVE_SESSION_PREFIX, currentSession, strongUntil, stepUpRefusal, reauthRefusal, meReply, relyingParty, SSO, SSO_LIST, providerOf, ssoFlows, ssoRedirect, NO_SSO_SITE, sessionCookieOpts, ssoCookieOpts, confirmOwnPassword, passwordOff, NO_PASSKEY_SITE, ALLOWED_HOSTS, ALLOWED_ORIGINS };
 }
 
 export type AuthModule = ReturnType<typeof createAuth>;

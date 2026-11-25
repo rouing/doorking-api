@@ -95,6 +95,7 @@ export function createFcmSender(
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
+      signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) {
       throw new Error(`FCM OAuth2 token exchange failed (HTTP ${res.status})`);
@@ -120,6 +121,7 @@ export function createFcmSender(
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
+        signal: AbortSignal.timeout(10000),
         body: JSON.stringify({
           message: {
             token,
