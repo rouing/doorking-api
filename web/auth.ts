@@ -273,7 +273,14 @@ export function createAuth(deps: ContextModule) {
   /** Single sign-on providers (config.json sso.providers; src/sso.ts). */
   const SSO = config.sso.providers;
   const ssoFlows = new dk.SsoFlows(); // this server's sign-ins in progress
-  const SSO_LIST = SSO.map((provider) => ({ id: provider.id, name: provider.name }));
+  const SSO_LIST = SSO.map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    ...(dk.isGoogleProvider(provider) && {
+      googleClientId: provider.clientId,
+      ...(provider.allowedDomains.length === 1 && { hostedDomain: provider.allowedDomains[0] }),
+    }),
+  }));
   const providerOf = (id: unknown) => SSO.find((provider) => provider.id === id);
   /**
    * Where a provider sends the browser back: like passkeys, the public name over HTTPS, or localhost on the server.

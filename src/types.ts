@@ -213,7 +213,7 @@ export interface GateLogin { dksUser: string; dksPasswordSet: boolean }
  * setup: no account exists yet, so the page offers to create the first one.
  * A single sign-on provider ("Sign in with <name>") and a sign-in linked to the account.
  */
-export interface SsoProviderInfo { id: string; name: string }
+export interface SsoProviderInfo { id: string; name: string; googleClientId?: string; hostedDomain?: string }
 export interface SsoIdentityInfo { provider: string; providerName: string; subject: string; email: string; linkedAt: string; lastUsedAt: string | null }
 
 export type SessionReply =

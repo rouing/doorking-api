@@ -399,6 +399,59 @@ function ssoRoutes(modules: Modules): Route[] {
       reply.setCookie('sid', tok, sessionCookieOpts(req));
       return [200, { ok: true, ...sessionTokenFor(req, tok) }];
     }),
+    route('POST', '/api/sso/google-nonce', 'public', async ({ req, body }) => {
+      if (await overLimit(`sso:${clientIp(req)}`, PER_ADDRESS)) return [429, { error: 'Too many sign-in attempts. Try again in a few minutes.' }];
+      const provider = providerOf(body.provider);
+      if (!provider) return [404, { error: 'Unknown sign-in provider' }];
+      if (!dk.isGoogleProvider(provider)) return [400, { error: `${provider.name} is not a Google sign-in provider` }];
+      const nonce = ssoFlows.issueGoogleNonce(provider.id);
+      return [200, {
+        nonce,
+        clientId: provider.clientId,
+        ...(provider.allowedDomains.length === 1 ? { hostedDomain: provider.allowedDomains[0] } : {}),
+      }];
+    }),
+    route('POST', '/api/sso/google-id-token', 'public', async ({ req, reply, body }) => {
+      if (await overLimit(`sso:${clientIp(req)}`, PER_ADDRESS)) return [429, { error: 'Too many sign-in attempts. Try again in a few minutes.' }];
+      const provider = providerOf(body.provider);
+      if (!provider) return [404, { error: 'Unknown sign-in provider' }];
+      const idToken = typeof body.idToken === 'string' ? body.idToken.trim() : '';
+      const nonce = typeof body.nonce === 'string' ? body.nonce.trim() : '';
+      if (!idToken || !nonce) return [400, { error: 'idToken and nonce are required' }];
+      const ip = clientIp(req);
+      const ua = String(req.headers['user-agent'] || '');
+      try {
+        const result = await dk.verifyGoogleIdToken(ssoFlows, provider, idToken, nonce, Date.now(), STEP_UP_MS);
+        const done = await dk.completeSso(store, provider, result);
+        logger('session').info`${done.username}: ${provider.name} Google ID token sign-in (${done.outcome})`;
+        if (done.outcome === 'linked') await securityAlert(done.username, `Sign-in with ${provider.name} was linked to your account`);
+        await dk.recordLoginAudit(store, {
+          username: done.username,
+          identifier: result.identity.email || done.username,
+          role: 'staff',
+          method: `sso:${provider.id}`,
+          outcome: 'success',
+          ip,
+          userAgent: ua,
+        }).catch(logged('session', 'Login audit write failed'));
+        const tok = await dk.createSession(store, done.username, { strong: result.strong, client: sessionClientFor(req) });
+        reply.setCookie('sid', tok, sessionCookieOpts(req));
+        return [200, { ok: true, ...sessionTokenFor(req, tok) }];
+      } catch (caught) {
+        const err = caught as Error & { status?: number };
+        await dk.recordLoginAudit(store, {
+          username: null,
+          identifier: provider.id,
+          method: `sso:${provider.id}`,
+          outcome: 'failed',
+          reason: err.message,
+          ip,
+          userAgent: ua,
+        }).catch(logged('session', 'Login audit write failed'));
+        logger('session').warn`Google ID token sign-in with ${provider.name} refused: ${err.message}`;
+        throw err;
+      }
+    }),
     route('POST', '/api/me/sso/start', 'user', async ({ session, req, reply, body }) => {
       if (await dk.isResidentOnlyUser(store, session.user)) {
         return [403, { error: 'Single sign-on is not available for Resident Portal accounts.' }];
@@ -414,9 +467,11 @@ function ssoRoutes(modules: Modules): Route[] {
       return [200, { url }];
     }),
     route('GET', '/api/sso/:provider/callback', 'public', async ({ req, reply, params }) => {
+      const query = new URL(req.url, 'http://local').searchParams;
+      const cachedRedirect = ssoFlows.getNativeCallback(query.get('state'));
+      if (cachedRedirect) return reply.redirect(cachedRedirect, 302);
       reply.clearCookie('dk_sso', ssoCookieOpts(req));
       const provider = providerOf(params.provider);
-      const query = new URL(req.url, 'http://local').searchParams;
       const isNativeFlow = ssoFlows.isNativeState(query.get('state'));
       try {
         if (!provider) throw dk.httpError('Unknown sign-in provider', 404);
@@ -428,7 +483,9 @@ function ssoRoutes(modules: Modules): Route[] {
         await dk.recordLoginAudit(store, { username: done.username, identifier: result.identity.email || done.username, role: 'staff', method: `sso:${provider.id}`, outcome: 'success', ip: clientIp(req), userAgent: String(req.headers['user-agent'] || '') }).catch(logged('session', 'Login audit write failed'));
         if (result.native && result.nativeVerifierHash) {
           const code = dk.issueNativeSsoCode(ssoFlows, { username: done.username, strong: result.strong, verifierHash: result.nativeVerifierHash });
-          return reply.redirect(`doorking://sso/callback?code=${encodeURIComponent(code)}`, 302);
+          const redirectUrl = `doorking://sso/callback?code=${encodeURIComponent(code)}`;
+          ssoFlows.rememberNativeCallback(query.get('state') || '', redirectUrl);
+          return reply.redirect(redirectUrl, 302);
         }
         reply.setCookie('sid', await dk.createSession(store, done.username, { strong: result.strong, client: sessionClientFor(req) }), sessionCookieOpts(req));
         const returnTo = String(req.cookies?.dk_return_to || '');

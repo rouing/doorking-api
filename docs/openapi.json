@@ -4138,6 +4138,118 @@
         }
       }
     },
+    "/api/sso/google-nonce": {
+      "post": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "Issue a single-use nonce for native Google ID token sign-in",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "provider"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Single-use Google sign-in nonce and client metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "nonce",
+                    "clientId"
+                  ],
+                  "properties": {
+                    "nonce": {
+                      "type": "string"
+                    },
+                    "clientId": {
+                      "type": "string"
+                    },
+                    "hostedDomain": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sso/google-id-token": {
+      "post": {
+        "tags": [
+          "Single Sign-On"
+        ],
+        "summary": "Verify a native Google ID token and establish a session",
+        "x-auth": "public",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "provider",
+                  "idToken",
+                  "nonce"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "idToken": {
+                    "type": "string"
+                  },
+                  "nonce": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "sessionToken": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/me/sso/start": {
       "post": {
         "tags": [
@@ -8858,6 +8970,12 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "googleClientId": {
+            "type": "string"
+          },
+          "hostedDomain": {
             "type": "string"
           }
         }

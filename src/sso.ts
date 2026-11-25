@@ -48,6 +48,9 @@ export type SsoOutcome = 'signed-in' | 'linked' | 'created' | 'invite-accepted';
 
 const FLOW_MS = 10 * 60000;
 const NATIVE_CODE_MS = 2 * 60000;
+const NATIVE_CALLBACK_MS = 60_000;
+const GOOGLE_NONCE_MS = 5 * 60000;
+const JWKS_MS = 3600_000;
 const SKEW_MS = 2 * 60000;
 const MAX_FLOWS = 500;
 
@@ -94,10 +97,63 @@ export interface IssueNativeSsoOptions {
 export class SsoFlows {
   private readonly flows = new Map<string, Flow>();
   private readonly nativeCodes = new Map<string, NativeExchange>();
+  private readonly nativeCallbacks = new Map<string, { url: string; at: number }>();
+  private readonly googleNonces = new Map<string, { providerId: string; at: number }>();
+  private readonly jwksCache = new Map<string, { keys: crypto.JsonWebKey[]; at: number }>();
   private readonly configs = new Map<string, { config: Promise<oidc.Configuration>; at: number }>();
 
   isNativeState(state: string | null | undefined): boolean {
     return Boolean(state && this.flows.get(state)?.native);
+  }
+
+  rememberNativeCallback(state: string, url: string, now = Date.now()): void {
+    if (!state) return;
+    for (const [k, entry] of this.nativeCallbacks) if (now - entry.at >= NATIVE_CALLBACK_MS) this.nativeCallbacks.delete(k);
+    while (this.nativeCallbacks.size >= MAX_FLOWS) this.nativeCallbacks.delete(this.nativeCallbacks.keys().next().value!);
+    this.nativeCallbacks.set(state, { url, at: now });
+  }
+
+  getNativeCallback(state: string | null | undefined, now = Date.now()): string | undefined {
+    if (!state) return undefined;
+    const entry = this.nativeCallbacks.get(state);
+    if (!entry) return undefined;
+    if (now - entry.at >= NATIVE_CALLBACK_MS) {
+      this.nativeCallbacks.delete(state);
+      return undefined;
+    }
+    return entry.url;
+  }
+
+  issueGoogleNonce(providerId: string, now = Date.now()): string {
+    for (const [k, entry] of this.googleNonces) if (now - entry.at >= GOOGLE_NONCE_MS) this.googleNonces.delete(k);
+    while (this.googleNonces.size >= MAX_FLOWS) this.googleNonces.delete(this.googleNonces.keys().next().value!);
+    const nonce = crypto.randomBytes(32).toString('base64url');
+    this.googleNonces.set(nonce, { providerId, at: now });
+    return nonce;
+  }
+
+  consumeGoogleNonce(nonce: unknown, providerId: string, now = Date.now()): boolean {
+    const key = typeof nonce === 'string' ? nonce.trim() : '';
+    if (!key) return false;
+    const entry = this.googleNonces.get(key);
+    if (!entry) return false;
+    this.googleNonces.delete(key);
+    if (now - entry.at >= GOOGLE_NONCE_MS) return false;
+    return entry.providerId === providerId;
+  }
+
+  async getJwks(uri: string, { forceRefresh = false, now = Date.now() }: { forceRefresh?: boolean; now?: number } = {}): Promise<crypto.JsonWebKey[]> {
+    if (!forceRefresh) {
+      const cached = this.jwksCache.get(uri);
+      if (cached && now - cached.at < JWKS_MS) return cached.keys;
+    }
+    const res = await fetch(uri, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw httpError(`Failed to fetch signing keys (HTTP ${res.status})`, 502);
+    const data = await res.json() as { keys?: unknown };
+    if (!Array.isArray(data?.keys)) throw httpError('Signing key response was invalid', 502);
+    const keys = data.keys as crypto.JsonWebKey[];
+    this.jwksCache.set(uri, { keys, at: now });
+    return keys;
   }
 
   getConfig(provider: SsoProvider, now = Date.now()): Promise<oidc.Configuration> {
@@ -153,7 +209,8 @@ export class SsoFlows {
   }
 }
 
-const isGoogle = (provider: SsoProvider): boolean => new URL(provider.issuer).hostname === 'accounts.google.com';
+export const isGoogleProvider = (provider: SsoProvider): boolean => new URL(provider.issuer).hostname === 'accounts.google.com';
+const isGoogle = isGoogleProvider;
 const isEntra = (provider: SsoProvider): boolean => new URL(provider.issuer).hostname === 'login.microsoftonline.com';
 
 function freshSignIn(provider: SsoProvider, mode: SsoMode): Record<string, string> {
@@ -322,6 +379,126 @@ export async function finishSso(
     mode: flow.mode, username: flow.username, inviteToken: flow.inviteToken, identity, strong,
     ...(flow.native && { native: true, nativeVerifierHash: flow.nativeVerifierHash }),
   };
+}
+
+const B64URL_RE = /^[A-Za-z0-9_-]+$/;
+const GOOGLE_ISSUERS = new Set(['https://accounts.google.com', 'accounts.google.com']);
+
+function decodeJwtObject(segment: string): Record<string, unknown> {
+  if (!segment || !B64URL_RE.test(segment)) throw httpError('Invalid Google ID token', 401);
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw httpError('Invalid Google ID token', 401);
+  }
+}
+
+function findMatchingJwk(keys: crypto.JsonWebKey[], kid: string, alg: 'RS256' | 'ES256'): crypto.JsonWebKey | undefined {
+  const expectedKty = alg === 'RS256' ? 'RSA' : 'EC';
+  return keys.find((key) => {
+    const k = key as crypto.JsonWebKey & { kid?: string; use?: string };
+    if (k.kty !== expectedKty) return false;
+    if (k.use && k.use !== 'sig') return false;
+    if (kid && k.kid !== kid) return false;
+    return true;
+  });
+}
+
+/**
+ * Verifies a Google ID token obtained natively (e.g. via Android Credential Manager) against Google's JWKS and a
+ * single-use server-issued nonce.
+ *
+ * @param sso - Per-server SSO flow, nonce, and JWKS cache.
+ * @param provider - Configured Google OIDC provider.
+ * @param idToken - Raw JWT ID token string.
+ * @param nonce - Single-use nonce previously issued by `sso.issueGoogleNonce`.
+ * @param [now] - Reference timestamp in milliseconds (defaults to `Date.now()`).
+ * @param [stepUpMs] - Step-up validity window in milliseconds (default 3 hours).
+ * @param [jwksOverride] - Optional JWKS object for offline unit tests.
+ * @returns Promise resolving to `SsoResult`.
+ */
+export async function verifyGoogleIdToken(
+  sso: SsoFlows,
+  provider: SsoProvider,
+  idToken: string,
+  nonce: string,
+  now = Date.now(),
+  stepUpMs = 180 * 60000,
+  jwksOverride?: { keys: crypto.JsonWebKey[] },
+): Promise<SsoResult> {
+  if (!isGoogle(provider)) throw httpError(`${provider.name} does not support Google ID token sign-in`, 400);
+  if (!sso.consumeGoogleNonce(nonce, provider.id, now)) {
+    throw httpError('This sign-in has expired or was already used. Try again.', 401);
+  }
+  const parts = typeof idToken === 'string' ? idToken.split('.') : [];
+  if (parts.length !== 3 || parts.some((p) => !p)) throw httpError('Invalid Google ID token', 401);
+  const [headerB64, payloadB64, sigB64] = parts;
+  if (!B64URL_RE.test(sigB64)) throw httpError('Invalid Google ID token', 401);
+
+  const header = decodeJwtObject(headerB64);
+  const alg = header.alg;
+  if (alg !== 'RS256' && alg !== 'ES256') throw httpError('Unsupported Google ID token algorithm', 401);
+  const payload = decodeJwtObject(payloadB64);
+
+  const kid = typeof header.kid === 'string' ? header.kid : '';
+  let jwk: crypto.JsonWebKey | undefined;
+  if (jwksOverride) {
+    jwk = findMatchingJwk(jwksOverride.keys, kid, alg);
+  } else {
+    const jwksUri = (await sso.getConfig(provider, now)).serverMetadata().jwks_uri;
+    if (!jwksUri) throw httpError(`${provider.name} is missing a JWKS URI`, 502);
+    const keys = await sso.getJwks(jwksUri, { now });
+    jwk = findMatchingJwk(keys, kid, alg);
+    if (!jwk) {
+      const refreshed = await sso.getJwks(jwksUri, { forceRefresh: true, now });
+      jwk = findMatchingJwk(refreshed, kid, alg);
+    }
+  }
+  if (!jwk) throw httpError('Google ID token signing key not found', 401);
+
+  const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, 'utf8');
+  const signature = Buffer.from(sigB64, 'base64url');
+  let validSig = false;
+  try {
+    const publicKey = crypto.createPublicKey({ key: jwk, format: 'jwk' });
+    validSig = alg === 'ES256'
+      ? crypto.verify('sha256', signingInput, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature)
+      : crypto.verify('sha256', signingInput, publicKey, signature);
+  } catch {
+    validSig = false;
+  }
+  if (!validSig) throw httpError('Google ID token signature is invalid', 401);
+
+  const nowSec = now / 1000;
+  if (typeof payload.iss !== 'string' || !GOOGLE_ISSUERS.has(payload.iss)) {
+    throw httpError('Google ID token issuer is invalid', 401);
+  }
+  const audOk = typeof payload.aud === 'string'
+    ? payload.aud === provider.clientId
+    : Array.isArray(payload.aud) && payload.aud.includes(provider.clientId);
+  if (!audOk) throw httpError('Google ID token audience does not match this server', 401);
+  if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp) || nowSec >= payload.exp + 60) {
+    throw httpError('Google ID token has expired', 401);
+  }
+  if (payload.iat !== undefined && (typeof payload.iat !== 'number' || !Number.isFinite(payload.iat) || payload.iat > nowSec + 300)) {
+    throw httpError('Google ID token issued-at time is invalid', 401);
+  }
+  if (typeof payload.nonce !== 'string' || !sameText(payload.nonce, nonce)) {
+    throw httpError('Google ID token nonce mismatch', 401);
+  }
+  if (typeof payload.sub !== 'string' || !payload.sub) {
+    throw httpError(`${provider.name} didn't say who you are`, 401);
+  }
+
+  const identity = claimsOf(payload, provider.roleMap?.claim || 'groups');
+  if (identity.email && identity.emailVerified !== true) {
+    throw httpError(`${provider.name} says ${identity.email} isn't verified, so it can't sign in here.`, 403);
+  }
+  checkTrusted(provider, identity);
+  const strong = isStrongSso(provider, identity.auth, now, stepUpMs);
+  return { mode: 'signin', identity, strong, native: true };
 }
 
 /**
