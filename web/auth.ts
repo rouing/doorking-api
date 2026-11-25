@@ -196,7 +196,7 @@ export function createAuth(deps: ContextModule) {
       await dk.clearMustChangePassword(store, user.username);
       mustChangePassword = false;
     }
-    return { tokenHash: found.tokenHash, user: user.username, gate: found.gate, mustChangePassword, strongAt: found.strongAt, signedInAt: found.createdAt };
+    return { tokenHash: found.tokenHash, user: user.username, gate: found.gate, mustChangePassword, strongAt: found.strongAt, signedInAt: found.createdAt, mcpGrant: found.mcpGrant };
   }
   async function currentSession(req: FastifyRequest): Promise<Session | null> {
     return sessionFromToken(req.cookies?.sid);

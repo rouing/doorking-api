@@ -189,6 +189,12 @@ export function portalRoutes(modules: Modules): Route[] {
       const allowedRelays = isAdmin ? dk.allOpenableRelays(prefs) : portal.buzzRelays;
       const relay = Number(body.relay ?? allowedRelays[0] ?? 0);
       if (!allowedRelays.includes(relay)) return [403, { error: 'That entrance is not enabled for resident opening.' }];
+      if (session.mcpGrant) {
+        const grantedForGate = session.mcpGrant.relays[gate.phoneNumber] || [];
+        if (!grantedForGate.includes(relay)) {
+          return [403, { error: `This AI client (${session.mcpGrant.clientName}) was not granted permission to open that relay.` }];
+        }
+      }
       const status = jobStatusFor(gate);
       if (!status.available) {
         return [409, { error: `The gate is currently ${status.busyReason || 'busy'}${status.percent !== null ? ` (${status.percent}%)` : ''}. Try again once it finishes.`, status }];
@@ -271,6 +277,9 @@ export function portalRoutes(modules: Modules): Route[] {
 
     // Resident's own transaction history (merged with Portal Open events + saved snapshot filenames when enabled).
     webOnly(route('GET', `${P}/activity`, 'gate-resident', async ({ session, gate, req }) => {
+      if (session.mcpGrant && !session.mcpGrant.allowActivity) {
+        return [403, { error: `This AI client (${session.mcpGrant.clientName}) was not granted permission to view gate activity.` }];
+      }
       const code = String((req.query as Record<string, string | undefined>).code || '');
       const { portal, unit } = await resolveResidentContext(gate, session.user, code);
       const [rows, snapshots] = await Promise.all([

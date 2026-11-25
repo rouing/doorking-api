@@ -86,6 +86,7 @@ function sessionRoutes(modules: Modules): Route[] {
         hasPasskey: (await dk.listPasskeys(store, user.username)).length > 0, stepUpMinutes: config.security.stepUpMinutes,
         strongUntil: strongUntil(session) ? new Date(strongUntil(session)!).toISOString() : null,
         isResidentOnly, hasPortalUnit,
+        ...(session.mcpGrant && { mcpGrant: session.mcpGrant }),
         gate: rec && open ? await gateInfo({ ...rec, role: open }) : null, defaults, holidayList: dk.FIXED_HOLIDAYS }];
     }),
 
@@ -143,11 +144,50 @@ function sessionRoutes(modules: Modules): Route[] {
     }),
 
     // Mints an independent long-lived native Bearer token for an already-authenticated user session
-    // (used by same-origin OAuth consent flows such as doorking-mcp after Passkey or SSO sign-in).
-    route('POST', '/api/session/mint-bearer', 'user', async ({ session }) => {
-      const tok = await dk.createSession(store, session.user, { client: 'native' });
-      logger('session').info`${session.user} minted delegated MCP bearer session`;
-      return [200, { token: `dks_${tok}`, user: session.user }];
+    // (used by same-origin OAuth consent flows such as doorking-mcp after Passkey, SSO, or password sign-in).
+    // Persists validated per-relay and scope restrictions (`mcpGrant`) directly on the session row.
+    route('POST', '/api/session/mint-bearer', 'user', async ({ session, body }) => {
+      const isResidentOnly = await dk.isResidentOnlyUser(store, session.user);
+      const clientName = String(body.clientName ?? 'AI Client').trim().slice(0, 80) || 'AI Client';
+      const rawScopes = Array.isArray(body.scopes) ? body.scopes.map(String) : ['doorking:read'];
+      const allowedScopes = rawScopes.filter((s) => {
+        if (s === 'doorking:stage') return !isResidentOnly;
+        return s === 'doorking:read' || s === 'doorking:portal';
+      });
+      const scopes = allowedScopes.length ? [...new Set(allowedScopes)] : ['doorking:read'];
+
+      // Intersect requested per-gate relay grants strictly with what this user is authorized to open.
+      const gates = await dk.userGates(store, session.user);
+      const rawRelays = (body.relays && typeof body.relays === 'object' && !Array.isArray(body.relays))
+        ? (body.relays as Record<string, unknown>)
+        : {};
+      const relays: Record<string, number[]> = {};
+      for (const g of gates) {
+        const wantedRaw = rawRelays[g.phoneNumber];
+        if (!Array.isArray(wantedRaw) || !wantedRaw.length) continue;
+        const prefs = await prefsOf(g.phoneNumber);
+        const portal = dk.normalizeResidentPortalPrefs(prefs.residentPortal);
+        let permitted: number[] = [];
+        if (g.role === 'admin') {
+          permitted = dk.allOpenableRelays(prefs);
+        } else if (portal.enabled && portal.buzzEnabled) {
+          const owned = await dk.ownedPortalUnits(store, g.phoneNumber, session.user);
+          if (owned.length) permitted = portal.buzzRelays;
+        }
+        const permittedSet = new Set(permitted);
+        const granted = [...new Set(wantedRaw.map(Number).filter((r) => permittedSet.has(r)))].sort((a, b) => a - b);
+        if (granted.length) relays[g.phoneNumber] = granted;
+      }
+
+      const mcpGrant: dk.McpGrant = {
+        clientName,
+        scopes,
+        relays,
+        allowActivity: body.allowActivity === true,
+      };
+      const tok = await dk.createSession(store, session.user, { client: 'native', mcpGrant });
+      logger('session').info`${session.user} minted delegated MCP bearer session for ${clientName} (scopes: ${scopes.join(',')})`;
+      return [200, { token: `dks_${tok}`, user: session.user, mcpGrant }];
     }),
 
     // First start only (no account yet): creates the first account, which becomes admin of every gate that has no

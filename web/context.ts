@@ -19,6 +19,7 @@ export type Reply = readonly [number, unknown];
 export interface Session {
   tokenHash: string; user: string; gate: string | null; mustChangePassword: boolean; strongAt: number | null; signedInAt: number;
   apiKey?: { phone: string; role: GateRole; scopes: ApiKeyScope[] | null };
+  mcpGrant?: dk.McpGrant | null;
 }
 /**
  * A managed gate as seen by one user: role is theirs, actor their username (for History); user/password are the

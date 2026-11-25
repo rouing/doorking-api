@@ -37,6 +37,23 @@ export function accountRoutes(modules: Modules): Route[] {
     };
   };
   const fcmReply = async (user: string) => ({ enabled: modules.push.fcmEnabled(), tokens: await dk.listFcmTokens(store, user) });
+  const aiClientsReply = async (user: string) => {
+    const sessions = await dk.listMcpSessions(store, user);
+    const enriched = await Promise.all(sessions.map(async (s) => {
+      const relaySummary: Array<{ phone: string; siteName: string; relays: Array<{ relay: number; name: string }> }> = [];
+      for (const [phone, relayList] of Object.entries(s.relays)) {
+        const [prefs, siteName] = await Promise.all([prefsOf(phone), siteNameOf(phone)]);
+        const labels = prefs.relayLabels || {};
+        relaySummary.push({
+          phone,
+          siteName: siteName || `Gate ${phone}`,
+          relays: relayList.map((r) => ({ relay: r, name: labels[String(r)] || `Relay ${r}` })),
+        });
+      }
+      return { ...s, relaySummary };
+    }));
+    return { clients: enriched };
+  };
 
   function deviceLabelFrom(given: unknown, userAgent: unknown): string {
     const custom = String(given ?? '').trim().slice(0, 80);
@@ -424,6 +441,14 @@ export function accountRoutes(modules: Modules): Route[] {
     route('DELETE', '/api/me/biometric-keys/:id', 'user', async ({ session, params }) => {
       await dk.deleteBiometricKey(store, session.user, params.id);
       return [200, { keys: await dk.listBiometricKeys(store, session.user) }];
+    }),
+
+    // Connected AI / MCP clients (list and revoke delegated MCP sessions).
+    route('GET', '/api/me/ai-clients', 'user', async ({ session }) => [200, await aiClientsReply(session.user)]),
+    route('DELETE', '/api/me/ai-clients/:id', 'user', async ({ session, params }) => {
+      const revoked = await dk.revokeMcpSession(store, session.user, params.id);
+      if (revoked) logger('session').info`${session.user} revoked AI client session ${params.id}`;
+      return [200, await aiClientsReply(session.user)];
     }),
   ];
 }

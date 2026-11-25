@@ -582,7 +582,34 @@ export async function updateUserSettings(store: Store, username: string, { email
 export type SessionClient = 'web' | 'native';
 
 /** strongAt: when the session was last confirmed with a passkey (sign-in or confirmation), ms; null never. */
-export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number; strongAt: number | null; createdAt: number; client: SessionClient }
+export interface McpGrant {
+  clientName: string;
+  scopes: string[];
+  relays: Record<string, number[]>;
+  allowActivity: boolean;
+}
+export interface McpClientSessionInfo {
+  id: string;
+  clientName: string;
+  scopes: string[];
+  relays: Record<string, number[]>;
+  allowActivity: boolean;
+  createdAt: string;
+  lastSeen: string;
+}
+export interface SessionInfo { tokenHash: string; username: string; gate: string | null; lastSeen: number; strongAt: number | null; createdAt: number; client: SessionClient; mcpGrant: McpGrant | null }
+
+function parseMcpGrant(raw: unknown): McpGrant | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const clientName = String(obj.clientName ?? 'AI Client').trim().slice(0, 80) || 'AI Client';
+  const scopes = Array.isArray(obj.scopes)
+    ? [...new Set(obj.scopes.map(String).filter((s) => s === 'doorking:read' || s === 'doorking:stage' || s === 'doorking:portal'))]
+    : ['doorking:read'];
+  const relays = normalizeHiddenRelays(obj.relays);
+  const allowActivity = obj.allowActivity === true;
+  return { clientName, scopes: scopes.length ? scopes : ['doorking:read'], relays, allowActivity };
+}
 
 const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 
@@ -595,11 +622,18 @@ const tokenHash = (token: string) => crypto.createHash('sha256').update(token).d
  * @param [options.strong] - Signed in with a passkey.
  * @returns Promise resolving to `string`.
  */
-export async function createSession(store: Store, username: string, { strong = false, client = 'web' }: { strong?: boolean; client?: SessionClient } = {}): Promise<string> {
+export async function createSession(
+  store: Store,
+  username: string,
+  { strong = false, client = 'web', mcpGrant = null }: { strong?: boolean; client?: SessionClient; mcpGrant?: McpGrant | null } = {},
+): Promise<string> {
   const token = crypto.randomBytes(32).toString('hex');
   const now = new Date().toISOString();
-  await run(store, 'INSERT INTO sessions (token_hash, username, created_at, last_seen, strong_at, client) VALUES ($1, $2, $3, $3, $4, $5)',
-    [tokenHash(token), userKey(username), now, strong ? now : null, client]);
+  await run(
+    store,
+    'INSERT INTO sessions (token_hash, username, created_at, last_seen, strong_at, client, mcp_grant) VALUES ($1, $2, $3, $3, $4, $5, $6::jsonb)',
+    [tokenHash(token), userKey(username), now, strong ? now : null, client, mcpGrant ? JSON.stringify(mcpGrant) : null],
+  );
   return token;
 }
 
@@ -711,8 +745,8 @@ export async function findSession(
   nativeMaxAgeMs = maxAgeMs,
 ): Promise<SessionInfo | null> {
   const hash = tokenHash(token);
-  const row = await one<{ username: string; gate: string | null; last_seen: string; strong_at: string | null; created_at: string; client?: string | null }>(store,
-    'SELECT username, gate, last_seen, strong_at, created_at, client FROM sessions WHERE token_hash = $1', [hash]);
+  const row = await one<{ username: string; gate: string | null; last_seen: string; strong_at: string | null; created_at: string; client?: string | null; mcp_grant?: unknown }>(store,
+    'SELECT username, gate, last_seen, strong_at, created_at, client, mcp_grant FROM sessions WHERE token_hash = $1', [hash]);
   if (!row) return null;
   const client: SessionClient = row.client === 'native' ? 'native' : 'web';
   const effectiveIdleMs = client === 'native' ? nativeIdleMs : idleMs;
@@ -724,8 +758,51 @@ export async function findSession(
     return null;
   }
   if (now - seen > 60000) await run(store, 'UPDATE sessions SET last_seen = $2 WHERE token_hash = $1', [hash, new Date(now).toISOString()]);
-  return { tokenHash: hash, username: row.username, gate: row.gate, lastSeen: now, strongAt: row.strong_at ? new Date(row.strong_at).getTime() : null,
-    createdAt: new Date(row.created_at).getTime(), client };
+  return {
+    tokenHash: hash,
+    username: row.username,
+    gate: row.gate,
+    lastSeen: now,
+    strongAt: row.strong_at ? new Date(row.strong_at).getTime() : null,
+    createdAt: new Date(row.created_at).getTime(),
+    client,
+    mcpGrant: parseMcpGrant(row.mcp_grant),
+  };
+}
+
+/** Lists active delegated MCP / AI client sessions for `username`. */
+export async function listMcpSessions(store: Store, username: string): Promise<McpClientSessionInfo[]> {
+  const rows = await all<{ token_hash: string; created_at: string; last_seen: string; mcp_grant: unknown }>(
+    store,
+    'SELECT token_hash, created_at, last_seen, mcp_grant FROM sessions WHERE username = $1 AND mcp_grant IS NOT NULL ORDER BY created_at DESC',
+    [userKey(username)],
+  );
+  const out: McpClientSessionInfo[] = [];
+  for (const row of rows) {
+    const grant = parseMcpGrant(row.mcp_grant);
+    if (!grant) continue;
+    out.push({
+      id: row.token_hash.slice(0, 16),
+      clientName: grant.clientName,
+      scopes: grant.scopes,
+      relays: grant.relays,
+      allowActivity: grant.allowActivity,
+      createdAt: new Date(row.created_at).toISOString(),
+      lastSeen: new Date(row.last_seen).toISOString(),
+    });
+  }
+  return out;
+}
+
+/** Revokes a delegated MCP / AI client session by its 16-hex prefix ID. */
+export async function revokeMcpSession(store: Store, username: string, id: string): Promise<boolean> {
+  const prefix = String(id || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{16}$/.test(prefix)) return false;
+  return (await run(
+    store,
+    'DELETE FROM sessions WHERE username = $1 AND mcp_grant IS NOT NULL AND token_hash LIKE $2',
+    [userKey(username), `${prefix}%`],
+  )) > 0;
 }
 
 /**
