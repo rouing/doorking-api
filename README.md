@@ -33,10 +33,10 @@ The screenshots use made-up sample data (a demo gate "Maple Court HOA", fictiona
   CSV download.
 - **Live relays**: read the gate's relays and open or release them, including Tracker expansion relays.
 - **Cameras**: pictures or 2-minute videos of each transaction from a Dahua/Amcrest recorder, reached by serial
-  number through Dahua's P2P cloud (no port forwarding), and a live view.
+  number through Dahua's P2P cloud (no port forwarding), optional per-channel relay associations (`channels[].relays`) so each transaction only captures cameras covering the triggered entrance, and a live view.
 - **Scheduled transfers**: send, pull residents, pull transactions and get camera footage on set days and times.
-- **People and access**: local accounts, passkeys, single sign-on (OpenID Connect: Microsoft Entra ID, Google
-  Workspace and others), admin and read-only roles per gate, email invitations, password resets and alerts.
+- **People and access**: local accounts, passkeys, push-notification passkey approval with 2-digit number matching and Android Keystore ECDSA P-256 biometric verification, single sign-on (OpenID Connect: Microsoft Entra ID, Google Workspace and others), admin/editor/read-only/resident roles per gate, email invitations, password resets, Web Push / FCM notifications and alerts.
+- **Resident Self-Service Portal & MCP**: "Buzz Me In" momentary relay pulse (including admin all-relay access and per-user `hiddenRelays`), daily-capped entry code rerolling, unit activity feed with suspicious-event reporting, self-service change requests, and delegated MCP / AI client bearer sessions (`POST /api/session/mint-bearer`, manageable under Connected AI Clients).
 - **History**: who changed what, with before and after values, and Revert.
 - **Phones**: a phone layout with tab bar and cards, and installation as an app (PWA).
 - **REST API**: per-gate API keys, an OpenAPI 3.1 spec and a Swagger UI page.
@@ -111,7 +111,7 @@ The server runs its TypeScript directly on Node 24, so it has no build step. Onl
   The key is `doorking.key`, beside `config.json`. Keep both private: with the database they reveal the master codes.
 - Passwords are scrypt hashes. Sessions and API keys are stored only as SHA-256 hashes. Failed sign-ins are rate
   limited.
-- Sending to the gate, managing users, API keys and the gate's login need a recent passkey confirmation.
+- Sending to the gate, managing users, API keys and the gate's login need a recent passkey, hardware biometric key (`biometric_keys`), or MFA SSO confirmation.
 
 The details are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#security).
 

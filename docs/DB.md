@@ -82,6 +82,7 @@ removed 2026-11-13), `localAccountsMigrated` (time the move from DKS sign-in to 
 | `pending_email` | TEXT, null | an address waiting for its confirmation link (not unique; `email` holds only confirmed addresses since 2026-11-13) |
 | `notify_access`, `notify_alerts` | BOOLEAN | the user's email notifications: gate access changes; gate alerts as an admin |
 | `reset_at` | TIMESTAMPTZ | the last password reset by email link (a sign-in after it may change passkeys for `security.stepUpMinutes`) |
+| `hidden_relays` | JSONB | per-gate array of relay numbers (`0`–`18`) the user has hidden from their Resident Portal / Buzz Me In buttons (`{ "<phone>": [1, 2] }`, default `{}`) |
 
 `password_hash` is `!` for an invited account that hasn't accepted its invitation, and `!sso` for an account created or
 accepted through single sign-on that has no password (it can set one with a reset link, if allowed). Nothing matches
@@ -96,6 +97,7 @@ either.
 | `username` | TEXT | the account (deleted with it) |
 | `email` | TEXT | the address the provider gave at the last sign-in (for display; matching uses the link) |
 | `linked_at`, `last_used_at` | TIMESTAMPTZ (null) | when it was linked and last signed in |
+| `last_claims` | JSONB, null | claims from the last ID token (for `roleMap` evaluation) |
 
 Primary key (`provider`, `subject`): an identity belongs to one account; an account may have several.
 
@@ -103,11 +105,13 @@ Primary key (`provider`, `subject`): an identity belongs to one account; an acco
 
 | Column | Type | Meaning |
 |---|---|---|
-| `token_hash` | TEXT, primary key | SHA-256 of the `sid` cookie's token (the token itself is not stored) |
+| `token_hash` | TEXT, primary key | SHA-256 of the `sid` cookie's or `dks_<hex>` bearer token (the token itself is not stored) |
 | `username` | TEXT | references `users` (deleted with it) |
 | `created_at`, `last_seen` | TIMESTAMPTZ | `last_seen` is written at most once a minute; idle sessions are deleted |
 | `gate` | TEXT, null | the gate the page has open |
-| `strong_at` | TIMESTAMPTZ, null | the last passkey confirmation (passkey sign-in or step-up); the sensitive actions need one within `security.stepUpMinutes` |
+| `strong_at` | TIMESTAMPTZ, null | the last passkey, hardware biometric, or MFA SSO confirmation (sign-in or step-up); the sensitive actions need one within `security.stepUpMinutes` |
+| `client` | TEXT | `'web'` (default, uses `security.sessionIdleMinutes` / `sessionMaxHours`) or `'native'` (for `X-Client-Auth: bearer` and delegated MCP sessions, uses `security.nativeSessionIdleDays` / `nativeSessionMaxDays`) |
+| `mcp_grant` | JSONB, null | delegated MCP / AI client permission grant (`{ clientName, scopes, relays, allowActivity }`) minted via `POST /api/session/mint-bearer`; `null` for regular web/Android sessions |
 
 ### `email_tokens`: one-use links in emails (`src/email.ts`)
 
@@ -143,6 +147,23 @@ Primary key (`provider`, `subject`): an identity belongs to one account; an acco
 | `name` | TEXT | the user's label |
 | `device_type`, `backed_up` | TEXT, BOOLEAN | `singleDevice`/`multiDevice`, and whether a provider syncs it |
 | `created_at`, `last_used_at` | TIMESTAMPTZ | added, last sign-in |
+
+### `biometric_keys`: hardware-backed biometric public keys (`src/biometric-keys.ts`)
+
+| Column | Type | Meaning |
+|---|---|---|
+| `id` | TEXT, primary key | client-supplied or UUID key identifier |
+| `username` | TEXT | references `users` (deleted with it) |
+| `public_key_spki` | TEXT | base64-encoded SPKI DER ECDSA P-256 (`prime256v1`) public key generated inside Android Keystore / StrongBox |
+| `label` | TEXT | device label (default `'Android'`) |
+| `created_at`, `last_used_at` | TIMESTAMPTZ (null) | when registered and last used to sign a step-up or push passkey approval challenge |
+
+### `fcm_tokens` and `push_subscriptions`: push notification registrations (`src/push.ts`)
+
+| Table | Columns |
+|---|---|
+| `push_subscriptions` | `id` (primary key), `username` (references `users`), `endpoint` (unique), `p256dh`, `auth`, `label`, `created_at`, `last_used_at` |
+| `fcm_tokens` | `id` (primary key), `username` (references `users`), `token` (unique Firebase Cloud Messaging registration token), `label`, `created_at`, `last_used_at` |
 
 ### `managed_gates`: the gates this server manages (`src/gate-list.ts`)
 
@@ -258,7 +279,7 @@ The 2026-11-13 migration copied each gate's saved login into `managed_gates`. Sc
 | Column | Type | Meaning |
 |---|---|---|
 | `phone` | TEXT, primary key | gate |
-| `data` | JSONB | `{ enabled, serial, username, channels: [{ channel, name }], clockOffset, mode, frames, framesAfter, clipTries, events, backfillHours, keepDays }` (`keepDays`: 15, 30, 60, 90; 0 or missing = forever) |
+| `data` | JSONB | `{ enabled, serial, username, channels: [{ channel, name, relays? }], clockOffset, mode, frames, framesAfter, clipTries, events, backfillHours, keepDays }` (`keepDays`: 15, 30, 60, 90; 0 or missing = forever; `relays`: optional array of gate relay numbers `0`–`18` associated with that camera channel) |
 | `password` | TEXT | recorder password, **encrypted** |
 | `saved_by` | TEXT | user who saved them |
 | `saved_at` | TIMESTAMPTZ | when |

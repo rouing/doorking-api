@@ -2902,6 +2902,95 @@
         }
       }
     },
+    "/api/session/mint-bearer": {
+      "post": {
+        "tags": [
+          "Auth & Session"
+        ],
+        "summary": "Mint a delegated long-lived native bearer session with validated MCP grant",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "clientName": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "doorking:read",
+                        "doorking:stage",
+                        "doorking:portal"
+                      ]
+                    }
+                  },
+                  "relays": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 18
+                      }
+                    }
+                  },
+                  "allowActivity": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Minted delegated native bearer session token and resolved MCP grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "token",
+                    "user",
+                    "mcpGrant"
+                  ],
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "type": "string"
+                    },
+                    "mcpGrant": {
+                      "$ref": "#/components/schemas/McpGrant"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
     "/api/setup": {
       "post": {
         "tags": [
@@ -3266,12 +3355,80 @@
         }
       }
     },
+    "/api/me/step-up/biometric/options": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Issue single-use challenge for hardware biometric key step-up",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "keyId"
+                ],
+                "properties": {
+                  "keyId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Single-use biometric step-up challenge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "challenge",
+                    "keyId"
+                  ],
+                  "properties": {
+                    "challenge": {
+                      "type": "string"
+                    },
+                    "keyId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
     "/api/me/step-up": {
       "post": {
         "tags": [
           "Passkeys"
         ],
-        "summary": "Confirm step-up verification for sensitive actions",
+        "summary": "Confirm step-up verification via passkey, password, or hardware biometric signature",
         "x-auth": "session",
         "security": [
           {
@@ -3285,7 +3442,30 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "response": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "WebAuthn authentication assertion response"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Account password for password-based step-up"
+                  },
+                  "biometricKeyId": {
+                    "type": "string",
+                    "description": "Registered Android hardware biometric key ID"
+                  },
+                  "challenge": {
+                    "type": "string",
+                    "description": "Single-use challenge from POST /api/me/step-up/biometric/options"
+                  },
+                  "signature": {
+                    "type": "string",
+                    "description": "Base64-encoded ECDSA P-256 SHA-256 signature over challenge"
+                  }
+                }
               }
             }
           }
@@ -3297,7 +3477,15 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "required": [
+                    "strongUntil"
+                  ],
+                  "properties": {
+                    "strongUntil": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
                 }
               }
             }
@@ -3316,7 +3504,7 @@
         "tags": [
           "Passkeys"
         ],
-        "summary": "List registered passkeys",
+        "summary": "List registered passkeys and push approval availability",
         "x-auth": "session",
         "security": [
           {
@@ -3339,6 +3527,15 @@
                       "items": {
                         "$ref": "#/components/schemas/PasskeyInfo"
                       }
+                    },
+                    "userHandle": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "pushApprovalAvailable": {
+                      "type": "boolean"
                     }
                   }
                 }
@@ -3483,6 +3680,286 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/passkey-approval-requests": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Start push-notification passkey approval request with 2-digit number match",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "deviceLabel": {
+                    "type": "string",
+                    "maxLength": 80
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created approval request and dispatched FCM push.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "numberMatch",
+                    "expiresAt"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "numberMatch": {
+                      "type": "integer",
+                      "minimum": 10,
+                      "maximum": 99
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/Upstream"
+          }
+        }
+      }
+    },
+    "/api/me/passkey-approval-requests/pending": {
+      "get": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "List pending push passkey approval requests for the signed-in user",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending approval requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requests"
+                  ],
+                  "properties": {
+                    "requests": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PushApprovalPendingItem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/me/passkey-approval-requests/{id}": {
+      "get": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Poll status of a passkey approval request created by this session",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current approval request status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "status",
+                    "expiresAt"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "approved",
+                        "denied",
+                        "expired"
+                      ]
+                    },
+                    "approvalCode": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/me/passkey-approval-requests/{id}/respond": {
+      "post": {
+        "tags": [
+          "Passkeys"
+        ],
+        "summary": "Approve (with 2-digit number match and hardware biometric signature) or deny a passkey approval request",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "decision"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "deny"
+                    ]
+                  },
+                  "pickedNumber": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 99
+                  },
+                  "biometricKeyId": {
+                    "type": "string"
+                  },
+                  "signature": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decision recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "status"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "approved",
+                        "denied"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           }
         }
       }
@@ -3831,7 +4308,7 @@
         "tags": [
           "Account"
         ],
-        "summary": "Get current user profile",
+        "summary": "Get current user profile, hidden relays, and accessible portal relays",
         "x-auth": "session",
         "security": [
           {
@@ -3848,6 +4325,83 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "properties": {
+                    "username": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "pendingEmail": {
+                      "type": "string"
+                    },
+                    "phone": {
+                      "type": "string"
+                    },
+                    "dark": {
+                      "type": "boolean"
+                    },
+                    "notifyAccess": {
+                      "type": "boolean"
+                    },
+                    "notifyAlerts": {
+                      "type": "boolean"
+                    },
+                    "hiddenRelays": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 18
+                        }
+                      }
+                    },
+                    "portalRelays": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "phone",
+                          "siteName",
+                          "relays"
+                        ],
+                        "properties": {
+                          "phone": {
+                            "type": "string"
+                          },
+                          "siteName": {
+                            "type": "string"
+                          },
+                          "relays": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "relay",
+                                "name",
+                                "hidden"
+                              ],
+                              "properties": {
+                                "relay": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 18
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "hidden": {
+                                  "type": "boolean"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
                   "additionalProperties": true
                 }
               }
@@ -3865,7 +4419,7 @@
         "tags": [
           "Account"
         ],
-        "summary": "Update profile preferences, email, phone, or dark mode",
+        "summary": "Update profile preferences, email, phone, dark mode, or hidden relays",
         "x-auth": "session",
         "security": [
           {
@@ -3879,7 +4433,38 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "type": "string"
+                  },
+                  "dark": {
+                    "type": "boolean"
+                  },
+                  "notifyAccess": {
+                    "type": "boolean"
+                  },
+                  "notifyAlerts": {
+                    "type": "boolean"
+                  },
+                  "hiddenRelays": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 18
+                      }
+                    }
+                  }
+                }
               }
             }
           }
@@ -3891,6 +4476,43 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "properties": {
+                    "username": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "pendingEmail": {
+                      "type": "string"
+                    },
+                    "phone": {
+                      "type": "string"
+                    },
+                    "dark": {
+                      "type": "boolean"
+                    },
+                    "notifyAccess": {
+                      "type": "boolean"
+                    },
+                    "notifyAlerts": {
+                      "type": "boolean"
+                    },
+                    "hiddenRelays": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 18
+                        }
+                      }
+                    },
+                    "warning": {
+                      "type": "string"
+                    }
+                  },
                   "additionalProperties": true
                 }
               }
@@ -4388,6 +5010,268 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/me/biometric-keys": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "List registered hardware biometric keys for current user",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registered biometric keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "keys"
+                  ],
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BiometricKeyInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Register an Android Keystore ECDSA P-256 public key for hardware biometric step-up",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "publicKeySpki"
+                ],
+                "properties": {
+                  "keyId": {
+                    "type": "string"
+                  },
+                  "publicKeySpki": {
+                    "type": "string",
+                    "description": "Base64-encoded SPKI DER ECDSA P-256 public key"
+                  },
+                  "label": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Registered biometric key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "keys"
+                  ],
+                  "properties": {
+                    "key": {
+                      "$ref": "#/components/schemas/BiometricKeyInfo"
+                    },
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BiometricKeyInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/me/biometric-keys/{id}": {
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Delete a registered hardware biometric key",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Remaining biometric keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "keys"
+                  ],
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BiometricKeyInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/me/ai-clients": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "List connected AI / MCP clients and their delegated relay permissions",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active delegated MCP client sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "clients"
+                  ],
+                  "properties": {
+                    "clients": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AiClientSessionInfo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/me/ai-clients/{id}": {
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Revoke a connected AI / MCP client session",
+        "x-auth": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "nativeSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Remaining active AI client sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "clients"
+                  ],
+                  "properties": {
+                    "clients": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AiClientSessionInfo"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -7575,6 +8459,33 @@
           }
         ]
       },
+      "CameraChannel": {
+        "type": "object",
+        "required": [
+          "channel",
+          "name"
+        ],
+        "properties": {
+          "channel": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "relays": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18
+            },
+            "description": "Optional gate relay numbers (0-18) associated with this camera channel"
+          }
+        }
+      },
       "CameraSettings": {
         "type": "object",
         "properties": {
@@ -7590,15 +8501,7 @@
           "channels": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "channel": {
-                  "type": "integer"
-                },
-                "name": {
-                  "type": "string"
-                }
-              }
+              "$ref": "#/components/schemas/CameraChannel"
             }
           },
           "clockOffset": {
@@ -8093,6 +8996,9 @@
           "hasPortalUnit": {
             "type": "boolean"
           },
+          "mcpGrant": {
+            "$ref": "#/components/schemas/McpGrant"
+          },
           "gate": {
             "oneOf": [
               {
@@ -8386,11 +9292,272 @@
           },
           "portal": {
             "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "buzzEnabled": {
+                "type": "boolean"
+              },
+              "buzzRelays": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "buzzRelayLabels": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "relay",
+                    "name"
+                  ],
+                  "properties": {
+                    "relay": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "allBuzzRelayLabels": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "relay",
+                    "name"
+                  ],
+                  "properties": {
+                    "relay": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "hiddenRelays": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "pulseSeconds": {
+                "type": "integer"
+              },
+              "maxRerollsPerDay": {
+                "type": "integer"
+              },
+              "autoSendReroll": {
+                "type": "boolean"
+              },
+              "showSnapshots": {
+                "type": "boolean"
+              },
+              "allowRequests": {
+                "type": "boolean"
+              },
+              "requirePasskeyForBuzz": {
+                "type": "boolean"
+              }
+            },
             "additionalProperties": true
           },
           "reroll": {
             "type": "object",
             "additionalProperties": true
+          }
+        }
+      },
+      "BiometricKeyInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "PushApprovalPendingItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "deviceLabel",
+          "ip",
+          "createdAt",
+          "expiresAt",
+          "choices",
+          "challenge"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "deviceLabel": {
+            "type": "string"
+          },
+          "ip": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "choices": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 99
+            }
+          },
+          "challenge": {
+            "type": "string"
+          }
+        }
+      },
+      "McpGrant": {
+        "type": "object",
+        "required": [
+          "clientName",
+          "scopes",
+          "relays",
+          "allowActivity"
+        ],
+        "properties": {
+          "clientName": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "relays": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          },
+          "allowActivity": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AiClientSessionInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "clientName",
+          "scopes",
+          "relays",
+          "allowActivity",
+          "createdAt",
+          "lastSeen",
+          "relaySummary"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "clientName": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "relays": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          },
+          "allowActivity": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastSeen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "relaySummary": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "phone",
+                "siteName",
+                "relays"
+              ],
+              "properties": {
+                "phone": {
+                  "type": "string"
+                },
+                "siteName": {
+                  "type": "string"
+                },
+                "relays": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "relay",
+                      "name"
+                    ],
+                    "properties": {
+                      "relay": {
+                        "type": "integer"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },

@@ -25,6 +25,8 @@
   "security": {
     "sessionIdleMinutes": 30,
     "sessionMaxHours": 168,
+    "nativeSessionIdleDays": 90,
+    "nativeSessionMaxDays": 365,
     "maxFailedSignIns": 5,
     "signInWindowMinutes": 15,
     "stepUpMinutes": 180
